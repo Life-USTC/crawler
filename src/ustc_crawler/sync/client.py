@@ -501,13 +501,23 @@ class IngestionSyncClient:
             batch_id,
             item_keys=item_keys,
         )
-        manifests: dict[tuple[str, str], LocalObjectManifest] = {}
+        manifest_groups: dict[tuple[str, str], list[LocalObjectManifest]] = {}
         for manifest in local_manifests:
             key = (manifest.kind, manifest.sha256)
-            previous = manifests.get(key)
-            if previous is not None and previous != manifest:
-                raise SyncProtocolError("duplicate_object_manifest")
-            manifests[key] = manifest
+            group = manifest_groups.setdefault(key, [])
+            if group:
+                previous = group[0]
+                # sortOrder and altText describe the link from a publication
+                # to an object, so they may differ when several publications
+                # share one content-addressed object.  Size and content type
+                # are immutable object properties and must agree.
+                if (
+                    previous.size != manifest.size
+                    or previous.content_type != manifest.content_type
+                ):
+                    raise SyncProtocolError("duplicate_object_manifest")
+            group.append(manifest)
+        manifests = {key: group[0] for key, group in manifest_groups.items()}
         if not manifests:
             return
         object_items = [
@@ -552,7 +562,11 @@ class IngestionSyncClient:
             if item.status == "upload_required":
                 if item.upload_url is None:
                     raise SyncProtocolError("object_upload_url_missing")
-                self._object_bytes(manifests[key])
+                # Validate every local occurrence before the first PUT.  A
+                # shared digest can have different link metadata or spool
+                # paths, but each persisted file must still match the digest.
+                for manifest in manifest_groups[key]:
+                    self._object_bytes(manifest)
         with ThreadPoolExecutor(
             max_workers=options.object_concurrency,
             thread_name_prefix="ustc-sync-object",

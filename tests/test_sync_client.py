@@ -259,6 +259,90 @@ class SyncClientTests(unittest.TestCase):
                 sync.close()
                 store.close()
 
+    def test_shared_media_deduplicates_plan_when_link_metadata_differs(self) -> None:
+        plan_requests: list[dict] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/ingestion/publications/batches":
+                return httpx.Response(200, json=self._batch_response(request), request=request)
+            if request.url.path == "/api/ingestion/publications/objects/plan":
+                plan_requests.append(json.loads(request.content))
+                return httpx.Response(
+                    200,
+                    json=self._plan_response(request, upload=True),
+                    request=request,
+                )
+            if request.url.path.startswith("/signed/"):
+                return httpx.Response(200, request=request)
+            if request.url.path == "/api/ingestion/publications/objects/complete":
+                payload = json.loads(request.content)
+                return httpx.Response(
+                    200,
+                    json={**payload, "status": "verified"},
+                    request=request,
+                )
+            raise AssertionError(f"unexpected sync request: {request.url}")
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            try:
+                outbox = IngestionOutbox(store.database)
+                source = store.source_descriptor("source")
+                first_manifest = spool_bytes(
+                    root / "data",
+                    b"shared media bytes",
+                    kind="media",
+                    content_type="image/png",
+                    sort_order=0,
+                    alt_text="first article",
+                )
+                second_manifest = spool_bytes(
+                    root / "data",
+                    b"shared media bytes",
+                    kind="media",
+                    content_type="image/png",
+                    sort_order=1,
+                    alt_text="second article",
+                )
+                outbox.enqueue_publication(
+                    build_publication(
+                        self._article(1),
+                        objects=[wire_manifest(first_manifest)],
+                    ),
+                    source=source,
+                    local_objects=[first_manifest],
+                )
+                outbox.enqueue_publication(
+                    build_publication(
+                        self._article(2),
+                        objects=[wire_manifest(second_manifest)],
+                    ),
+                    source=source,
+                    local_objects=[second_manifest],
+                )
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=client,
+                )
+                summary = sync.sync(options=SyncOptions(batch_size=2))
+                self.assertEqual(summary["acked"], 1)
+                self.assertEqual(summary["failed"], 0)
+                self.assertEqual(len(plan_requests), 1)
+                media_objects = [
+                    item
+                    for item in plan_requests[0]["objects"]
+                    if item["kind"] == "media"
+                ]
+                self.assertEqual(len(media_objects), 1)
+            finally:
+                sync.close()
+                store.close()
+
     def test_mixed_result_only_plans_accepted_objects_and_marks_partial(self) -> None:
         plan_requests: list[dict] = []
 
