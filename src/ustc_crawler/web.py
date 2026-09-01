@@ -163,6 +163,7 @@ class DashboardStore:
         page = max(1, page)
         page_size = max(1, min(page_size, 100))
         clauses = [
+            "s.discovery_only = 0",
             "(p.url IS NULL OR (COALESCE(p.page_kind, '') IN ('news_article', 'article') "
             "AND (p.duplicate_of IS NULL OR p.duplicate_of='')))",
         ]
@@ -231,7 +232,7 @@ class DashboardStore:
             SELECT a.*, s.name AS source_name, {type_expression} AS publication_type
             FROM articles a JOIN sources s ON s.id=a.source_id
             LEFT JOIN pages p ON p.url=COALESCE(NULLIF(a.source_page_url, ''), a.url)
-            WHERE a.url=?
+            WHERE a.url=? AND s.discovery_only = 0
             """,
             (url,),
         )

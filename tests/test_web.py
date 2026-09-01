@@ -4,6 +4,7 @@ import unittest
 from datetime import date
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from urllib.error import HTTPError
 from urllib.parse import quote
 from urllib.request import urlopen
 
@@ -249,6 +250,79 @@ class DashboardTests(unittest.TestCase):
             {"测试新闻", "本周工作动态", "校园班车运行时刻表"},
         )
         self.assertNotIn("课程资料", {row["title"] for row in news_rows + notice_rows})
+
+    def test_discovery_only_articles_are_hidden_from_public_preview(self) -> None:
+        store = Store(self.db_path, self.data_dir)
+        store.add_source(
+            SourceConfig(
+                id="audit",
+                name="补充发现审计",
+                organization_level="university",
+                seed_urls=["https://audit.example.test/"],
+                allowed_hosts=["audit.example.test"],
+                discovery_only=True,
+            )
+        )
+        today = date.today().isoformat()
+        store_core(store).execute(
+            """
+            INSERT INTO articles(
+              url,source_id,title,author,published_at,updated_at,category,summary,body_html,
+              body_text,body_markdown,extraction_method,source_page_url,raw_json,content_hash,
+              first_seen,last_seen
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "https://audit.example.test/notice/1",
+                "audit",
+                "不应公开的补充发现通知",
+                "",
+                today,
+                "",
+                "通知",
+                "仅用于审计",
+                "<p>审计正文</p>",
+                "审计正文",
+                "审计正文",
+                "test",
+                "",
+                "{}",
+                "audit-hash",
+                today,
+                today,
+            ),
+        )
+        store_core(store).commit()
+        store.close()
+
+        dashboard = DashboardStore(self.db_path, self.data_dir)
+        rows, total, _ = dashboard.news(page_size=100)
+        self.assertEqual(total, 1)
+        self.assertEqual({row["source_id"] for row in rows}, {"news"})
+        self.assertEqual(dashboard.news(publication_type="news")[1], 0)
+        self.assertEqual(dashboard.news(publication_type="notice")[1], 1)
+        self.assertEqual(dashboard.news(query_text="不应公开")[1], 0)
+        self.assertIsNone(dashboard.article("https://audit.example.test/notice/1"))
+        self.assertIsNotNone(dashboard.article("https://news.example.test/article/1"))
+
+        server = DashboardHTTPServer(("127.0.0.1", 0), dashboard)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        hidden_url = quote("https://audit.example.test/notice/1", safe="")
+        try:
+            with urlopen(f"{base}/api/news?type=notice") as response:
+                payload = json.load(response)
+                self.assertEqual(payload["total"], 1)
+                self.assertNotIn("不应公开的补充发现通知", json.dumps(payload, ensure_ascii=False))
+            for path in (f"/article?url={hidden_url}", f"/api/article?url={hidden_url}"):
+                with self.assertRaises(HTTPError) as error:
+                    urlopen(f"{base}{path}")
+                self.assertEqual(error.exception.code, 404)
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
 
     def test_http_routes_render_html_and_json(self) -> None:
         server = DashboardHTTPServer(("127.0.0.1", 0), DashboardStore(self.db_path, self.data_dir))
