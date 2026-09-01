@@ -310,6 +310,29 @@ class CrawlSinceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(row)
         store.close()
 
+    async def test_seed_queue_filters_uploaded_html_attachments(self) -> None:
+        url = (
+            "https://news.example.test/_upload/article/files/7d/f9/"
+            "033cd3b84a9d8a16b2b2eb9987e6/W020150417520333865223.htm"
+        )
+        store = Store(self.db_path, self.data_dir)
+        store.enqueue(url, "news", 2, "https://news.example.test/article/1", 500)
+        store.close()
+
+        crawler = self._crawler()
+        await crawler._seed_queue()
+        self.assertTrue(crawler.queue.empty())
+        await crawler.close()
+
+        store = Store(self.db_path, self.data_dir)
+        row = store_core(store).execute(
+            "SELECT status,last_error FROM frontier WHERE url=?", (url,)
+        ).fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["status"], "filtered")
+        self.assertEqual(row["last_error"], "uploaded HTML attachment")
+        store.close()
+
     async def test_url_date_wins_over_stale_listing_hint(self) -> None:
         url = "https://news.example.test/2026/0830/c1a2/page.htm"
         store = Store(self.db_path, self.data_dir)

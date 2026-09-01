@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from urllib.parse import parse_qsl, urlsplit
 
+from .canonicalize import looks_like_uploaded_html_attachment
 from .extract import parse_date
 
 NEWS_RE = re.compile(
@@ -109,6 +110,8 @@ def is_obvious_low_value_url(url: str) -> tuple[bool, str]:
     parts = urlsplit(url)
     path = parts.path.lower()
     query = parts.query.lower()
+    if looks_like_uploaded_html_attachment(url):
+        return True, "uploaded HTML attachment"
     if path.endswith("/logout") or "/logout/" in path:
         return True, "logout endpoint"
     if path.endswith("/search") or "/search/" in path or "?search=" in query:
@@ -229,6 +232,16 @@ def score_page(
         return PageScore("auth_gate", "auth_required", 0, "not_indexed", [f"HTTP {status} requires access"], published)
     if status <= 0 or status >= 400:
         return PageScore("error", "unavailable", 0, "not_indexed", [f"HTTP {status}"], published)
+
+    if looks_like_uploaded_html_attachment(target):
+        return PageScore(
+            "document",
+            "public",
+            0,
+            "not_indexed",
+            ["uploaded HTML attachment"],
+            "",
+        )
 
     login_shell = bool(
         ("password" in html.lower() or 'type="password"' in html.lower())

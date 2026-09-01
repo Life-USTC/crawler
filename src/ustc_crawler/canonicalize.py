@@ -134,9 +134,23 @@ def host_matches(url: str, allowed_hosts: list[str] | set[str]) -> bool:
     return False
 
 
+def looks_like_uploaded_html_attachment(url: str) -> bool:
+    """Identify static HTML attachments emitted by the USTC CMS.
+
+    The CMS stores downloadable HTML tutorials and similar files below this
+    path.  They are assets, not CMS detail pages, even though their extension
+    is HTML and their response may be labelled ``text/html``.
+    """
+
+    path = urlsplit(url).path.lower()
+    return "/_upload/article/files/" in path and path.endswith((".htm", ".html"))
+
+
 def looks_like_asset(url: str) -> bool:
     path = urlsplit(url).path.lower()
-    return any(path.endswith(ext) for ext in ASSET_EXTENSIONS)
+    return looks_like_uploaded_html_attachment(url) or any(
+        path.endswith(ext) for ext in ASSET_EXTENSIONS
+    )
 
 
 def looks_like_binary(body: bytes) -> bool:
