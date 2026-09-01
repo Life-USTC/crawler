@@ -707,6 +707,19 @@ class SyncClientTests(unittest.TestCase):
         )
         self.assertEqual(args.command, "sync")
         self.assertEqual(args.server, self.server)
+        self.assertEqual(args.object_concurrency, 8)
+        self.assertEqual(
+            parser.parse_args(
+                [
+                    "sync",
+                    "--server",
+                    self.server,
+                    "--object-concurrency",
+                    "3",
+                ]
+            ).object_concurrency,
+            3,
+        )
         self.assertNotIn("auth", parser.format_help())
         self.assertIn("USTC_CRAWLER_INGESTION_SECRET", parser.format_help())
         self.assertEqual(
