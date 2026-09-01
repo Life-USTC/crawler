@@ -608,6 +608,22 @@ class AsyncCrawler:
         page.status = response.status
         page.fetched_at = datetime.now().astimezone().isoformat(timespec="seconds")
         page.raw_body = response.body
+        if page.article:
+            # The page source records where the response was fetched, while
+            # the article belongs to the configured source that owns its
+            # canonical URL.  A discovery page can therefore publish an
+            # article whose canonical URL is hosted by another USTC source;
+            # preserve the fetched page's source_id and route the article,
+            # media, and sync event through the canonical owner.
+            owner = self._source_for_url(page.article.url)
+            if owner is None:
+                # An external canonical URL is not a publication owned by
+                # this crawler.  Keep the raw fetched page for audit, but do
+                # not turn an escaped canonical page into a searchable or
+                # publishable article.
+                page.article = None
+            else:
+                page.article.source_id = owner.id
         requested_published_at = _date_from_url(url)
         if page.article and requested_published_at:
             page.article.published_at = requested_published_at
