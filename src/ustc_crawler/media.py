@@ -30,9 +30,7 @@ def _image_jobs(store: Store) -> dict[str, list[ImageRef]]:
     """
     jobs: dict[str, list[ImageRef]] = {}
     covered: set[str] = set()
-    for row in store.db.execute(
-        "SELECT article_url,image_url,alt,title,caption FROM article_media ORDER BY article_url,image_url"
-    ):
+    for row in store.article_media_records():
         covered.add(row["article_url"])
         jobs.setdefault(row["image_url"], []).append(
             ImageRef(
@@ -44,11 +42,7 @@ def _image_jobs(store: Store) -> dict[str, list[ImageRef]]:
             )
         )
 
-    rows = store.db.execute(
-        """SELECT a.url,a.content_hash
-           FROM articles a LEFT JOIN article_media am ON am.article_url=a.url
-           WHERE am.article_url IS NULL ORDER BY a.url"""
-    ).fetchall()
+    rows = store.articles_without_media()
     for row in rows:
         bundle = article_bundle_path(store.data_dir, str(row["url"]))
         if not bundle.exists():
@@ -83,9 +77,7 @@ async def _run(options: MediaOptions) -> dict[str, int]:
 
     async def one(url: str, refs: list[ImageRef]) -> None:
         nonlocal fetched, skipped, errors
-        existing = store.db.execute(
-            "SELECT * FROM media WHERE url=?", (url,)
-        ).fetchone()
+        existing = store.media_snapshot(url)
         if (
             existing
             and existing["status"] == "ok"

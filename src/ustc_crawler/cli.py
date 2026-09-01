@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from .crawl import CrawlOptions, run_crawl
+from .db import upgrade_database
 from .discover import discover_units
 from .media import MediaOptions, download_saved_images
 from .store import Store
@@ -187,6 +188,12 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--data-dir", default="data", type=_path)
     serve.add_argument("--host", default="127.0.0.1")
     serve.add_argument("--port", default=8765, type=int)
+
+    db_upgrade = sub.add_parser(
+        "db-upgrade",
+        help="apply pending Alembic migrations to an existing local database",
+    )
+    db_upgrade.add_argument("--db", default="data/crawler.sqlite", type=_path)
     return parser
 
 
@@ -205,6 +212,10 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0 if not result.get("error") else 1
+    if args.command == "db-upgrade":
+        upgrade_database(args.db)
+        print(json.dumps({"database": args.db, "status": "upgraded"}, ensure_ascii=False))
+        return 0
     if args.command == "crawl":
         options = CrawlOptions(
             config_path=args.config,

@@ -3,7 +3,6 @@ from __future__ import annotations
 import html
 import json
 import mimetypes
-import sqlite3
 from datetime import date, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -12,38 +11,14 @@ from shutil import copyfileobj
 from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse, urlsplit
 
 from bs4 import BeautifulSoup
+from sqlalchemy import create_engine, event
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.pool import NullPool
 
+from .db import ALEMBIC_HEAD
+from .publication import publication_type_sql
 
-def _publication_type_sql(article_alias: str = "a", page_alias: str = "p") -> str:
-    """Classify a publication using explicit section and title signals."""
-    url = (
-        f"LOWER(COALESCE({article_alias}.url, '') || ' ' || "
-        f"COALESCE({article_alias}.source_page_url, '') || ' ' || "
-        f"COALESCE({page_alias}.url, '') || ' ' || COALESCE({page_alias}.final_url, '') || ' ' || "
-        f"COALESCE({page_alias}.canonical_url, '') || ' ' || COALESCE({page_alias}.discovered_from, ''))"
-    )
-    title = f"COALESCE({article_alias}.title, '')"
-    category = f"COALESCE({article_alias}.category, '')"
-    return f"""CASE WHEN
-        {url} LIKE '%/notice/%' OR {url} LIKE '%/announcement/%'
-        OR {url} LIKE '%tzgg%' OR {url} LIKE '%xxgg%'
-        OR {url} LIKE '%gonggao%' OR {url} LIKE '%tongzhi%'
-        OR ({article_alias}.source_id='university' AND (
-          {url} LIKE '%/info/1360/%' OR {url} LIKE '%/info/1361/%'
-          OR {url} LIKE '%/info/1362/%' OR {url} LIKE '%/info/1363/%'
-          OR {url} LIKE '%/info/1364/%' OR {url} LIKE '%/info/1365/%'
-          OR {url} LIKE '%/info/1366/%' OR {url} GLOB '*wbtreeid=136[0-6]*'
-        ))
-        OR {category} LIKE '%通知%' OR {category} LIKE '%公告%' OR {category} LIKE '%公示%'
-        OR {title} LIKE '%公告%' OR {title} LIKE '%公示%'
-        OR (({title} LIKE '%的通知%' OR {title} LIKE '%通知' OR {title} LIKE '%通知：%')
-            AND {title} NOT LIKE '%通知书%')
-        OR {title} LIKE '%时刻表%'
-        OR ({title} LIKE '%招生%' AND (
-          {title} LIKE '%安排%' OR {title} LIKE '%简章%' OR {title} LIKE '%名单%'
-          OR {title} LIKE '%方案%' OR {title} LIKE '%通告%'
-        ))
-      THEN 'notice' ELSE 'news' END"""
+_publication_type_sql = publication_type_sql
 
 
 class DashboardStore:
@@ -54,27 +29,44 @@ class DashboardStore:
         self.data_dir = Path(data_dir).resolve()
         if not self.db_path.is_file():
             raise FileNotFoundError(f"SQLite database does not exist: {self.db_path}")
-
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(
-            f"file:{self.db_path.as_posix()}?mode=ro",
-            uri=True,
-            timeout=5,
+        self.engine = create_engine(
+            f"sqlite:///file:{self.db_path.as_posix()}?mode=ro&uri=true",
+            connect_args={"check_same_thread": False, "timeout": 5, "uri": True},
+            poolclass=NullPool,
         )
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA query_only=ON")
-        return connection
+        event.listen(self.engine, "connect", self._configure_read_only)
+        try:
+            version = self._fetchone("SELECT version_num FROM alembic_version")
+        except SQLAlchemyError as exc:
+            self.engine.dispose()
+            raise RuntimeError(
+                "SQLite schema is not managed by Alembic; run ustc-crawler db-upgrade first"
+            ) from exc
+        if not version or version["version_num"] != ALEMBIC_HEAD:
+            raise RuntimeError(
+                f"SQLite schema revision {version.get('version_num') if version else None!r} "
+                f"is not {ALEMBIC_HEAD!r}; run ustc-crawler db-upgrade first"
+            )
+
+    @staticmethod
+    def _configure_read_only(dbapi_connection: object, _connection_record: object) -> None:
+        cursor = dbapi_connection.cursor()  # type: ignore[attr-defined]
+        try:
+            cursor.execute("PRAGMA query_only=ON")
+            cursor.execute("PRAGMA busy_timeout=5000")
+        finally:
+            cursor.close()
 
     def _fetchall(self, query: str, params: tuple[object, ...] = ()) -> list[dict[str, object]]:
-        connection = self._connect()
-        try:
-            return [dict(row) for row in connection.execute(query, params).fetchall()]
-        finally:
-            connection.close()
+        with self.engine.connect() as connection:
+            return [dict(row) for row in connection.exec_driver_sql(query, params).mappings().all()]
 
     def _fetchone(self, query: str, params: tuple[object, ...] = ()) -> dict[str, object] | None:
         rows = self._fetchall(query, params)
         return rows[0] if rows else None
+
+    def close(self) -> None:
+        self.engine.dispose()
 
     @staticmethod
     def cutoff() -> str:
@@ -641,7 +633,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._api_article(params)
             else:
                 self._error(HTTPStatus.NOT_FOUND, "没有这个页面")
-        except (sqlite3.Error, OSError, ValueError) as error:
+        except (SQLAlchemyError, OSError, ValueError) as error:
             self._error(HTTPStatus.INTERNAL_SERVER_ERROR, f"读取本地数据失败：{error}")
 
     def _article(self, params: dict[str, list[str]]) -> None:
@@ -733,4 +725,5 @@ def serve_dashboard(
         print("\nStopping dashboard")
     finally:
         server.server_close()
+        store.close()
     return 0

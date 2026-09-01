@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import re
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -173,6 +175,8 @@ class AsyncCrawler:
         self.errors = 0
         self._counter_lock = asyncio.Lock()
         self.source_since: dict[str, datetime] = {}
+        self.sync_run_id = uuid.uuid4().hex
+        self.sync_run_started = False
 
     async def close(self) -> None:
         await self.fetcher.close()
@@ -199,6 +203,34 @@ class AsyncCrawler:
             for source_id, source in eligible_sources.items()
             if not selected or source_id in selected
         }
+        source_config_revision = hashlib.sha256(
+            json.dumps(
+                [
+                    {
+                        "id": source.id,
+                        "name": source.name,
+                        "organization_level": source.organization_level,
+                        "allowed_hosts": sorted(source.allowed_hosts),
+                        "blocked_hosts": sorted(source.blocked_hosts),
+                        "seed_urls": sorted(source.seed_urls),
+                        "aliases": sorted(source.aliases),
+                        "discovery_only": source.discovery_only,
+                        "max_images_per_page": source.max_images_per_page,
+                    }
+                    for source in sorted(self.configured_sources.values(), key=lambda item: item.id)
+                ],
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        self.store.start_sync_run(
+            self.sync_run_id,
+            mode="incremental" if self.options.incremental else "full",
+            source_config_revision=source_config_revision,
+            digest=source_config_revision,
+        )
+        self.sync_run_started = True
         self.store.add_sources(self.configured_sources.values())
         if self.options.incremental:
             self.source_since = self.store.source_newest_dates(set(self.sources.keys()))
@@ -353,10 +385,7 @@ class AsyncCrawler:
                 continue
             source_id = owner.id
             if source_id != row["source_id"]:
-                self.store.db.execute(
-                    "UPDATE frontier SET source_id=? WHERE url=?",
-                    (source_id, row["url"]),
-                )
+                self.store.set_frontier_source(row["url"], source_id)
             if source_id not in self.sources:
                 continue
             if self.options.max_depth and int(row["depth"] or 0) > self.options.max_depth:
@@ -372,9 +401,7 @@ class AsyncCrawler:
             if low_value:
                 self.store.mark_filtered(row["url"], reason)
                 continue
-            saved = self.store.db.execute(
-                "SELECT value_score,page_kind FROM pages WHERE url=?", (row["url"],)
-            ).fetchone()
+            saved = self.store.page_snapshot(row["url"])
             if (
                 self.options.incremental
                 and int(row["depth"] or 0) > 0
@@ -413,10 +440,7 @@ class AsyncCrawler:
                 # Seed URLs are given a fair turn before the legacy backlog.
                 if row["depth"] == 0 and not row["discovered_from"]:
                     priority = max(500, priority)
-                self.store.db.execute(
-                    "UPDATE frontier SET priority=? WHERE url=?",
-                    (priority, row["url"]),
-                )
+                self.store.set_frontier_priority(row["url"], priority)
             await self._queue_existing(
                 row["url"],
                 source_id,
@@ -424,7 +448,6 @@ class AsyncCrawler:
                 row["discovered_from"] or "",
                 priority,
             )
-        self.store.db.commit()
 
     async def _download_images(self, article, source_page_url: str) -> None:
         if not self.options.download_images:
@@ -648,6 +671,10 @@ class AsyncCrawler:
             self.articles += 1
             if not refresh_existing_before_cutoff:
                 await self._download_images(article, response.final_url)
+            self.store.save_article_and_enqueue_for_sync(
+                article,
+                run_id=self.sync_run_id if self.sync_run_started else None,
+            )
         should_follow = (
             depth == 0
             or result.value_score >= self.options.min_value_score
@@ -683,19 +710,40 @@ class AsyncCrawler:
 
     async def run(self) -> dict[str, int]:
         self.prepare()
-        await self._seed_queue()
-        workers = [
-            asyncio.create_task(self._worker()) for _ in range(max(1, self.options.concurrency))
-        ]
-        await self.queue.join()
-        await asyncio.gather(*workers)
-        return {
-            "processed": self.processed,
-            "articles": self.articles,
-            "media": self.media,
-            "errors": self.errors,
-            **self.store.stats(),
-        }
+        try:
+            await self._seed_queue()
+            workers = [
+                asyncio.create_task(self._worker()) for _ in range(max(1, self.options.concurrency))
+            ]
+            await self.queue.join()
+            await asyncio.gather(*workers)
+            result = {
+                "processed": self.processed,
+                "articles": self.articles,
+                "media": self.media,
+                "errors": self.errors,
+                **self.store.stats(),
+            }
+            self.store.finish_sync_run(
+                self.sync_run_id,
+                status="completed",
+                pages=self.processed,
+                articles=self.articles,
+                media=self.media,
+                errors=self.errors,
+            )
+            return result
+        except Exception as exc:
+            self.store.finish_sync_run(
+                self.sync_run_id,
+                status="failed",
+                pages=self.processed,
+                articles=self.articles,
+                media=self.media,
+                errors=self.errors + 1,
+                last_error=f"{type(exc).__name__}: {exc}",
+            )
+            raise
 
 
 def run_crawl(options: CrawlOptions) -> dict[str, int]:

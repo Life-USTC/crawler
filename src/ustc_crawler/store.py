@@ -3,16 +3,24 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
-import sqlite3
 from collections.abc import Iterable
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
 from .canonicalize import host_matches, looks_like_asset, normalize_url
+from .db import ALEMBIC_HEAD, Database, upgrade_database
+from .db.core import CoreConnection, RowMapping
+from .db.models import Article, ArticleMedia, Asset, Frontier, Media, Page, Source, SyncRun
 from .models import ArticleDocument, ImageRef, PageDocument, SourceConfig
+from .publication import CLASSIFIER_VERSION, classify_publication
 from .scoring import url_priority
+from .sync.models import build_publication
+from .sync.outbox import IngestionOutbox, spool_article_objects, wire_manifest
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -39,144 +47,28 @@ class Store:
         self.data_dir = Path(data_dir) if data_dir else self.db_path.parent
         for child in ("pages", "media", "articles", "assets", "exports"):
             (self.data_dir / child).mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(self.db_path)
-        self.db.row_factory = sqlite3.Row
-        self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.execute("PRAGMA foreign_keys=ON")
-        self._schema()
+        # A missing/empty file is safe to initialize.  Existing databases must
+        # be upgraded explicitly with ``ustc-crawler db-upgrade`` so opening a
+        # read/report command can never mutate a user's database unexpectedly.
+        if not self.db_path.exists() or self.db_path.stat().st_size == 0:
+            upgrade_database(self.db_path)
+        self.database = Database(self.db_path, create_schema=False)
+        self.database.assert_schema_head(ALEMBIC_HEAD)
+        self._core = CoreConnection(self.database.engine)
 
     def close(self) -> None:
-        self.db.close()
-
-    def _schema(self) -> None:
-        self.db.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS sources (
-              id TEXT PRIMARY KEY, name TEXT NOT NULL, organization_level TEXT NOT NULL,
-              allowed_hosts TEXT NOT NULL, blocked_hosts TEXT NOT NULL DEFAULT '[]',
-              seed_urls TEXT NOT NULL, aliases TEXT NOT NULL DEFAULT '[]',
-              discovery_only INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS frontier (
-              url TEXT PRIMARY KEY, source_id TEXT NOT NULL, depth INTEGER NOT NULL DEFAULT 0,
-              discovered_from TEXT, status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
-              last_error TEXT, discovered_at TEXT NOT NULL, fetched_at TEXT,
-              priority INTEGER NOT NULL DEFAULT 0,
-              FOREIGN KEY(source_id) REFERENCES sources(id)
-            );
-            CREATE TABLE IF NOT EXISTS pages (
-              url TEXT PRIMARY KEY, source_id TEXT NOT NULL, final_url TEXT, status INTEGER NOT NULL,
-              content_type TEXT, fetched_at TEXT NOT NULL, depth INTEGER NOT NULL DEFAULT 0,
-              discovered_from TEXT, sha256 TEXT, raw_path TEXT, title TEXT, canonical_url TEXT,
-              error TEXT, blocked_by_robots INTEGER NOT NULL DEFAULT 0,
-              page_kind TEXT NOT NULL DEFAULT 'unknown', access_mode TEXT NOT NULL DEFAULT 'unknown',
-              value_score INTEGER NOT NULL DEFAULT 0, value_tier TEXT NOT NULL DEFAULT 'not_indexed',
-              score_reasons TEXT NOT NULL DEFAULT '[]', published_at TEXT, duplicate_of TEXT,
-              FOREIGN KEY(source_id) REFERENCES sources(id)
-            );
-            CREATE INDEX IF NOT EXISTS pages_source_idx ON pages(source_id, fetched_at);
-            CREATE TABLE IF NOT EXISTS links (
-              source_url TEXT NOT NULL, target_url TEXT NOT NULL, source_id TEXT NOT NULL,
-              kind TEXT NOT NULL DEFAULT 'page', discovered_at TEXT NOT NULL,
-              PRIMARY KEY(source_url, target_url), FOREIGN KEY(source_id) REFERENCES sources(id)
-            );
-            CREATE TABLE IF NOT EXISTS article_hints (
-              url TEXT PRIMARY KEY, published_at TEXT, source_url TEXT, updated_at TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS articles (
-              url TEXT PRIMARY KEY, source_id TEXT NOT NULL, title TEXT, author TEXT,
-              published_at TEXT, updated_at TEXT, category TEXT, summary TEXT, body_html TEXT,
-              body_text TEXT, body_markdown TEXT, extraction_method TEXT, source_page_url TEXT,
-              raw_json TEXT, content_hash TEXT, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL,
-              FOREIGN KEY(source_id) REFERENCES sources(id)
-            );
-            CREATE INDEX IF NOT EXISTS articles_date_idx ON articles(published_at);
-            CREATE TABLE IF NOT EXISTS media (
-              url TEXT PRIMARY KEY, article_url TEXT, source_page_url TEXT, local_path TEXT,
-              mime_type TEXT, sha256 TEXT, size INTEGER NOT NULL DEFAULT 0, alt TEXT, title TEXT,
-              caption TEXT, status TEXT NOT NULL, error TEXT, fetched_at TEXT,
-              FOREIGN KEY(article_url) REFERENCES articles(url)
-            );
-            CREATE TABLE IF NOT EXISTS article_media (
-              article_url TEXT NOT NULL, image_url TEXT NOT NULL, local_path TEXT,
-              alt TEXT, title TEXT, caption TEXT, created_at TEXT NOT NULL,
-              PRIMARY KEY(article_url, image_url), FOREIGN KEY(article_url) REFERENCES articles(url),
-              FOREIGN KEY(image_url) REFERENCES media(url)
-            );
-            CREATE TABLE IF NOT EXISTS assets (
-              url TEXT PRIMARY KEY, source_url TEXT NOT NULL, local_path TEXT, mime_type TEXT,
-              sha256 TEXT, size INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, error TEXT,
-              fetched_at TEXT, page_kind TEXT NOT NULL DEFAULT 'document', access_mode TEXT NOT NULL DEFAULT 'unknown',
-              value_score INTEGER NOT NULL DEFAULT 0, score_reasons TEXT NOT NULL DEFAULT '[]'
-            );
-            CREATE TABLE IF NOT EXISTS runs (
-              id INTEGER PRIMARY KEY AUTOINCREMENT, started_at TEXT NOT NULL, finished_at TEXT,
-              pages INTEGER NOT NULL DEFAULT 0, articles INTEGER NOT NULL DEFAULT 0,
-              media INTEGER NOT NULL DEFAULT 0, errors INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS failures (
-              id INTEGER PRIMARY KEY AUTOINCREMENT, url TEXT NOT NULL, source_id TEXT NOT NULL,
-              error TEXT NOT NULL, status INTEGER, attempts INTEGER NOT NULL DEFAULT 1,
-              last_seen TEXT NOT NULL
-            );
-            """
-        )
-        columns = {row[1] for row in self.db.execute("PRAGMA table_info(sources)")}
-        if "blocked_hosts" not in columns:
-            self.db.execute("ALTER TABLE sources ADD COLUMN blocked_hosts TEXT NOT NULL DEFAULT '[]'")
-        frontier_columns = {row[1] for row in self.db.execute("PRAGMA table_info(frontier)")}
-        if "priority" not in frontier_columns:
-            self.db.execute("ALTER TABLE frontier ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
-        page_columns = {row[1] for row in self.db.execute("PRAGMA table_info(pages)")}
-        page_migrations = {
-            "page_kind": "TEXT NOT NULL DEFAULT 'unknown'",
-            "access_mode": "TEXT NOT NULL DEFAULT 'unknown'",
-            "value_score": "INTEGER NOT NULL DEFAULT 0",
-            "value_tier": "TEXT NOT NULL DEFAULT 'not_indexed'",
-            "score_reasons": "TEXT NOT NULL DEFAULT '[]'",
-            "published_at": "TEXT",
-            "duplicate_of": "TEXT",
-        }
-        for name, definition in page_migrations.items():
-            if name not in page_columns:
-                self.db.execute(f"ALTER TABLE pages ADD COLUMN {name} {definition}")
-        asset_columns = {row[1] for row in self.db.execute("PRAGMA table_info(assets)")}
-        asset_migrations = {
-            "page_kind": "TEXT NOT NULL DEFAULT 'document'",
-            "access_mode": "TEXT NOT NULL DEFAULT 'unknown'",
-            "value_score": "INTEGER NOT NULL DEFAULT 0",
-            "score_reasons": "TEXT NOT NULL DEFAULT '[]'",
-        }
-        for name, definition in asset_migrations.items():
-            if name not in asset_columns:
-                self.db.execute(f"ALTER TABLE assets ADD COLUMN {name} {definition}")
-        # Existing crawls predate priority ordering.  Backfill it once so a
-        # resumed run immediately starts with guest bootstrap/news/resource
-        # URLs instead of replaying the old depth-first order.
-        for row in self.db.execute(
-            "SELECT url,source_id,discovered_from FROM frontier WHERE priority=0"
-        ).fetchall():
-            self.db.execute(
-                "UPDATE frontier SET priority=? WHERE url=?",
-                (url_priority(row["url"], row["source_id"], row["discovered_from"] or ""), row["url"]),
-            )
-        self.db.execute("CREATE INDEX IF NOT EXISTS pages_value_idx ON pages(value_score DESC, fetched_at)")
-        self.db.execute(
-            "CREATE INDEX IF NOT EXISTS frontier_priority_idx ON frontier(status, priority DESC, depth, discovered_at)"
-        )
-        self.db.execute(
-            "CREATE INDEX IF NOT EXISTS frontier_pending_idx ON frontier(status, priority DESC, depth, discovered_at)"
-        )
-        self.db.commit()
+        self._core.close()
+        self.database.close()
 
     def add_source(self, source: SourceConfig) -> None:
-        self.db.execute(
-            """INSERT INTO sources(id,name,organization_level,allowed_hosts,blocked_hosts,seed_urls,aliases,discovery_only,created_at)
-               VALUES(?,?,?,?,?,?,?,?,?)
+        self._core.execute(
+            """INSERT INTO sources(id,name,organization_level,allowed_hosts,blocked_hosts,seed_urls,aliases,discovery_only,max_images_per_page,created_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET name=excluded.name,
                  organization_level=excluded.organization_level, allowed_hosts=excluded.allowed_hosts,
                  blocked_hosts=excluded.blocked_hosts,
-                 seed_urls=excluded.seed_urls, aliases=excluded.aliases, discovery_only=excluded.discovery_only""",
+                 seed_urls=excluded.seed_urls, aliases=excluded.aliases, discovery_only=excluded.discovery_only,
+                 max_images_per_page=excluded.max_images_per_page""",
             (
                 source.id,
                 source.name,
@@ -186,14 +78,36 @@ class Store:
                 json.dumps(source.seed_urls, ensure_ascii=False),
                 json.dumps(source.aliases, ensure_ascii=False),
                 int(source.discovery_only),
+                source.max_images_per_page,
                 utc_now(),
             ),
         )
-        self.db.commit()
+        self._core.commit()
 
     def add_sources(self, sources: Iterable[SourceConfig]) -> None:
         for source in sources:
             self.add_source(source)
+
+    def source_descriptor(self, source_id: str):
+        """Return the persisted source snapshot used by ingestion batches."""
+
+        from .sync.models import PublicationSourceDescriptor
+
+        with self.database.session_factory() as session:
+            row = session.get(Source, source_id)
+            if row is None:
+                raise KeyError(source_id)
+            return PublicationSourceDescriptor(
+                id=row.id,
+                name=row.name,
+                organizationLevel=row.organization_level,
+                allowedHosts=json.loads(row.allowed_hosts),
+                blockedHosts=json.loads(row.blocked_hosts),
+                seedUrls=json.loads(row.seed_urls),
+                aliases=json.loads(row.aliases),
+                discoveryOnly=bool(row.discovery_only),
+                maxImagesPerPage=row.max_images_per_page,
+            )
 
     def enqueue(
         self,
@@ -205,14 +119,14 @@ class Store:
         *,
         revive_current: bool = False,
     ) -> bool:
-        cursor = self.db.execute(
+        cursor = self._core.execute(
             """INSERT OR IGNORE INTO frontier(url,source_id,depth,discovered_from,status,discovered_at,priority)
                VALUES(?,?,?,?, 'pending', ?, ?)""",
             (url, source_id, depth, discovered_from, utc_now(), priority),
         )
         inserted = cursor.rowcount > 0
         if not inserted and revive_current:
-            revived = self.db.execute(
+            revived = self._core.execute(
                 """UPDATE frontier SET source_id=?,depth=?,discovered_from=?,status='pending',
                    last_error='',priority=MAX(priority, ?)
                    WHERE url=? AND (
@@ -226,11 +140,11 @@ class Store:
             # A URL can first be discovered from a generic page and later from
             # a news/assignment page.  Keep the stronger priority while it is
             # still pending, without resetting a completed request.
-            self.db.execute(
+            self._core.execute(
                 "UPDATE frontier SET priority=MAX(priority, ?) WHERE url=? AND status='pending'",
                 (priority, url),
             )
-        self.db.commit()
+        self._core.commit()
         return inserted
 
     def enqueue_many(self, urls: Iterable[tuple[str, str, int, str]]) -> int:
@@ -240,9 +154,120 @@ class Store:
                 count += 1
         return count
 
+    def set_frontier_source(self, url: str, source_id: str) -> None:
+        """Update persisted URL ownership through the typed ORM layer."""
+
+        with self.database.session_factory.begin() as session:
+            row = session.get(Frontier, url)
+            if row is not None:
+                row.source_id = source_id
+
+    def set_frontier_priority(self, url: str, priority: int) -> None:
+        with self.database.session_factory.begin() as session:
+            row = session.get(Frontier, url)
+            if row is not None:
+                row.priority = priority
+
+    def page_snapshot(self, url: str) -> dict[str, Any] | None:
+        """Return the fields needed by crawl scheduling without raw SQL access."""
+
+        with self.database.session_factory() as session:
+            row = session.get(Page, url)
+            if row is None:
+                return None
+            return {
+                "value_score": row.value_score,
+                "page_kind": row.page_kind,
+                "access_mode": row.access_mode,
+            }
+
+    def article_media_records(self) -> list[dict[str, Any]]:
+        with self.database.session_factory() as session:
+            rows = session.scalars(
+                select(ArticleMedia).order_by(ArticleMedia.article_url, ArticleMedia.image_url)
+            ).all()
+            return [
+                {
+                    "article_url": row.article_url,
+                    "image_url": row.image_url,
+                    "alt": row.alt or "",
+                    "title": row.title or "",
+                    "caption": row.caption or "",
+                }
+                for row in rows
+            ]
+
+    def articles_without_media(self) -> list[dict[str, Any]]:
+        with self.database.session_factory() as session:
+            rows = session.scalars(
+                select(Article)
+                .outerjoin(ArticleMedia, ArticleMedia.article_url == Article.url)
+                .where(ArticleMedia.article_url.is_(None))
+                .order_by(Article.url)
+            ).all()
+            return [{"url": row.url, "content_hash": row.content_hash or ""} for row in rows]
+
+    def media_snapshot(self, url: str) -> dict[str, Any] | None:
+        with self.database.session_factory() as session:
+            row = session.get(Media, url)
+            if row is None:
+                return None
+            return {
+                "url": row.url,
+                "article_url": row.article_url or "",
+                "source_page_url": row.source_page_url or "",
+                "local_path": row.local_path or "",
+                "status": row.status,
+            }
+
+    def start_sync_run(
+        self,
+        run_id: str,
+        *,
+        mode: str,
+        source_config_revision: str = "",
+        digest: str | None = None,
+        started_at: str | None = None,
+    ) -> None:
+        now = started_at or utc_now()
+        with self.database.session_factory.begin() as session:
+            session.add(
+                SyncRun(
+                    id=run_id,
+                    started_at=now,
+                    mode=mode,
+                    source_config_revision=source_config_revision,
+                    digest=digest,
+                    status="running",
+                )
+            )
+
+    def finish_sync_run(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        pages: int = 0,
+        articles: int = 0,
+        media: int = 0,
+        errors: int = 0,
+        last_error: str = "",
+    ) -> None:
+        with self.database.session_factory.begin() as session:
+            run = session.get(SyncRun, run_id)
+            if run is None:
+                raise KeyError(run_id)
+            run.finished_at = utc_now()
+            run.status = status
+            run.pages = pages
+            run.articles = articles
+            run.media = media
+            run.errors = errors
+            run.last_error = last_error or None
+
     def reset_processing(self) -> None:
-        self.db.execute("UPDATE frontier SET status='pending' WHERE status='processing'")
-        self.db.commit()
+        self._core.execute("UPDATE frontier SET status='pending' WHERE status='processing'")
+        self._core.commit()
 
     def reset_seeds_and_listings(self, source_ids: set[str]) -> int:
         """Re-enqueue seed URLs and news/course listing pages for incremental recrawl.
@@ -260,7 +285,7 @@ class Store:
         # A previously interrupted incremental run may have left thousands of
         # already-fetched archive pagination pages pending. Restore those deep
         # listings before resetting the current channel pages.
-        self.db.execute(
+        self._core.execute(
             f"""UPDATE frontier SET status='done', last_error=NULL
                 WHERE source_id IN ({placeholders})
                   AND status='pending'
@@ -274,7 +299,7 @@ class Store:
         )
         # Reset seeds and shallow listing/channel pages. Depth three covers a
         # seed -> section -> listing -> first pagination-page traversal.
-        self.db.execute(
+        self._core.execute(
             f"""UPDATE frontier SET status='pending'
                 WHERE source_id IN ({placeholders})
                   AND status IN ('done','error','filtered')
@@ -286,10 +311,10 @@ class Store:
                   ))""",
             params + params,
         )
-        self.db.commit()
-        return self.db.total_changes
+        self._core.commit()
+        return self._core.total_changes
 
-    def pending(self, source_id: str | None = None, limit: int = 0) -> list[sqlite3.Row]:
+    def pending(self, source_id: str | None = None, limit: int = 0) -> list[RowMapping]:
         clauses = ["status='pending'"]
         params: list[Any] = []
         if source_id:
@@ -298,23 +323,23 @@ class Store:
         limit_sql = " LIMIT ?" if limit else ""
         if limit:
             params.append(limit)
-        return self.db.execute(
+        return self._core.execute(
             f"SELECT * FROM frontier WHERE {' AND '.join(clauses)} ORDER BY priority DESC, depth, discovered_at{limit_sql}",
             params,
         ).fetchall()
 
     def mark_filtered(self, url: str, reason: str) -> None:
-        self.db.execute(
+        self._core.execute(
             "UPDATE frontier SET status='filtered', last_error=?, fetched_at=? WHERE url=?",
             (reason, utc_now(), url),
         )
-        self.db.commit()
+        self._core.commit()
 
     def filter_frontier(self, min_value_score: int = 16) -> dict[str, int]:
         """Batch-filter pending boilerplate and already-audited low-value URLs."""
-        from .scoring import is_obvious_low_value_url, url_priority
+        from .scoring import is_obvious_low_value_url
 
-        rows = self.db.execute(
+        rows = self._core.execute(
             "SELECT url,source_id,depth,discovered_from FROM frontier WHERE status='pending'"
         ).fetchall()
         filtered: list[tuple[str, str]] = []
@@ -328,7 +353,7 @@ class Store:
             if low_value:
                 filtered.append((reason, url))
                 continue
-            saved = self.db.execute(
+            saved = self._core.execute(
                 "SELECT value_score,page_kind FROM pages WHERE url=?", (url,)
             ).fetchone()
             if int(row["depth"] or 0) > 0 and saved and int(saved["value_score"] or 0) < min_value_score:
@@ -340,27 +365,27 @@ class Store:
                 (url_priority(url, row["source_id"], row["discovered_from"] or ""), url)
             )
         if filtered:
-            self.db.executemany(
+            self._core.executemany(
                 "UPDATE frontier SET status='filtered',last_error=?,fetched_at=? WHERE url=?",
                 [(reason, utc_now(), url) for reason, url in filtered],
             )
         if priority_updates:
-            self.db.executemany("UPDATE frontier SET priority=? WHERE url=?", priority_updates)
-        self.db.commit()
+            self._core.executemany("UPDATE frontier SET priority=? WHERE url=?", priority_updates)
+        self._core.commit()
         return {"checked": len(rows), "filtered": len(filtered), "reprioritized": len(priority_updates)}
 
     def mark_processing(self, url: str) -> None:
-        self.db.execute(
+        self._core.execute(
             "UPDATE frontier SET status='processing', attempts=attempts+1 WHERE url=?", (url,)
         )
-        self.db.commit()
+        self._core.commit()
 
     def mark_done(self, url: str, error: str = "") -> None:
-        self.db.execute(
+        self._core.execute(
             "UPDATE frontier SET status=?, last_error=?, fetched_at=? WHERE url=?",
             ("error" if error else "done", error, utc_now(), url),
         )
-        self.db.commit()
+        self._core.commit()
 
     def save_page(
         self, page: PageDocument, source_id: str, depth: int, discovered_from: str = ""
@@ -383,10 +408,10 @@ class Store:
         if page.status == 200 and page.html and page.article is None:
             old_urls = {page.requested_url, page.final_url, page.canonical_url}
             for old_url in filter(None, old_urls):
-                self.db.execute("DELETE FROM article_media WHERE article_url=?", (old_url,))
-                self.db.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (old_url,))
-                self.db.execute("DELETE FROM articles WHERE url=?", (old_url,))
-        self.db.execute(
+                self._core.execute("DELETE FROM article_media WHERE article_url=?", (old_url,))
+                self._core.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (old_url,))
+                self._core.execute("DELETE FROM articles WHERE url=?", (old_url,))
+        self._core.execute(
             """INSERT INTO pages(url,source_id,final_url,status,content_type,fetched_at,depth,discovered_from,
                sha256,raw_path,title,canonical_url,error,blocked_by_robots,page_kind,access_mode,
                value_score,value_tier,score_reasons,published_at,duplicate_of)
@@ -423,7 +448,7 @@ class Store:
                 page.duplicate_of,
             ),
         )
-        self.db.commit()
+        self._core.commit()
         return raw_path
 
     def duplicate_page_url(
@@ -443,7 +468,7 @@ class Store:
             if prefer_article
             else ""
         )
-        row = self.db.execute(
+        row = self._core.execute(
             f"""SELECT p.url FROM pages p WHERE p.sha256=? {article_clause}
                 ORDER BY p.fetched_at,p.url LIMIT 1""",
             (digest,),
@@ -473,7 +498,7 @@ class Store:
             local_path.parent.mkdir(parents=True, exist_ok=True)
             if not local_path.exists():
                 local_path.write_bytes(body)
-        self.db.execute(
+        self._core.execute(
             """INSERT INTO assets(url,source_url,local_path,mime_type,sha256,size,status,error,fetched_at,
                page_kind,access_mode,value_score,score_reasons)
                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -498,11 +523,11 @@ class Store:
                 json.dumps(score_reasons or [], ensure_ascii=False),
             ),
         )
-        self.db.commit()
+        self._core.commit()
         return local_path
 
     def update_page_score(self, url: str, score: Any) -> None:
-        self.db.execute(
+        self._core.execute(
             """UPDATE pages SET page_kind=?,access_mode=?,value_score=?,value_tier=?,score_reasons=?,published_at=?
                WHERE url=?""",
             (
@@ -515,39 +540,42 @@ class Store:
                 url,
             ),
         )
-        self.db.commit()
+        self._core.commit()
 
     def save_links(self, source_url: str, source_id: str, links: Iterable[tuple[str, str]]) -> None:
-        self.db.executemany(
+        values = [(source_url, target, source_id, kind, utc_now()) for target, kind in links]
+        if not values:
+            return
+        self._core.executemany(
             "INSERT OR IGNORE INTO links(source_url,target_url,source_id,kind,discovered_at) VALUES(?,?,?,?,?)",
-            [(source_url, target, source_id, kind, utc_now()) for target, kind in links],
+            values,
         )
-        self.db.commit()
+        self._core.commit()
 
     def save_article_hint(self, url: str, published_at: str, source_url: str) -> None:
-        self.db.execute(
+        self._core.execute(
             """INSERT INTO article_hints(url,published_at,source_url,updated_at) VALUES(?,?,?,?)
                ON CONFLICT(url) DO UPDATE SET published_at=excluded.published_at,
                source_url=excluded.source_url,updated_at=excluded.updated_at""",
             (url, published_at, source_url, utc_now()),
         )
-        self.db.commit()
+        self._core.commit()
 
     def article_hint(self, url: str) -> str:
-        row = self.db.execute(
+        row = self._core.execute(
             "SELECT published_at FROM article_hints WHERE url=?", (url,)
         ).fetchone()
         return str(row[0]) if row and row[0] else ""
 
     def article_exists(self, url: str) -> bool:
         return (
-            self.db.execute("SELECT 1 FROM articles WHERE url=?", (url,)).fetchone()
+            self._core.execute("SELECT 1 FROM articles WHERE url=?", (url,)).fetchone()
             is not None
         )
 
     def article_alias_exists(self, url: str) -> bool:
         return (
-            self.db.execute(
+            self._core.execute(
                 """SELECT 1
                    FROM pages p JOIN articles a
                      ON a.url=p.url OR a.url=p.final_url
@@ -561,7 +589,7 @@ class Store:
     def needs_current_article_repair(self, url: str) -> bool:
         if self.article_exists(url) or self.article_alias_exists(url):
             return False
-        page = self.db.execute(
+        page = self._core.execute(
             "SELECT access_mode,page_kind FROM pages WHERE url=?", (url,)
         ).fetchone()
         return page is None or (
@@ -570,41 +598,163 @@ class Store:
         )
 
     def save_article(self, article: ArticleDocument) -> str:
+        # Reindexing can stage Core deletes before replacing the ORM row.  End
+        # that Core transaction before the single pooled engine connection is
+        # borrowed by the ORM session.
+        self._core.commit()
         content_hash = sha256_bytes(article.body_text.encode("utf-8", errors="replace"))
         now = utc_now()
-        self.db.execute(
-            """INSERT INTO articles(url,source_id,title,author,published_at,updated_at,category,summary,body_html,
-               body_text,body_markdown,extraction_method,source_page_url,raw_json,content_hash,first_seen,last_seen)
-               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(url) DO UPDATE SET source_id=excluded.source_id,title=excluded.title,
-               author=excluded.author,published_at=excluded.published_at,updated_at=excluded.updated_at,
-               category=excluded.category,summary=excluded.summary,body_html=excluded.body_html,
-               body_text=excluded.body_text,body_markdown=excluded.body_markdown,
-               extraction_method=excluded.extraction_method,source_page_url=excluded.source_page_url,
-               raw_json=excluded.raw_json,content_hash=excluded.content_hash,last_seen=excluded.last_seen""",
-            (
-                article.url,
-                article.source_id,
-                article.title,
-                article.author,
-                article.published_at,
-                article.updated_at,
-                article.category,
-                article.summary,
-                article.body_html,
-                article.body_text,
-                article.body_markdown,
-                article.extraction_method,
-                article.source_page_url,
-                json.dumps(article.raw_metadata, ensure_ascii=False),
-                content_hash,
-                now,
-                now,
-            ),
+        publication_type = classify_publication(
+            url=article.url,
+            source_id=article.source_id,
+            title=article.title,
+            category=article.category,
+            source_page_url=article.source_page_url,
         )
-        self.db.commit()
+        article.publication_type = publication_type
+        article.classifier_version = CLASSIFIER_VERSION
+        with self.database.session_factory.begin() as session:
+            self._save_article_record(session, article, content_hash, now)
         self.write_article_bundle(article, content_hash)
         return content_hash
+
+    @staticmethod
+    def _save_article_record(
+        session: Session,
+        article: ArticleDocument,
+        content_hash: str,
+        now: str,
+    ) -> None:
+        raw_json = json.dumps(article.raw_metadata, ensure_ascii=False)
+        record = session.get(Article, article.url)
+        if record is None:
+            record = Article(
+                url=article.url,
+                source_id=article.source_id,
+                first_seen=now,
+                last_seen=now,
+            )
+            session.add(record)
+        else:
+            record.last_seen = now
+        record.source_id = article.source_id
+        record.title = article.title
+        record.author = article.author
+        record.published_at = article.published_at
+        record.updated_at = article.updated_at
+        record.category = article.category
+        record.summary = article.summary
+        record.body_html = article.body_html
+        record.body_text = article.body_text
+        record.body_markdown = article.body_markdown
+        record.extraction_method = article.extraction_method
+        record.source_page_url = article.source_page_url
+        record.raw_json = raw_json
+        record.content_hash = content_hash
+        record.publication_type = article.publication_type or classify_publication(
+            url=article.url,
+            source_id=article.source_id,
+            title=article.title,
+            category=article.category,
+            source_page_url=article.source_page_url,
+        )
+        record.classifier_version = article.classifier_version or CLASSIFIER_VERSION
+
+    def save_article_and_enqueue_for_sync(
+        self,
+        article: ArticleDocument,
+        *,
+        run_id: str | None = None,
+    ) -> str:
+        """Snapshot spool objects and write the article/event in one UoW."""
+
+        self._core.commit()
+        content_hash = sha256_bytes(article.body_text.encode("utf-8", errors="replace"))
+        publication_type = classify_publication(
+            url=article.url,
+            source_id=article.source_id,
+            title=article.title,
+            category=article.category,
+            source_page_url=article.source_page_url,
+        )
+        article.publication_type = publication_type
+        article.classifier_version = CLASSIFIER_VERSION
+        media_paths = self.media_paths_for_article(article.url)
+        asset_paths = self.asset_paths_for_article(article.url, article.source_page_url)
+        local_objects = spool_article_objects(
+            article,
+            self.data_dir,
+            media_paths=media_paths,
+            asset_paths=asset_paths,
+        )
+        publication = build_publication(
+            article,
+            objects=[wire_manifest(item) for item in local_objects],
+        )
+        source = self.source_descriptor(article.source_id)
+        self.write_article_bundle(article, content_hash)
+        now = utc_now()
+        outbox = IngestionOutbox(self.database)
+        with self.database.session_factory.begin() as session:
+            self._save_article_record(session, article, content_hash, now)
+            outbox.enqueue_publication_in_session(
+                session,
+                publication,
+                source=source,
+                local_objects=local_objects,
+                run_id=run_id,
+            )
+        return content_hash
+
+    def enqueue_article_for_sync(
+        self,
+        article: ArticleDocument,
+        *,
+        run_id: str | None = None,
+    ) -> str:
+        """Snapshot an article and its local objects into the durable outbox."""
+
+        media_paths = self.media_paths_for_article(article.url)
+        asset_paths = self.asset_paths_for_article(article.url, article.source_page_url)
+        return IngestionOutbox(self.database).enqueue_article(
+            article,
+            self.data_dir,
+            source=self.source_descriptor(article.source_id),
+            media_paths=media_paths,
+            asset_paths=asset_paths,
+            run_id=run_id,
+        )
+
+    def media_paths_for_article(self, article_url: str) -> dict[str, tuple[str, str]]:
+        with self.database.session_factory() as session:
+            rows = session.scalars(select(Media).where(Media.article_url == article_url)).all()
+            return {
+                str(row.url): (str(row.local_path), str(row.mime_type or "application/octet-stream"))
+                for row in rows
+                if row.local_path and Path(row.local_path).is_file()
+            }
+
+    def asset_paths_for_article(
+        self,
+        article_url: str,
+        source_page_url: str = "",
+    ) -> dict[str, tuple[str, str]]:
+        """Return only downloaded linked assets for one article snapshot."""
+
+        source_urls = {value for value in (article_url, source_page_url) if value}
+        if not source_urls:
+            return {}
+        with self.database.session_factory() as session:
+            rows = session.scalars(
+                select(Asset)
+                .where(Asset.source_url.in_(source_urls), Asset.status == "ok")
+                .order_by(Asset.url)
+            ).all()
+            return {
+                str(row.url): (str(row.local_path), str(row.mime_type or "application/octet-stream"))
+                for row in rows
+                if row.local_path and Path(row.local_path).is_file()
+            }
 
     def write_article_bundle(
         self, article: ArticleDocument, content_hash: str | None = None
@@ -650,7 +800,7 @@ class Store:
     def rebuild_article_bundles(self) -> dict[str, int]:
         """Rebuild every URL-specific JSON/HTML article archive from SQLite."""
         images_by_article: dict[str, list[ImageRef]] = {}
-        for row in self.db.execute(
+        for row in self._core.execute(
             """SELECT article_url,image_url,alt,title,caption
                FROM article_media ORDER BY article_url,created_at,image_url"""
         ):
@@ -664,7 +814,7 @@ class Store:
                 )
             )
         rebuilt = 0
-        for row in self.db.execute("SELECT * FROM articles ORDER BY url"):
+        for row in self._core.execute("SELECT * FROM articles ORDER BY url"):
             try:
                 raw_metadata = json.loads(row["raw_json"] or "{}")
             except json.JSONDecodeError:
@@ -713,7 +863,7 @@ class Store:
             local_path.parent.mkdir(parents=True, exist_ok=True)
             if not local_path.exists():
                 local_path.write_bytes(body)
-        self.db.execute(
+        self._core.execute(
             """INSERT INTO media(url,article_url,source_page_url,local_path,mime_type,sha256,size,alt,title,caption,status,error,fetched_at)
                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(url) DO UPDATE SET article_url=excluded.article_url,source_page_url=excluded.source_page_url,
@@ -736,7 +886,7 @@ class Store:
                 utc_now(),
             ),
         )
-        self.db.execute(
+        self._core.execute(
             """INSERT INTO article_media(article_url,image_url,local_path,alt,title,caption,created_at)
                VALUES(?,?,?,?,?,?,?) ON CONFLICT(article_url,image_url) DO UPDATE SET
                local_path=excluded.local_path,alt=excluded.alt,title=excluded.title,
@@ -751,17 +901,17 @@ class Store:
                 utc_now(),
             ),
         )
-        self.db.commit()
+        self._core.commit()
         return local_path
 
     def link_media(self, image: ImageRef, article_url: str, source_page_url: str = "") -> None:
         """Attach an already stored media URL to another article reference."""
-        row = self.db.execute(
+        row = self._core.execute(
             "SELECT local_path FROM media WHERE url=?", (image.url,)
         ).fetchone()
         if not row:
             return
-        self.db.execute(
+        self._core.execute(
             """INSERT INTO article_media(article_url,image_url,local_path,alt,title,caption,created_at)
                VALUES(?,?,?,?,?,?,?) ON CONFLICT(article_url,image_url) DO UPDATE SET
                local_path=excluded.local_path,alt=excluded.alt,title=excluded.title,
@@ -776,7 +926,7 @@ class Store:
                 utc_now(),
             ),
         )
-        self.db.commit()
+        self._core.commit()
 
     def _blocked_host_article_urls(
         self, source_id: str | None = None
@@ -787,7 +937,7 @@ class Store:
         if source_id:
             where = "WHERE id=?"
             params.append(source_id)
-        rows = self.db.execute(
+        rows = self._core.execute(
             f"SELECT id, blocked_hosts FROM sources {where}", params
         ).fetchall()
         results: list[tuple[str, str, str]] = []
@@ -796,7 +946,7 @@ class Store:
             blocked = json.loads(source_row["blocked_hosts"] or "[]")
             if not blocked:
                 continue
-            article_rows = self.db.execute(
+            article_rows = self._core.execute(
                 "SELECT url FROM articles WHERE source_id=?", (sid,)
             ).fetchall()
             for article_row in article_rows:
@@ -823,26 +973,26 @@ class Store:
         urls = {url for url, _, _ in candidates}
         if commit and urls:
             for url in urls:
-                self.db.execute("DELETE FROM article_media WHERE article_url=?", (url,))
-                self.db.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (url,))
-                removed += self.db.execute("DELETE FROM articles WHERE url=?", (url,)).rowcount
-            self.db.commit()
+                self._core.execute("DELETE FROM article_media WHERE article_url=?", (url,))
+                self._core.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (url,))
+                removed += self._core.execute("DELETE FROM articles WHERE url=?", (url,)).rowcount
+            self._core.commit()
         return {
             "candidate_urls": len(urls),
             "removed_articles": removed if commit else 0,
             "dry_run": not commit,
         }
 
-    def _orphan_media_rows(self) -> list[sqlite3.Row]:
+    def _orphan_media_rows(self) -> list[RowMapping]:
         """Return media rows with no article_media relationship."""
-        return self.db.execute(
+        return self._core.execute(
             """SELECT m.url, m.article_url, m.local_path, m.status
                FROM media m
                LEFT JOIN article_media am ON am.image_url=m.url
                WHERE am.image_url IS NULL"""
         ).fetchall()
 
-    def _relink_orphan_media(self, rows: list[sqlite3.Row]) -> tuple[int, int]:
+    def _relink_orphan_media(self, rows: list[RowMapping]) -> tuple[int, int]:
         """Try to reconnect orphan media rows to their article bundles.
 
         Returns (relinked_count, dangling_count) where dangling means the
@@ -854,12 +1004,12 @@ class Store:
             article_url = row["article_url"] or ""
             if not article_url:
                 continue
-            article_row = self.db.execute(
+            article_row = self._core.execute(
                 "SELECT 1 FROM articles WHERE url=?", (article_url,)
             ).fetchone()
             if not article_row:
                 dangling += 1
-                self.db.execute(
+                self._core.execute(
                     "UPDATE media SET article_url=NULL WHERE url=?", (row["url"],)
                 )
                 continue
@@ -891,7 +1041,7 @@ class Store:
                 break
         return relinked, dangling
 
-    def _orphan_media_breakdown(self, rows: list[sqlite3.Row]) -> dict[str, int]:
+    def _orphan_media_breakdown(self, rows: list[RowMapping]) -> dict[str, int]:
         """Categorize orphan media rows for reporting.
 
         - stale_linkage: article_url points to an existing article but the
@@ -908,7 +1058,7 @@ class Store:
             placeholders = ",".join("?" for _ in article_urls)
             existing = {
                 str(r[0])
-                for r in self.db.execute(
+                for r in self._core.execute(
                     f"SELECT url FROM articles WHERE url IN ({placeholders})",
                     tuple(article_urls),
                 ).fetchall()
@@ -946,9 +1096,9 @@ class Store:
             # After relinking, any row still without article_media is unreferenced.
             still_orphan = self._orphan_media_rows()
             for row in still_orphan:
-                self.db.execute("DELETE FROM media WHERE url=?", (row["url"],))
+                self._core.execute("DELETE FROM media WHERE url=?", (row["url"],))
                 deleted += 1
-            self.db.commit()
+            self._core.commit()
         return {
             "orphan_media": len(rows),
             **breakdown,
@@ -968,7 +1118,7 @@ class Store:
         the host allowlist was enforced.
         """
         host_to_source: dict[str, str] = {}
-        for row in self.db.execute("SELECT id, allowed_hosts FROM sources"):
+        for row in self._core.execute("SELECT id, allowed_hosts FROM sources"):
             sid = str(row["id"])
             for host in json.loads(row["allowed_hosts"] or "[]"):
                 host_to_source[str(host).lower().lstrip("*.")] = sid
@@ -978,7 +1128,7 @@ class Store:
         if source_id:
             where = "WHERE source_id=?"
             params.append(source_id)
-        rows = self.db.execute(
+        rows = self._core.execute(
             f"SELECT url, source_id FROM articles {where}", tuple(params)
         ).fetchall()
 
@@ -995,19 +1145,19 @@ class Store:
                     break
             if matched and matched != current:
                 if commit:
-                    self.db.execute(
+                    self._core.execute(
                         "UPDATE articles SET source_id=? WHERE url=?", (matched, url)
                     )
                 reassigned += 1
             elif not matched:
                 if commit:
-                    self.db.execute("DELETE FROM article_media WHERE article_url=?", (url,))
-                    self.db.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (url,))
-                    deleted += self.db.execute("DELETE FROM articles WHERE url=?", (url,)).rowcount
+                    self._core.execute("DELETE FROM article_media WHERE article_url=?", (url,))
+                    self._core.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (url,))
+                    deleted += self._core.execute("DELETE FROM articles WHERE url=?", (url,)).rowcount
                 else:
                     deleted += 1
         if commit and (reassigned or deleted):
-            self.db.commit()
+            self._core.commit()
         return {
             "scanned": len(rows),
             "reassigned": reassigned,
@@ -1033,7 +1183,7 @@ class Store:
         for sid, cap in source_caps.items():
             if cap <= 0:
                 continue
-            rows = self.db.execute(
+            rows = self._core.execute(
                 """
                 SELECT a.url AS article_url, a.content_hash
                 FROM articles a
@@ -1048,7 +1198,7 @@ class Store:
                 article_url = row["article_url"]
                 # Keep the first ``cap`` rows ordered by creation time; this
                 # mirrors the original extraction order.
-                to_delete = self.db.execute(
+                to_delete = self._core.execute(
                     """
                     SELECT image_url FROM article_media
                     WHERE article_url=?
@@ -1060,11 +1210,11 @@ class Store:
                 removed_urls = {str(del_row["image_url"]) for del_row in to_delete}
                 for del_row in to_delete:
                     if commit:
-                        self.db.execute(
+                        self._core.execute(
                             "DELETE FROM article_media WHERE article_url=? AND image_url=?",
                             (article_url, del_row["image_url"]),
                         )
-                        self.db.execute(
+                        self._core.execute(
                             "UPDATE media SET article_url=NULL WHERE url=? AND article_url=?",
                             (del_row["image_url"], article_url),
                         )
@@ -1090,7 +1240,7 @@ class Store:
                                     encoding="utf-8",
                                 )
         if commit and deleted:
-            self.db.commit()
+            self._core.commit()
         return {"deleted": deleted, "dry_run": not commit}
 
     def cleanup_data(
@@ -1109,11 +1259,11 @@ class Store:
         }
 
     def failure(self, url: str, source_id: str, error: str, status: int | None = None) -> None:
-        self.db.execute(
+        self._core.execute(
             "INSERT INTO failures(url,source_id,error,status,last_seen) VALUES(?,?,?,?,?)",
             (url, source_id, error, status, utc_now()),
         )
-        self.db.commit()
+        self._core.commit()
 
     def stats(self) -> dict[str, int]:
         names = {
@@ -1127,27 +1277,27 @@ class Store:
             "failures": "failures",
         }
         result = {
-            name: int(self.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+            name: int(self._core.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
             for name, table in names.items()
         }
         result["frontier_filtered"] = int(
-            self.db.execute("SELECT COUNT(*) FROM frontier WHERE status='filtered'").fetchone()[0]
+            self._core.execute("SELECT COUNT(*) FROM frontier WHERE status='filtered'").fetchone()[0]
         )
         result["pages_indexable"] = int(
-            self.db.execute("SELECT COUNT(*) FROM pages WHERE value_score >= 16").fetchone()[0]
+            self._core.execute("SELECT COUNT(*) FROM pages WHERE value_score >= 16").fetchone()[0]
         )
         return result
 
     def export_jsonl(self, output: str | Path) -> Path:
         target = Path(output)
         target.parent.mkdir(parents=True, exist_ok=True)
-        rows = self.db.execute("SELECT * FROM articles ORDER BY published_at DESC, url").fetchall()
+        rows = self._core.execute("SELECT * FROM articles ORDER BY published_at DESC, url").fetchall()
         with target.open("w", encoding="utf-8") as handle:
             for row in rows:
                 item = dict(row)
                 item["images"] = [
                     dict(image)
-                    for image in self.db.execute(
+                    for image in self._core.execute(
                         "SELECT image_url AS url,local_path,alt,title,caption FROM article_media WHERE article_url=? ORDER BY image_url",
                         (row["url"],),
                     ).fetchall()
@@ -1164,7 +1314,7 @@ class Store:
         if not source_ids:
             return {}
         placeholders = ",".join("?" for _ in source_ids)
-        rows = self.db.execute(
+        rows = self._core.execute(
             f"""SELECT source_id, MAX(published_at) AS newest
                 FROM articles
                 WHERE source_id IN ({placeholders}) AND published_at IS NOT NULL AND published_at != ''
@@ -1192,7 +1342,7 @@ class Store:
     def source_report(self, output: str | Path | None = None) -> list[dict[str, Any]]:
         today = datetime.now().astimezone().date().isoformat()
         cutoff = (datetime.now().astimezone() - timedelta(days=365)).date().isoformat()
-        rows = self.db.execute(
+        rows = self._core.execute(
             """SELECT s.id,s.name,s.organization_level,s.allowed_hosts,
                       (SELECT COUNT(*) FROM pages p WHERE p.source_id=s.id) AS pages,
                       (SELECT COUNT(*) FROM pages p WHERE p.source_id=s.id AND
@@ -1247,7 +1397,7 @@ class Store:
         """
         from .scoring import document_asset_url, score_page
 
-        duplicate_rows = self.db.execute(
+        duplicate_rows = self._core.execute(
             """SELECT sha256,url AS first_url FROM (
                    SELECT sha256,url,
                           count(*) OVER (PARTITION BY sha256) AS copies,
@@ -1276,7 +1426,7 @@ class Store:
             placeholders = ",".join("?" for _ in page_urls)
             page_query += f" WHERE p.url IN ({placeholders})"
             page_params = tuple(sorted(page_urls))
-        rows = self.db.execute(page_query, page_params).fetchall()
+        rows = self._core.execute(page_query, page_params).fetchall()
         updates: list[tuple[Any, ...]] = []
         scored = 0
         indexable = 0
@@ -1315,27 +1465,27 @@ class Store:
             scored += 1
             indexable += int(result.value_score >= 16 and not duplicate_of)
             if len(updates) >= batch_size:
-                self.db.executemany(
+                self._core.executemany(
                     """UPDATE pages SET page_kind=?,access_mode=?,value_score=?,value_tier=?,
                        score_reasons=?,published_at=?,duplicate_of=? WHERE url=?""",
                     updates,
                 )
-                self.db.commit()
+                self._core.commit()
                 updates.clear()
         if updates:
-            self.db.executemany(
+            self._core.executemany(
                 """UPDATE pages SET page_kind=?,access_mode=?,value_score=?,value_tier=?,
                    score_reasons=?,published_at=?,duplicate_of=? WHERE url=?""",
                 updates,
             )
-            self.db.commit()
-        self.db.execute(
+            self._core.commit()
+        self._core.execute(
             """UPDATE assets SET value_score=(SELECT p.value_score FROM pages p WHERE p.url=assets.url),
                score_reasons=(SELECT p.score_reasons FROM pages p WHERE p.url=assets.url),
                access_mode=(SELECT p.access_mode FROM pages p WHERE p.url=assets.url)
                WHERE EXISTS (SELECT 1 FROM pages p WHERE p.url=assets.url)"""
         )
-        self.db.commit()
+        self._core.commit()
         return {"scored": scored, "indexable": indexable, "duplicates": len(duplicate_rows)}
 
     def backfill_assets_from_pages(self) -> dict[str, int]:
@@ -1344,7 +1494,7 @@ class Store:
 
         scanned = 0
         saved = 0
-        for row in self.db.execute(
+        for row in self._core.execute(
             """SELECT url,final_url,discovered_from,raw_path,content_type,access_mode,value_score,score_reasons
                FROM pages WHERE status=200 AND raw_path IS NOT NULL AND raw_path != ''"""
         ).fetchall():
@@ -1409,7 +1559,7 @@ class Store:
         # first-seen map while streaming the page table instead.
         duplicate_first: dict[str, str] = {}
         duplicate_seen: dict[str, str] = {}
-        for duplicate_row in self.db.execute(
+        for duplicate_row in self._core.execute(
             """SELECT p.sha256,p.url FROM pages p
                WHERE p.sha256 IS NOT NULL AND p.sha256 != ''
                ORDER BY CASE WHEN EXISTS (
@@ -1434,7 +1584,7 @@ class Store:
             placeholders = ",".join("?" for _ in page_urls)
             page_query += f" AND url IN ({placeholders})"
             page_params += tuple(sorted(page_urls))
-        rows = self.db.execute(page_query, page_params)
+        rows = self._core.execute(page_query, page_params)
         for row in rows:
             content_type = (row["content_type"] or "").lower()
             if content_type and "html" not in content_type and "xhtml" not in content_type:
@@ -1451,7 +1601,7 @@ class Store:
                 body = raw_path.read_bytes()
                 if len(body) > max_reindex_bytes:
                     oversized_reason = json.dumps(["oversized_html"], ensure_ascii=False)
-                    self.db.execute(
+                    self._core.execute(
                         """UPDATE pages SET page_kind='oversized',access_mode='unknown',
                            value_score=0,value_tier='audit_only',score_reasons=?
                            WHERE url=?""",
@@ -1459,13 +1609,13 @@ class Store:
                     )
                     keys = {row["url"], row["final_url"], row["canonical_url"]}
                     for key in filter(None, keys):
-                        self.db.execute("DELETE FROM article_media WHERE article_url=?", (key,))
-                        self.db.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (key,))
-                        removed += self.db.execute(
+                        self._core.execute("DELETE FROM article_media WHERE article_url=?", (key,))
+                        self._core.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (key,))
+                        removed += self._core.execute(
                             "DELETE FROM articles WHERE url=?", (key,)
                         ).rowcount
                     if scanned % 500 == 0:
-                        self.db.commit()
+                        self._core.commit()
                     continue
                 content_type = row["content_type"] or ""
                 html = _decode(body, {"content-type": content_type})
@@ -1494,7 +1644,7 @@ class Store:
                 document_link_count=sum(1 for target in page.links if document_asset_url(target)),
                 duplicate=bool(duplicate_of),
             )
-            self.db.execute(
+            self._core.execute(
                 """UPDATE pages SET page_kind=?,access_mode=?,value_score=?,value_tier=?,score_reasons=?,
                    published_at=?,duplicate_of=? WHERE url=?""",
                 (
@@ -1510,7 +1660,7 @@ class Store:
             )
             for target in page.links:
                 kind = "asset" if looks_like_asset(target) else "page"
-                self.db.execute(
+                self._core.execute(
                     "INSERT OR IGNORE INTO links(source_url,target_url,source_id,kind,discovered_at) "
                     "VALUES(?,?,?,?,?)",
                     (row["url"], target, row["source_id"], kind, utc_now()),
@@ -1529,8 +1679,8 @@ class Store:
                 # Reindexing can change the article's image list. Remove old
                 # relationships first so exports do not retain stale images.
                 for key in filter(None, keys):
-                    self.db.execute("DELETE FROM article_media WHERE article_url=?", (key,))
-                    self.db.execute(
+                    self._core.execute("DELETE FROM article_media WHERE article_url=?", (key,))
+                    self._core.execute(
                         "UPDATE media SET article_url=NULL WHERE article_url=?", (key,)
                     )
                 hint = ""
@@ -1546,12 +1696,12 @@ class Store:
                 # dropping the article_media relationships when the old
                 # extraction is replaced.
                 for image in article.images:
-                    media_row = self.db.execute(
+                    media_row = self._core.execute(
                         "SELECT local_path FROM media WHERE url=?", (image.url,)
                     ).fetchone()
                     if not media_row:
                         continue
-                    self.db.execute(
+                    self._core.execute(
                         """INSERT INTO article_media(article_url,image_url,local_path,alt,title,caption,created_at)
                            VALUES(?,?,?,?,?,?,?)
                            ON CONFLICT(article_url,image_url) DO UPDATE SET
@@ -1570,30 +1720,30 @@ class Store:
                 articles += 1
             else:
                 for key in filter(None, keys):
-                    self.db.execute("DELETE FROM article_media WHERE article_url=?", (key,))
-                    self.db.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (key,))
-                    removed += self.db.execute("DELETE FROM articles WHERE url=?", (key,)).rowcount
+                    self._core.execute("DELETE FROM article_media WHERE article_url=?", (key,))
+                    self._core.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (key,))
+                    removed += self._core.execute("DELETE FROM articles WHERE url=?", (key,)).rowcount
             # Committing once per page turns this pass into millions of
             # synchronous SQLite fsyncs.  Keep the same transactionally
             # consistent result while amortizing the cost over small batches.
             if scanned % 500 == 0:
-                self.db.commit()
-        self.db.commit()
+                self._core.commit()
+        self._core.commit()
         # Older runs could have treated a non-HTML document URL as an article
         # when the origin returned an HTML error shell.  Keep those documents
         # in ``assets``/``pages`` but remove the misleading article records.
-        document_rows = self.db.execute("SELECT url FROM articles")
+        document_rows = self._core.execute("SELECT url FROM articles")
         for row in document_rows:
             if not document_asset_url(row["url"]):
                 continue
             url = row["url"]
-            self.db.execute("DELETE FROM article_media WHERE article_url=?", (url,))
-            self.db.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (url,))
-            document_articles_removed += self.db.execute(
+            self._core.execute("DELETE FROM article_media WHERE article_url=?", (url,))
+            self._core.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (url,))
+            document_articles_removed += self._core.execute(
                 "DELETE FROM articles WHERE url=?", (url,)
             ).rowcount
         if document_articles_removed:
-            self.db.commit()
+            self._core.commit()
         return {
             "scanned": scanned,
             "articles": articles,

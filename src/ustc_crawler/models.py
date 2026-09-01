@@ -69,6 +69,8 @@ class ArticleDocument:
     source_page_url: str
     raw_metadata: dict[str, Any] = field(default_factory=dict)
     images: list[ImageRef] = field(default_factory=list)
+    publication_type: str = ""
+    classifier_version: str = ""
 
 
 @dataclass(slots=True)
