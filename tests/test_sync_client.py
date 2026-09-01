@@ -16,11 +16,16 @@ from ustc_crawler.db.models import SyncBatch, SyncBatchItem, SyncOutbox
 from ustc_crawler.models import ArticleDocument, SourceConfig
 from ustc_crawler.store import Store
 from ustc_crawler.sync.client import (
+    DEFAULT_BATCH_CONCURRENCY,
     DEFAULT_HTTP_TIMEOUT,
     INGESTION_SECRET_HEADER,
+    MAX_BATCH_CONCURRENCY,
+    MAX_OBJECT_CONCURRENCY,
+    DeliveryResult,
     IngestionSyncClient,
     SyncClientError,
     SyncOptions,
+    SyncTransientError,
     ingestion_secret_from_environment,
     sync_backfill,
 )
@@ -404,6 +409,230 @@ class SyncClientTests(unittest.TestCase):
                 )
                 with self.assertRaisesRegex(ValueError, "between 1 and 100"):
                     sync.sync(options=SyncOptions(batch_size=101))
+            finally:
+                sync.close()
+                store.close()
+
+    def test_sync_rejects_unsafe_concurrency_values(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            try:
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                )
+                with self.assertRaisesRegex(
+                    ValueError,
+                    f"batch concurrency must be between 1 and {MAX_BATCH_CONCURRENCY}",
+                ):
+                    sync.sync(options=SyncOptions(batch_concurrency=MAX_BATCH_CONCURRENCY + 1))
+                with self.assertRaisesRegex(
+                    ValueError,
+                    f"object concurrency must be between 1 and {MAX_OBJECT_CONCURRENCY}",
+                ):
+                    sync.sync(options=SyncOptions(object_concurrency=MAX_OBJECT_CONCURRENCY + 1))
+            finally:
+                sync.close()
+                store.close()
+
+    def test_batch_delivery_is_concurrent_but_claims_are_serial_and_bounded(self) -> None:
+        lock = threading.Lock()
+        entered = threading.Barrier(3, timeout=5)
+        active = 0
+        max_active = 0
+        deliveries = 0
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            try:
+                for number in range(5):
+                    store.enqueue_article_for_sync(self._article(number))
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                )
+
+                def deliver(batch, _options):
+                    nonlocal active, max_active, deliveries
+                    with lock:
+                        deliveries += 1
+                        call_number = deliveries
+                        active += 1
+                        max_active = max(max_active, active)
+                    try:
+                        if call_number <= 3:
+                            entered.wait()
+                        self.assertEqual(
+                            sync.outbox.mark_batch(batch.batch_id, status="acked"),
+                            None,
+                        )
+                        return DeliveryResult("acked", len(batch.items), 0)
+                    finally:
+                        with lock:
+                            active -= 1
+
+                sync._deliver = deliver
+                summary = sync.sync(
+                    options=SyncOptions(batch_size=1, batch_concurrency=3),
+                )
+                self.assertEqual(
+                    {
+                        key: summary[key]
+                        for key in (
+                            "batches",
+                            "replayed",
+                            "created",
+                            "acked",
+                            "failed",
+                            "rejected",
+                            "pending",
+                            "items",
+                            "status",
+                        )
+                    },
+                    {
+                        "batches": 5,
+                        "replayed": 0,
+                        "created": 5,
+                        "acked": 5,
+                        "failed": 0,
+                        "rejected": 0,
+                        "pending": 0,
+                        "items": 5,
+                        "status": "completed",
+                    },
+                )
+                self.assertEqual(max_active, 3)
+                with store.database.session_factory() as session:
+                    batches = session.scalars(select(SyncBatch)).all()
+                    items = session.scalars(select(SyncBatchItem)).all()
+                    rows = session.scalars(select(SyncOutbox)).all()
+                    self.assertEqual(len(batches), 5)
+                    self.assertEqual(len(items), 5)
+                    self.assertEqual(len({item.item_key for item in items}), 5)
+                    self.assertEqual({row.status for row in rows}, {"acked"})
+            finally:
+                sync.close()
+                store.close()
+
+    def test_batch_concurrency_honors_exact_max_batches_and_summary(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            try:
+                for number in range(5):
+                    store.enqueue_article_for_sync(self._article(number))
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                )
+
+                def deliver(batch, _options):
+                    sync.outbox.mark_batch(batch.batch_id, status="acked")
+                    return DeliveryResult("acked", len(batch.items), 0)
+
+                sync._deliver = deliver
+                summary = sync.sync(
+                    options=SyncOptions(batch_size=1, batch_concurrency=4, max_batches=2),
+                )
+                self.assertEqual(summary["batches"], 2)
+                self.assertEqual(summary["created"], 2)
+                self.assertEqual(summary["items"], 2)
+                self.assertEqual(summary["acked"], 2)
+                self.assertEqual(summary["failed"], 0)
+                self.assertEqual(summary["pending"], 0)
+                self.assertEqual(summary["status"], "completed")
+                with store.database.session_factory() as session:
+                    self.assertEqual(session.scalar(select(func.count()).select_from(SyncBatch)), 2)
+                    rows = session.scalars(select(SyncOutbox)).all()
+                    self.assertEqual(
+                        {row.status for row in rows},
+                        {"acked", "pending"},
+                    )
+                    self.assertEqual(sum(row.status == "acked" for row in rows), 2)
+            finally:
+                sync.close()
+                store.close()
+
+    def test_batch_failure_drains_other_workers_and_is_recoverable(self) -> None:
+        lock = threading.Lock()
+        failed = False
+        failed_batch_id = ""
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            try:
+                for number in range(4):
+                    store.enqueue_article_for_sync(self._article(number))
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                )
+
+                def fail_once(batch, _options):
+                    nonlocal failed, failed_batch_id
+                    with lock:
+                        should_fail = not failed
+                        if should_fail:
+                            failed = True
+                            failed_batch_id = batch.batch_id
+                    if should_fail:
+                        sync.outbox.mark_batch(batch.batch_id, status="uploading")
+                        sync.outbox.mark_batch_error(batch.batch_id, "network_error")
+                        raise SyncTransientError("network_error")
+                    sync.outbox.mark_batch(batch.batch_id, status="acked")
+                    return DeliveryResult("acked", len(batch.items), 0)
+
+                sync._deliver = fail_once
+                summary = sync.sync(
+                    options=SyncOptions(batch_size=1, batch_concurrency=3),
+                )
+                self.assertEqual(summary["batches"], 3)
+                self.assertEqual(summary["created"], 3)
+                self.assertEqual(summary["acked"], 2)
+                self.assertEqual(summary["pending"], 1)
+                self.assertEqual(summary["failed"], 0)
+                self.assertEqual(summary["status"], "partial")
+                with store.database.session_factory() as session:
+                    rows = session.scalars(select(SyncOutbox)).all()
+                    self.assertEqual({row.status for row in rows}, {"uploading", "acked", "pending"})
+                    replay = session.get(SyncBatch, failed_batch_id)
+                    self.assertIsNotNone(replay)
+                    self.assertEqual(replay.status, "uploading")
+
+                seen: list[str] = []
+
+                def retry(batch, _options):
+                    seen.append("replay" if batch.batch_id == failed_batch_id else "new")
+                    sync.outbox.mark_batch(batch.batch_id, status="acked")
+                    return DeliveryResult("acked", len(batch.items), 0)
+
+                sync._deliver = retry
+                resumed = sync.sync(
+                    options=SyncOptions(batch_size=1, batch_concurrency=2),
+                )
+                self.assertEqual(seen, ["replay", "new"])
+                self.assertEqual(resumed["batches"], 2)
+                self.assertEqual(resumed["replayed"], 1)
+                self.assertEqual(resumed["created"], 1)
+                self.assertEqual(resumed["acked"], 2)
+                self.assertEqual(resumed["status"], "completed")
+                with store.database.session_factory() as session:
+                    self.assertEqual(
+                        {row.status for row in session.scalars(select(SyncOutbox)).all()},
+                        {"acked"},
+                    )
             finally:
                 sync.close()
                 store.close()
@@ -918,12 +1147,15 @@ class SyncClientTests(unittest.TestCase):
         self.assertEqual(args.command, "sync")
         self.assertEqual(args.server, self.server)
         self.assertEqual(args.object_concurrency, 8)
+        self.assertEqual(args.batch_concurrency, DEFAULT_BATCH_CONCURRENCY)
         sync_parser = next(
             action.choices["sync"]
             for action in parser._actions
             if hasattr(action, "choices") and action.choices and "sync" in action.choices
         )
         self.assertIn("max: 100", sync_parser.format_help())
+        self.assertIn("max: 64", sync_parser.format_help())
+        self.assertIn("max: 4", sync_parser.format_help())
         self.assertEqual(
             parser.parse_args(
                 [
@@ -934,6 +1166,18 @@ class SyncClientTests(unittest.TestCase):
                     "3",
                 ]
             ).object_concurrency,
+            3,
+        )
+        self.assertEqual(
+            parser.parse_args(
+                [
+                    "sync",
+                    "--server",
+                    self.server,
+                    "--batch-concurrency",
+                    "3",
+                ]
+            ).batch_concurrency,
             3,
         )
         self.assertNotIn("auth", parser.format_help())

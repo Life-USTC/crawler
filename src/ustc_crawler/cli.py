@@ -11,7 +11,9 @@ from .discover import discover_units
 from .media import MediaOptions, download_saved_images
 from .store import Store
 from .sync import (
+    DEFAULT_BATCH_CONCURRENCY,
     DEFAULT_OBJECT_CONCURRENCY,
+    MAX_BATCH_CONCURRENCY,
     MAX_OBJECT_CONCURRENCY,
     MAX_PUBLICATION_BATCH_ITEMS,
     IngestionSyncClient,
@@ -252,6 +254,16 @@ def build_parser() -> argparse.ArgumentParser:
             f"(default: {DEFAULT_OBJECT_CONCURRENCY}, max: {MAX_OBJECT_CONCURRENCY})"
         ),
     )
+    sync.add_argument(
+        "--batch-concurrency",
+        type=int,
+        default=DEFAULT_BATCH_CONCURRENCY,
+        metavar="N",
+        help=(
+            "maximum ingestion batches delivered concurrently "
+            f"(default: {DEFAULT_BATCH_CONCURRENCY}, max: {MAX_BATCH_CONCURRENCY})"
+        ),
+    )
 
     sync_backfill_command = sub.add_parser(
         "sync-backfill",
@@ -286,6 +298,7 @@ def main(argv: list[str] | None = None) -> int:
                                 max_batches=args.max_batches,
                                 max_retries=args.max_retries,
                                 object_concurrency=args.object_concurrency,
+                                batch_concurrency=args.batch_concurrency,
                             )
                         ),
                         ensure_ascii=False,

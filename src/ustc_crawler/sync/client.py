@@ -9,7 +9,7 @@ import time
 import uuid
 from collections import Counter
 from collections.abc import Callable, Mapping
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import datetime
 from email.utils import parsedate_to_datetime
@@ -20,7 +20,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from .. import __version__
-from ..db.models import SyncRun
+from ..db.models import SyncBatch, SyncRun
 from .models import (
     MAX_OBJECT_PLAN_OBJECTS,
     MAX_PUBLICATION_BATCH_ITEMS,
@@ -50,7 +50,9 @@ INGESTION_SECRET_ENV = "USTC_CRAWLER_INGESTION_SECRET"
 INGESTION_SECRET_HEADER = "X-Publication-Ingestion-Secret"
 RETRY_STATUS_CODES = frozenset({408, 429})
 DEFAULT_OBJECT_CONCURRENCY = 8
-MAX_OBJECT_CONCURRENCY = 32
+MAX_OBJECT_CONCURRENCY = 64
+DEFAULT_BATCH_CONCURRENCY = 1
+MAX_BATCH_CONCURRENCY = 4
 DEFAULT_HTTP_TIMEOUT = 60.0
 SAFE_SERVER_ERROR_CODES = frozenset(
     {
@@ -125,6 +127,7 @@ class SyncOptions:
     max_retries: int = 3
     max_backoff: float = 30.0
     object_concurrency: int = DEFAULT_OBJECT_CONCURRENCY
+    batch_concurrency: int = DEFAULT_BATCH_CONCURRENCY
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +236,11 @@ class IngestionSyncClient:
                 "object concurrency must be between "
                 f"1 and {MAX_OBJECT_CONCURRENCY}"
             )
+        if not 1 <= options.batch_concurrency <= MAX_BATCH_CONCURRENCY:
+            raise ValueError(
+                "batch concurrency must be between "
+                f"1 and {MAX_BATCH_CONCURRENCY}"
+            )
         client_run_id = run_id or uuid.uuid4().hex
         self._start_run(client_run_id)
         summary: dict[str, int | str] = {
@@ -247,69 +255,128 @@ class IngestionSyncClient:
             "items": 0,
         }
         interrupted = False
-        try:
-            for pending in self.outbox.pending_batches():
-                if options.max_batches and int(summary["batches"]) >= options.max_batches:
-                    break
-                batch = self.outbox.build_batch(
-                    run_id=client_run_id,
-                    batch_id=pending.id,
-                    producer_version=options.producer_version,
-                    observed_at=datetime.now().astimezone().isoformat(timespec="seconds"),
-                    limit=options.batch_size,
-                    max_payload_bytes=options.max_payload_bytes,
-                )
-                if batch is None:
-                    continue
-                summary["batches"] = int(summary["batches"]) + 1
-                summary["replayed"] = int(summary["replayed"]) + 1
-                summary["items"] = int(summary["items"]) + len(batch.items)
-                try:
-                    delivery = self._deliver(batch, options)
-                except SyncPermanentError:
-                    summary["failed"] = int(summary["failed"]) + 1
-                    interrupted = True
-                    break
-                except SyncTransientError:
-                    summary["pending"] = int(summary["pending"]) + 1
-                    interrupted = True
-                    break
-                self._record_delivery(summary, delivery)
+        unexpected: BaseException | None = None
+        pending_replays: list[SyncBatch] = []
+        replay_index = 0
+        new_batches_exhausted = False
+        in_flight: dict[Future[DeliveryResult], int] = {}
+        sequence = 0
 
-            while not interrupted and (
-                not options.max_batches or int(summary["batches"]) < options.max_batches
-            ):
-                batch_id = uuid.uuid4().hex
-                try:
-                    batch = self.outbox.build_batch(
-                        run_id=client_run_id,
-                        batch_id=batch_id,
-                        producer_version=options.producer_version,
-                        observed_at=datetime.now().astimezone().isoformat(timespec="seconds"),
-                        limit=options.batch_size,
-                        max_payload_bytes=options.max_payload_bytes,
-                    )
-                except BatchTooLargeError:
-                    summary["failed"] = int(summary["failed"]) + 1
-                    summary["pending"] = int(summary["pending"]) + 1
-                    interrupted = True
-                    break
-                if batch is None:
-                    break
-                summary["batches"] = int(summary["batches"]) + 1
+        def can_claim() -> bool:
+            return not options.max_batches or int(summary["batches"]) < options.max_batches
+
+        def record_claim(batch: IngestionBatch, *, replayed: bool) -> None:
+            nonlocal sequence
+            summary["batches"] = int(summary["batches"]) + 1
+            summary["items"] = int(summary["items"]) + len(batch.items)
+            if replayed:
+                summary["replayed"] = int(summary["replayed"]) + 1
+            else:
                 summary["created"] = int(summary["created"]) + 1
-                summary["items"] = int(summary["items"]) + len(batch.items)
+            future = executor.submit(self._deliver, batch, options)
+            in_flight[future] = sequence
+            sequence += 1
+
+        def process_completed(done: set[Future[DeliveryResult]]) -> None:
+            nonlocal interrupted, unexpected
+            for future in sorted(done, key=in_flight.__getitem__):
+                in_flight.pop(future)
                 try:
-                    delivery = self._deliver(batch, options)
+                    delivery = future.result()
                 except SyncPermanentError:
                     summary["failed"] = int(summary["failed"]) + 1
                     interrupted = True
-                    break
                 except SyncTransientError:
                     summary["pending"] = int(summary["pending"]) + 1
                     interrupted = True
-                    break
-                self._record_delivery(summary, delivery)
+                except BaseException as exc:
+                    # Preserve the existing propagation behavior for unexpected
+                    # failures, while allowing already-claimed batches to finish
+                    # and remain resumable before the exception is re-raised.
+                    if unexpected is None:
+                        unexpected = exc
+                    interrupted = True
+                else:
+                    self._record_delivery(summary, delivery)
+
+        try:
+            pending_replays = self.outbox.pending_batches()
+            with ThreadPoolExecutor(
+                max_workers=options.batch_concurrency,
+                thread_name_prefix="ustc-sync-batch",
+            ) as executor:
+                # Replay every persisted batch before claiming any new work.
+                # Claims happen only in this coordinator thread; each worker
+                # receives an immutable batch and opens its own DB sessions.
+                while not interrupted and can_claim() and (
+                    replay_index < len(pending_replays) or in_flight
+                ):
+                    while (
+                        not interrupted
+                        and can_claim()
+                        and replay_index < len(pending_replays)
+                        and len(in_flight) < options.batch_concurrency
+                    ):
+                        pending = pending_replays[replay_index]
+                        replay_index += 1
+                        batch = self.outbox.build_batch(
+                            run_id=client_run_id,
+                            batch_id=pending.id,
+                            producer_version=options.producer_version,
+                            observed_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+                            limit=options.batch_size,
+                            max_payload_bytes=options.max_payload_bytes,
+                        )
+                        if batch is not None:
+                            record_claim(batch, replayed=True)
+                    if in_flight:
+                        done, _ = wait(tuple(in_flight), return_when=FIRST_COMPLETED)
+                        process_completed(done)
+
+                # Only after all replay work has completed may new batches be
+                # claimed.  This keeps replay-first ordering strict even when
+                # the configured batch concurrency is greater than one.
+                while not interrupted and can_claim() and not new_batches_exhausted:
+                    while (
+                        not interrupted
+                        and can_claim()
+                        and len(in_flight) < options.batch_concurrency
+                    ):
+                        try:
+                            batch = self.outbox.build_batch(
+                                run_id=client_run_id,
+                                batch_id=uuid.uuid4().hex,
+                                producer_version=options.producer_version,
+                                observed_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+                                limit=options.batch_size,
+                                max_payload_bytes=options.max_payload_bytes,
+                            )
+                        except BatchTooLargeError:
+                            summary["failed"] = int(summary["failed"]) + 1
+                            summary["pending"] = int(summary["pending"]) + 1
+                            interrupted = True
+                            break
+                        if batch is None:
+                            new_batches_exhausted = True
+                            break
+                        record_claim(batch, replayed=False)
+                    if in_flight:
+                        done, _ = wait(tuple(in_flight), return_when=FIRST_COMPLETED)
+                        process_completed(done)
+                    elif not interrupted:
+                        break
+
+                # A failure stops further claims but never abandons batches
+                # already submitted to workers.  Drain the executor so every
+                # in-flight batch records its durable result before the run is
+                # finalized.
+                while in_flight:
+                    done, _ = wait(tuple(in_flight), return_when=FIRST_COMPLETED)
+                    process_completed(done)
+        except BaseException as exc:
+            if unexpected is None:
+                unexpected = exc
+            interrupted = True
         finally:
             summary["status"] = "partial" if interrupted else "completed"
             self._finish_run(
@@ -319,6 +386,8 @@ class IngestionSyncClient:
                 items=int(summary["items"]),
                 errors=int(summary["failed"]),
             )
+        if unexpected is not None:
+            raise unexpected
         return summary
 
     @staticmethod
@@ -709,7 +778,9 @@ SyncClient = IngestionSyncClient
 __all__ = [
     "BATCH_ENDPOINT",
     "DEFAULT_OBJECT_CONCURRENCY",
+    "DEFAULT_BATCH_CONCURRENCY",
     "DEFAULT_HTTP_TIMEOUT",
+    "MAX_BATCH_CONCURRENCY",
     "MAX_OBJECT_CONCURRENCY",
     "OBJECT_COMPLETE_ENDPOINT",
     "OBJECT_PLAN_ENDPOINT",
