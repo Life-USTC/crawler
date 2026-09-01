@@ -16,6 +16,7 @@ from ..publication import CLASSIFIER_VERSION, PublicationType, classify_publicat
 INGESTION_PROTOCOL_VERSION = "1"
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 MAX_PUBLICATION_OBJECTS = 100
+MAX_OBJECT_PLAN_OBJECTS = 500
 MAX_PUBLICATION_TITLE_LENGTH = 1_000
 MAX_PUBLICATION_AUTHOR_LENGTH = 500
 MAX_PUBLICATION_CATEGORY_LENGTH = 500
@@ -218,7 +219,10 @@ class PublicationObjectPlanRequest(ProtocolModel):
     """Request body for ``/publication-objects/plan``."""
 
     batch_id: str = Field(alias="batchId", min_length=1, max_length=200)
-    objects: list[PublicationObjectPlanRequestItem] = Field(min_length=1, max_length=500)
+    objects: list[PublicationObjectPlanRequestItem] = Field(
+        min_length=1,
+        max_length=MAX_OBJECT_PLAN_OBJECTS,
+    )
 
 
 class PublicationObjectCompleteRequest(ProtocolModel):
@@ -518,6 +522,7 @@ def build_ingestion_batch(
 
 __all__ = [
     "INGESTION_PROTOCOL_VERSION",
+    "MAX_OBJECT_PLAN_OBJECTS",
     "IngestionBatch",
     "IngestionBatchResponse",
     "IngestionItemResult",

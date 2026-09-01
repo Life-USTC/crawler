@@ -18,6 +18,7 @@ from .client import (
 )
 from .models import (
     INGESTION_PROTOCOL_VERSION,
+    MAX_OBJECT_PLAN_OBJECTS,
     IngestionBatch,
     IngestionBatchResponse,
     IngestionItemResult,
@@ -46,6 +47,7 @@ from .outbox import (
 
 __all__ = [
     "INGESTION_PROTOCOL_VERSION",
+    "MAX_OBJECT_PLAN_OBJECTS",
     "IngestionBatch",
     "IngestionBatchResponse",
     "BatchTooLargeError",

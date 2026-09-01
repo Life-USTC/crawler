@@ -23,7 +23,7 @@ from ustc_crawler.sync.client import (
     ingestion_secret_from_environment,
     sync_backfill,
 )
-from ustc_crawler.sync.models import IngestionBatchResponse
+from ustc_crawler.sync.models import MAX_OBJECT_PLAN_OBJECTS, IngestionBatchResponse
 from ustc_crawler.sync.outbox import IngestionOutbox
 
 
@@ -281,6 +281,93 @@ class SyncClientTests(unittest.TestCase):
                     )
                     self.assertNotIn("unsafe server detail", batch.response_json or "")
                     self.assertNotIn("secret-token", batch.response_json or "")
+            finally:
+                sync.close()
+                store.close()
+
+    def test_large_batch_splits_object_plans_at_protocol_limit(self) -> None:
+        plan_requests: list[dict] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/ingestion/publications/batches":
+                return httpx.Response(200, json=self._batch_response(request), request=request)
+            if request.url.path == "/api/ingestion/publications/objects/plan":
+                payload = json.loads(request.content)
+                plan_requests.append(payload)
+                return httpx.Response(
+                    200,
+                    json=self._plan_response(request, upload=False),
+                    request=request,
+                )
+            if request.url.path == "/api/ingestion/publications/objects/complete":
+                payload = json.loads(request.content)
+                return httpx.Response(
+                    200,
+                    json={**payload, "status": "linked"},
+                    request=request,
+                )
+            raise AssertionError(f"unexpected sync request: {request.url}")
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            try:
+                for number in range(251):
+                    store.enqueue_article_for_sync(self._article(number))
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=client,
+                )
+                summary = sync.sync(options=SyncOptions(batch_size=500))
+                self.assertEqual(summary["acked"], 1)
+                self.assertEqual(summary["failed"], 0)
+                self.assertEqual(
+                    [len(request["objects"]) for request in plan_requests],
+                    [MAX_OBJECT_PLAN_OBJECTS, 2],
+                )
+                object_keys = [
+                    (item["kind"], item["sha256"])
+                    for request in plan_requests
+                    for item in request["objects"]
+                ]
+                self.assertEqual(object_keys, sorted(object_keys))
+                self.assertEqual(len(object_keys), len(set(object_keys)))
+            finally:
+                sync.close()
+                store.close()
+
+    def test_object_plan_rejects_membership_outside_current_chunk(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/ingestion/publications/batches":
+                return httpx.Response(200, json=self._batch_response(request), request=request)
+            if request.url.path == "/api/ingestion/publications/objects/plan":
+                payload = self._plan_response(request, upload=False)
+                payload["objects"][0]["sha256"] = "f" * 64
+                return httpx.Response(200, json=payload, request=request)
+            raise AssertionError(f"membership failure should stop object delivery: {request.url}")
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            try:
+                store.enqueue_article_for_sync(self._article(13))
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=client,
+                )
+                summary = sync.sync()
+                self.assertEqual(summary["failed"], 1)
+                with store.database.session_factory() as session:
+                    batch = session.scalar(select(SyncBatch))
+                    self.assertEqual(batch.last_error, "object_plan_membership_mismatch")
             finally:
                 sync.close()
                 store.close()

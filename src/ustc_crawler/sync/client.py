@@ -22,6 +22,7 @@ import httpx
 from .. import __version__
 from ..db.models import SyncRun
 from .models import (
+    MAX_OBJECT_PLAN_OBJECTS,
     IngestionBatch,
     IngestionBatchResponse,
     LocalObjectManifest,
@@ -432,33 +433,38 @@ class IngestionSyncClient:
             manifests[key] = manifest
         if not manifests:
             return
-        request = PublicationObjectPlanRequest(
-            batchId=batch_id,
-            objects=[
-                PublicationObjectPlanRequestItem(kind=kind, sha256=sha256)
-                for kind, sha256 in sorted(manifests)
-            ],
-        )
-        plan_response = self._api_request(
-            "POST",
-            OBJECT_PLAN_ENDPOINT,
-            options=options,
-            headers={"Content-Type": "application/json"},
-            content=_json_bytes(request.model_dump(by_alias=True, mode="json")),
-        )
-        self._require_success(plan_response)
-        try:
-            plan = PublicationObjectPlanResponse.model_validate(plan_response.json())
-        except (ValueError, TypeError) as exc:
-            raise SyncProtocolError("invalid_object_plan_response") from exc
-        if plan.batch_id != batch_id:
-            raise SyncProtocolError("object_plan_identity_mismatch")
+        object_items = [
+            PublicationObjectPlanRequestItem(kind=kind, sha256=sha256)
+            for kind, sha256 in sorted(manifests)
+        ]
         planned: dict[tuple[str, str], PublicationObjectPlanItem] = {}
-        for item in plan.objects:
-            key = (item.kind, item.sha256)
-            if key in planned or key not in manifests:
+        for start in range(0, len(object_items), MAX_OBJECT_PLAN_OBJECTS):
+            chunk = object_items[start : start + MAX_OBJECT_PLAN_OBJECTS]
+            request = PublicationObjectPlanRequest(batchId=batch_id, objects=chunk)
+            plan_response = self._api_request(
+                "POST",
+                OBJECT_PLAN_ENDPOINT,
+                options=options,
+                headers={"Content-Type": "application/json"},
+                content=_json_bytes(request.model_dump(by_alias=True, mode="json")),
+            )
+            self._require_success(plan_response)
+            try:
+                plan = PublicationObjectPlanResponse.model_validate(plan_response.json())
+            except (ValueError, TypeError) as exc:
+                raise SyncProtocolError("invalid_object_plan_response") from exc
+            if plan.batch_id != batch_id:
+                raise SyncProtocolError("object_plan_identity_mismatch")
+            chunk_keys = {(item.kind, item.sha256) for item in chunk}
+            chunk_planned: dict[tuple[str, str], PublicationObjectPlanItem] = {}
+            for item in plan.objects:
+                key = (item.kind, item.sha256)
+                if key in chunk_planned or key not in chunk_keys:
+                    raise SyncProtocolError("object_plan_membership_mismatch")
+                chunk_planned[key] = item
+            if set(chunk_planned) != chunk_keys:
                 raise SyncProtocolError("object_plan_membership_mismatch")
-            planned[key] = item
+            planned.update(chunk_planned)
         if set(planned) != set(manifests):
             raise SyncProtocolError("object_plan_membership_mismatch")
         ordered = sorted(planned.items())
