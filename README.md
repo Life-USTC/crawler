@@ -105,11 +105,12 @@ uv run ustc-crawler sync-backfill \
 
 # 重试并上传已持久化的不可变批次
 uv run ustc-crawler sync \
-  --db data/crawler.sqlite --data-dir data
+  --db data/crawler.sqlite --data-dir data \
+  --object-concurrency 8
 ```
 
 批次默认最多 50 篇且正文约 2 MiB，断点重跑使用同一批次和幂等键；上传对象先从本地内容寻址 spool 校验 SHA-256/大小，再按服务端返回的请求头上传。未配置服务密钥时命令会以安全错误码退出。
-同一批次内的对象上传和完成确认默认使用最多 8 个受限工作线程，并按计划顺序验证结果；可通过 `SyncOptions.object_concurrency` 调整到 1 至 32。
+同一批次内的对象上传和完成确认默认使用最多 8 个受限工作线程，并按计划顺序验证结果；可通过 `--object-concurrency` 或 `SyncOptions.object_concurrency` 调整到 1 至 32。
 
 ## 本地数据
 

@@ -1,8 +1,10 @@
 """Client-side publication ingestion protocol and durable outbox."""
 
 from .client import (
+    DEFAULT_OBJECT_CONCURRENCY,
     INGESTION_SECRET_ENV,
     INGESTION_SECRET_HEADER,
+    MAX_OBJECT_CONCURRENCY,
     ImmutableObjectChangedError,
     IngestionSyncClient,
     SyncClient,
@@ -48,6 +50,7 @@ __all__ = [
     "IngestionBatchResponse",
     "BatchTooLargeError",
     "DEFAULT_MAX_BATCH_BYTES",
+    "DEFAULT_OBJECT_CONCURRENCY",
     "IngestionOutbox",
     "IngestionItemResult",
     "IngestionPublication",
@@ -56,6 +59,7 @@ __all__ = [
     "INGESTION_SECRET_ENV",
     "INGESTION_SECRET_HEADER",
     "LocalObjectManifest",
+    "MAX_OBJECT_CONCURRENCY",
     "ObjectManifest",
     "PublicationObjectCompleteRequest",
     "PublicationObjectCompleteResponse",

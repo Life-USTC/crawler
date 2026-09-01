@@ -11,6 +11,8 @@ from .discover import discover_units
 from .media import MediaOptions, download_saved_images
 from .store import Store
 from .sync import (
+    DEFAULT_OBJECT_CONCURRENCY,
+    MAX_OBJECT_CONCURRENCY,
     IngestionSyncClient,
     SyncOptions,
     ingestion_secret_from_environment,
@@ -233,6 +235,16 @@ def build_parser() -> argparse.ArgumentParser:
     sync.add_argument("--max-payload-bytes", type=int, default=2 * 1024 * 1024)
     sync.add_argument("--max-batches", type=int, default=0, help="0 means all pending batches")
     sync.add_argument("--max-retries", type=int, default=3)
+    sync.add_argument(
+        "--object-concurrency",
+        type=int,
+        default=DEFAULT_OBJECT_CONCURRENCY,
+        metavar="N",
+        help=(
+            "maximum concurrent object uploads/completions "
+            f"(default: {DEFAULT_OBJECT_CONCURRENCY}, max: {MAX_OBJECT_CONCURRENCY})"
+        ),
+    )
 
     sync_backfill_command = sub.add_parser(
         "sync-backfill",
@@ -266,6 +278,7 @@ def main(argv: list[str] | None = None) -> int:
                                 max_payload_bytes=args.max_payload_bytes,
                                 max_batches=args.max_batches,
                                 max_retries=args.max_retries,
+                                object_concurrency=args.object_concurrency,
                             )
                         ),
                         ensure_ascii=False,
