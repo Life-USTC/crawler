@@ -11,7 +11,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from xml.etree import ElementTree
 
-from .canonicalize import looks_like_asset, normalize_url
+from .canonicalize import looks_like_asset, looks_like_binary, normalize_url
 from .config import load_config
 from .discover import discover_units, unit_sources
 from .extract import extract_page
@@ -117,6 +117,8 @@ def _decode(body: bytes, headers: dict[str, str]) -> str:
 
 
 def _is_html(content_type: str, url: str, body: bytes) -> bool:
+    if looks_like_binary(body):
+        return False
     if content_type in HTML_TYPES or content_type.startswith("text/html"):
         return True
     if looks_like_asset(url):
@@ -234,7 +236,11 @@ class AsyncCrawler:
         self.store.add_sources(self.configured_sources.values())
         if self.options.incremental:
             self.source_since = self.store.source_newest_dates(set(self.sources.keys()))
-            self.store.reset_seeds_and_listings(set(self.sources.keys()))
+            source_seeds = {
+                source.id: {normalize_url(seed) for seed in source.seed_urls if seed}
+                for source in self.sources.values()
+            }
+            self.store.reset_seeds_and_listings(source_seeds)
         self.store.reset_processing()
         self.store.filter_frontier(self.options.min_value_score)
         for source in self.sources.values():

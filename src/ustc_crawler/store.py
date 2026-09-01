@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .canonicalize import host_matches, looks_like_asset, normalize_url
+from .canonicalize import host_matches, looks_like_asset, looks_like_binary, normalize_url
 from .db import ALEMBIC_HEAD, Database, upgrade_database
 from .db.core import CoreConnection, RowMapping
 from .db.models import Article, ArticleMedia, Asset, Frontier, Media, Page, Source, SyncRun
@@ -269,7 +269,7 @@ class Store:
         self._core.execute("UPDATE frontier SET status='pending' WHERE status='processing'")
         self._core.commit()
 
-    def reset_seeds_and_listings(self, source_ids: set[str]) -> int:
+    def reset_seeds_and_listings(self, source_seeds: dict[str, set[str]]) -> int:
         """Re-enqueue seed URLs and news/course listing pages for incremental recrawl.
 
         Listing pages are the main source of newly published article links.  In
@@ -278,8 +278,9 @@ class Store:
         Article pages older than the source cutoff are still filtered during
         enqueue/process.
         """
-        if not source_ids:
+        if not source_seeds:
             return 0
+        source_ids = set(source_seeds)
         placeholders = ",".join("?" for _ in source_ids)
         params = tuple(sorted(source_ids))
         # A previously interrupted incremental run may have left thousands of
@@ -297,20 +298,35 @@ class Store:
                   )""",
             params + params,
         )
-        # Reset seeds and shallow listing/channel pages. Depth three covers a
-        # seed -> section -> listing -> first pagination-page traversal.
+        # Reset shallow listing/channel pages. Depth three covers a seed ->
+        # section -> listing -> first pagination-page traversal.
         self._core.execute(
             f"""UPDATE frontier SET status='pending'
                 WHERE source_id IN ({placeholders})
                   AND status IN ('done','error','filtered')
-                  AND ((depth=0 AND trim(coalesce(discovered_from,''))='') OR url IN (
+                  AND url IN (
                       SELECT url FROM pages
                       WHERE source_id IN ({placeholders})
                         AND page_kind IN ('news_listing','course_resource','sitemap','feed')
                         AND depth <= 3
-                  ))""",
+                  )""",
             params + params,
         )
+        # Only currently configured seeds are reset. Historical depth-zero
+        # seeds remain in the audit trail without retrying a permanently stale
+        # endpoint on every incremental run.
+        configured_seeds = [
+            (source_id, seed)
+            for source_id, seeds in sorted(source_seeds.items())
+            for seed in sorted(seeds)
+        ]
+        if configured_seeds:
+            self._core.executemany(
+                """UPDATE frontier SET status='pending'
+                   WHERE source_id=? AND url=?
+                     AND status IN ('done','error','filtered')""",
+                configured_seeds,
+            )
         self._core.commit()
         return self._core.total_changes
 
@@ -1656,6 +1672,46 @@ class Store:
             scanned += 1
             try:
                 body = raw_path.read_bytes()
+                if looks_like_asset(row["final_url"] or row["url"]) or looks_like_binary(body):
+                    document_url = row["final_url"] or row["url"]
+                    document_title = Path(urlsplit(document_url).path).name or "document"
+                    document_result = score_page(
+                        url=row["url"],
+                        final_url=document_url,
+                        title=document_title,
+                        body_text="",
+                        status=row["status"],
+                        content_type=content_type,
+                        document_link_count=1,
+                    )
+                    self._core.execute(
+                        """UPDATE pages SET title=?,page_kind=?,access_mode=?,value_score=?,
+                           value_tier=?,score_reasons=?,published_at='',duplicate_of=NULL
+                           WHERE url=?""",
+                        (
+                            document_title,
+                            document_result.page_kind,
+                            document_result.access_mode,
+                            document_result.value_score,
+                            document_result.value_tier,
+                            json.dumps(document_result.score_reasons, ensure_ascii=False),
+                            row["url"],
+                        ),
+                    )
+                    keys = {row["url"], row["final_url"], row["canonical_url"]}
+                    for key in filter(None, keys):
+                        self._core.execute(
+                            "DELETE FROM article_media WHERE article_url=?", (key,)
+                        )
+                        self._core.execute(
+                            "UPDATE media SET article_url=NULL WHERE article_url=?", (key,)
+                        )
+                        removed += self._core.execute(
+                            "DELETE FROM articles WHERE url=?", (key,)
+                        ).rowcount
+                    if scanned % 500 == 0:
+                        self._core.commit()
+                    continue
                 if len(body) > max_reindex_bytes:
                     oversized_reason = json.dumps(["oversized_html"], ensure_ascii=False)
                     self._core.execute(

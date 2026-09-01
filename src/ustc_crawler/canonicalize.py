@@ -59,6 +59,18 @@ ASSET_EXTENSIONS = {
     ".key",
 }
 
+BINARY_SIGNATURES = (
+    b"%PDF-",
+    b"PK\x03\x04",
+    b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",
+    b"Rar!\x1a\x07",
+    b"7z\xbc\xaf\x27\x1c",
+    b"\x89PNG\r\n\x1a\n",
+    b"GIF87a",
+    b"GIF89a",
+    b"\xff\xd8\xff",
+)
+
 
 def normalize_url(raw_url: str, base_url: str | None = None) -> str:
     if not raw_url:
@@ -125,6 +137,13 @@ def host_matches(url: str, allowed_hosts: list[str] | set[str]) -> bool:
 def looks_like_asset(url: str) -> bool:
     path = urlsplit(url).path.lower()
     return any(path.endswith(ext) for ext in ASSET_EXTENSIONS)
+
+
+def looks_like_binary(body: bytes) -> bool:
+    """Identify common document/archive/image payloads before text decoding."""
+
+    sample = body[:16].lstrip()
+    return any(sample.startswith(signature) for signature in BINARY_SIGNATURES)
 
 
 def same_origin(url_a: str, url_b: str) -> bool:

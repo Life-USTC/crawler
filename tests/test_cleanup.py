@@ -5,7 +5,7 @@ from tempfile import TemporaryDirectory
 from tests.support import store_core
 from ustc_crawler.cli import main as cli_main
 from ustc_crawler.extract import extract_page
-from ustc_crawler.models import ArticleDocument, ImageRef, SourceConfig
+from ustc_crawler.models import ArticleDocument, ImageRef, PageDocument, SourceConfig
 from ustc_crawler.store import Store
 
 
@@ -289,6 +289,32 @@ class CleanupExcessImagesTests(unittest.TestCase):
             ).fetchone()[0],
             2,
         )
+
+    def test_reindex_repairs_binary_document_mislabeled_as_html(self) -> None:
+        url = "https://www.ustc.edu.cn/files/slides.pptx"
+        page = PageDocument(
+            requested_url=url,
+            final_url=url,
+            status=200,
+            content_type="text/html",
+            fetched_at="2026-08-01T00:00:00+08:00",
+            title="PK corrupted binary title",
+            canonical_url=url,
+            html="PK corrupted binary body",
+            links=[],
+            images=[],
+            raw_body=b"PK\x03\x04office document",
+        )
+        self.store.save_page(page, "university", 1)
+
+        self.store.reindex_extractions(page_urls={url})
+
+        repaired = store_core(self.store).execute(
+            "SELECT title,page_kind,value_tier FROM pages WHERE url=?", (url,)
+        ).fetchone()
+        self.assertEqual(repaired["title"], "slides.pptx")
+        self.assertEqual(repaired["page_kind"], "document")
+        self.assertEqual(repaired["value_tier"], "not_indexed")
 
 
 class CleanupCliTests(unittest.TestCase):
