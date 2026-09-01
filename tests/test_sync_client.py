@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -280,6 +281,120 @@ class SyncClientTests(unittest.TestCase):
                     )
                     self.assertNotIn("unsafe server detail", batch.response_json or "")
                     self.assertNotIn("secret-token", batch.response_json or "")
+            finally:
+                sync.close()
+                store.close()
+
+    def test_object_delivery_is_concurrent_but_bounded(self) -> None:
+        lock = threading.Lock()
+        entered = threading.Barrier(3, timeout=5)
+        active = 0
+        max_active = 0
+        put_started = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal active, max_active, put_started
+            if request.url.path == "/api/ingestion/publications/batches":
+                return httpx.Response(200, json=self._batch_response(request), request=request)
+            if request.url.path == "/api/ingestion/publications/objects/plan":
+                return httpx.Response(
+                    200,
+                    json=self._plan_response(request, upload=True),
+                    request=request,
+                )
+            if request.url.path.startswith("/signed/"):
+                with lock:
+                    put_started += 1
+                    barrier_index = put_started
+                    active += 1
+                    max_active = max(max_active, active)
+                try:
+                    if barrier_index <= 3:
+                        entered.wait()
+                finally:
+                    with lock:
+                        active -= 1
+                return httpx.Response(200, request=request)
+            if request.url.path == "/api/ingestion/publications/objects/complete":
+                payload = json.loads(request.content)
+                return httpx.Response(
+                    200,
+                    json={**payload, "status": "verified"},
+                    request=request,
+                )
+            raise AssertionError(f"unexpected sync request: {request.url}")
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            try:
+                store.enqueue_article_for_sync(self._article(10))
+                store.enqueue_article_for_sync(self._article(11))
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=client,
+                )
+                summary = sync.sync(options=SyncOptions(object_concurrency=3))
+                self.assertEqual(summary["acked"], 1)
+                self.assertEqual(summary["failed"], 0)
+                self.assertEqual(max_active, 3)
+            finally:
+                sync.close()
+                store.close()
+
+    def test_concurrent_object_failures_propagate_in_plan_order(self) -> None:
+        high_failure_finished = threading.Event()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/ingestion/publications/batches":
+                return httpx.Response(200, json=self._batch_response(request), request=request)
+            if request.url.path == "/api/ingestion/publications/objects/plan":
+                return httpx.Response(
+                    200,
+                    json=self._plan_response(request, upload=False),
+                    request=request,
+                )
+            if request.url.path == "/api/ingestion/publications/objects/complete":
+                payload = json.loads(request.content)
+                if payload["kind"] == "body_markdown":
+                    high_failure_finished.set()
+                    return httpx.Response(
+                        403,
+                        json={"error": "forbidden"},
+                        request=request,
+                    )
+                if payload["kind"] == "body_html":
+                    if not high_failure_finished.wait(timeout=5):
+                        raise AssertionError("object completions did not run concurrently")
+                    return httpx.Response(
+                        400,
+                        json={"error": "invalid_request"},
+                        request=request,
+                    )
+            raise AssertionError(f"unexpected sync request: {request.url}")
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            try:
+                store.enqueue_article_for_sync(self._article(12))
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=client,
+                )
+                summary = sync.sync(options=SyncOptions(object_concurrency=2))
+                self.assertEqual(summary["failed"], 1)
+                with store.database.session_factory() as session:
+                    batch = session.scalar(select(SyncBatch))
+                    self.assertEqual(batch.last_error, "invalid_request")
             finally:
                 sync.close()
                 store.close()

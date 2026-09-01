@@ -9,6 +9,7 @@ import time
 import uuid
 from collections import Counter
 from collections.abc import Callable, Mapping
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from email.utils import parsedate_to_datetime
@@ -46,6 +47,8 @@ OBJECT_COMPLETE_ENDPOINT = "/api/ingestion/publications/objects/complete"
 INGESTION_SECRET_ENV = "USTC_CRAWLER_INGESTION_SECRET"
 INGESTION_SECRET_HEADER = "X-Publication-Ingestion-Secret"
 RETRY_STATUS_CODES = frozenset({408, 429})
+DEFAULT_OBJECT_CONCURRENCY = 8
+MAX_OBJECT_CONCURRENCY = 32
 SAFE_SERVER_ERROR_CODES = frozenset(
     {
         "bad_request",
@@ -118,6 +121,7 @@ class SyncOptions:
     max_batches: int = 0
     max_retries: int = 3
     max_backoff: float = 30.0
+    object_concurrency: int = DEFAULT_OBJECT_CONCURRENCY
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,6 +219,11 @@ class IngestionSyncClient:
             raise ValueError("max retries cannot be negative")
         if options.max_backoff < 0:
             raise ValueError("max backoff cannot be negative")
+        if not 1 <= options.object_concurrency <= MAX_OBJECT_CONCURRENCY:
+            raise ValueError(
+                "object concurrency must be between "
+                f"1 and {MAX_OBJECT_CONCURRENCY}"
+            )
         client_run_id = run_id or uuid.uuid4().hex
         self._start_run(client_run_id)
         summary: dict[str, int | str] = {
@@ -452,47 +461,95 @@ class IngestionSyncClient:
             planned[key] = item
         if set(planned) != set(manifests):
             raise SyncProtocolError("object_plan_membership_mismatch")
-        for key in sorted(planned):
-            item = planned[key]
+        ordered = sorted(planned.items())
+        # Validate every local object before any network PUT.  This preserves
+        # the sequential client's all-or-nothing preflight for immutable
+        # spool files while still allowing the network phase to overlap.
+        for key, item in ordered:
             if item.status == "upload_required":
                 if item.upload_url is None:
                     raise SyncProtocolError("object_upload_url_missing")
-                body = self._object_bytes(manifests[key])
-                upload = self._request(
-                    "PUT",
-                    item.upload_url,
-                    options=options,
-                    headers=item.required_headers.model_dump(by_alias=True, mode="json"),
-                    content=body,
+                self._object_bytes(manifests[key])
+        with ThreadPoolExecutor(
+            max_workers=options.object_concurrency,
+            thread_name_prefix="ustc-sync-object",
+        ) as executor:
+            # Keep only a bounded, ordered window of futures.  Results are
+            # observed in plan order so the first propagated failure remains
+            # deterministic even when a later object finishes first.
+            pending: dict[tuple[str, str], Future[None]] = {}
+            iterator = iter(ordered)
+
+            def submit_next() -> bool:
+                try:
+                    key, item = next(iterator)
+                except StopIteration:
+                    return False
+                pending[key] = executor.submit(
+                    self._upload_object,
+                    batch_id,
+                    item,
+                    manifests[key],
+                    options,
                 )
-                self._require_success(upload)
-            complete_request = PublicationObjectCompleteRequest(
-                batchId=batch_id,
-                kind=item.kind,
-                sha256=item.sha256,
-            )
-            complete = self._api_request(
-                "POST",
-                OBJECT_COMPLETE_ENDPOINT,
+                return True
+
+            for _ in range(options.object_concurrency):
+                if not submit_next():
+                    break
+            while pending:
+                key = next(iter(pending))
+                future = pending.pop(key)
+                try:
+                    future.result()
+                except BaseException:
+                    for remaining in pending.values():
+                        remaining.cancel()
+                    raise
+                submit_next()
+
+    def _upload_object(
+        self,
+        batch_id: str,
+        item: PublicationObjectPlanItem,
+        manifest: LocalObjectManifest,
+        options: SyncOptions,
+    ) -> None:
+        if item.status == "upload_required":
+            if item.upload_url is None:
+                raise SyncProtocolError("object_upload_url_missing")
+            body = self._object_bytes(manifest)
+            upload = self._request(
+                "PUT",
+                item.upload_url,
                 options=options,
-                headers={"Content-Type": "application/json"},
-                content=_json_bytes(
-                    complete_request.model_dump(by_alias=True, mode="json")
-                ),
+                headers=item.required_headers.model_dump(by_alias=True, mode="json"),
+                content=body,
             )
-            self._require_success(complete)
-            try:
-                complete_response = PublicationObjectCompleteResponse.model_validate(
-                    complete.json()
-                )
-            except (ValueError, TypeError) as exc:
-                raise SyncProtocolError("invalid_object_complete_response") from exc
-            if (
-                complete_response.batch_id != batch_id
-                or complete_response.kind != item.kind
-                or complete_response.sha256 != item.sha256
-            ):
-                raise SyncProtocolError("object_complete_identity_mismatch")
+            self._require_success(upload)
+        complete_request = PublicationObjectCompleteRequest(
+            batchId=batch_id,
+            kind=item.kind,
+            sha256=item.sha256,
+        )
+        complete = self._api_request(
+            "POST",
+            OBJECT_COMPLETE_ENDPOINT,
+            options=options,
+            headers={"Content-Type": "application/json"},
+            content=_json_bytes(complete_request.model_dump(by_alias=True, mode="json")),
+        )
+        self._require_success(complete)
+        try:
+            complete_response = PublicationObjectCompleteResponse.model_validate(complete.json())
+        except (ValueError, TypeError) as exc:
+            raise SyncProtocolError("invalid_object_complete_response") from exc
+        if (
+            complete_response.batch_id != batch_id
+            or complete_response.kind != item.kind
+            or complete_response.sha256 != item.sha256
+        ):
+            raise SyncProtocolError("object_complete_identity_mismatch")
 
     @staticmethod
     def _object_bytes(manifest: LocalObjectManifest) -> bytes:
@@ -635,6 +692,8 @@ SyncClient = IngestionSyncClient
 
 __all__ = [
     "BATCH_ENDPOINT",
+    "DEFAULT_OBJECT_CONCURRENCY",
+    "MAX_OBJECT_CONCURRENCY",
     "OBJECT_COMPLETE_ENDPOINT",
     "OBJECT_PLAN_ENDPOINT",
     "INGESTION_SECRET_ENV",
