@@ -756,6 +756,63 @@ class Store:
                 if row.local_path and Path(row.local_path).is_file()
             }
 
+    def sync_article_page(self, after_url: str = "", limit: int = 100) -> list[ArticleDocument]:
+        """Read a bounded keyset page of article snapshots for sync backfill."""
+
+        if limit < 1:
+            raise ValueError("sync backfill limit must be positive")
+        with self.database.session_factory() as session:
+            query = select(Article).order_by(Article.url).limit(limit)
+            if after_url:
+                query = query.where(Article.url > after_url)
+            rows = session.scalars(query).all()
+            result: list[ArticleDocument] = []
+            for row in rows:
+                image_rows = session.scalars(
+                    select(ArticleMedia)
+                    .where(ArticleMedia.article_url == row.url)
+                    .order_by(ArticleMedia.image_url)
+                ).all()
+                raw_metadata: dict[str, Any] = {}
+                if row.raw_json:
+                    try:
+                        value = json.loads(row.raw_json)
+                        if isinstance(value, dict):
+                            raw_metadata = value
+                    except (TypeError, ValueError):
+                        pass
+                result.append(
+                    ArticleDocument(
+                        url=row.url,
+                        source_id=row.source_id,
+                        title=row.title or "",
+                        author=row.author or "",
+                        published_at=row.published_at or "",
+                        updated_at=row.updated_at or "",
+                        category=row.category or "",
+                        summary=row.summary or "",
+                        body_html=row.body_html or "",
+                        body_text=row.body_text or "",
+                        body_markdown=row.body_markdown or "",
+                        extraction_method=row.extraction_method or "",
+                        source_page_url=row.source_page_url or row.url,
+                        raw_metadata=raw_metadata,
+                        images=[
+                            ImageRef(
+                                url=image.image_url,
+                                alt=image.alt or "",
+                                title=image.title or "",
+                                caption=image.caption or "",
+                                article_url=row.url,
+                            )
+                            for image in image_rows
+                        ],
+                        publication_type=row.publication_type,
+                        classifier_version=row.classifier_version,
+                    )
+                )
+            return result
+
     def write_article_bundle(
         self, article: ArticleDocument, content_hash: str | None = None
     ) -> None:

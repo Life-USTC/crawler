@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from .crawl import CrawlOptions, run_crawl
@@ -9,11 +10,36 @@ from .db import upgrade_database
 from .discover import discover_units
 from .media import MediaOptions, download_saved_images
 from .store import Store
+from .sync import (
+    IngestionSyncClient,
+    KeyringCredentialStore,
+    OAuthDeviceClient,
+    SyncOptions,
+    sync_backfill,
+)
 from .web import serve_dashboard
 
 
 def _path(value: str) -> str:
     return str(Path(value))
+
+
+def _sync_connection_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--server",
+        default=os.environ.get("USTC_CRAWLER_SERVER", ""),
+        help="server origin for OAuth and publication ingestion",
+    )
+    parser.add_argument(
+        "--client-id",
+        default=os.environ.get("USTC_CRAWLER_CLIENT_ID", "life-ustc-publication-crawler"),
+        help="admin-pre-registered public OAuth client id",
+    )
+
+
+def _sync_storage_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--db", default="data/crawler.sqlite", type=_path)
+    parser.add_argument("--data-dir", default="data", type=_path)
 
 
 def _iso_date(value: str) -> str:
@@ -194,11 +220,110 @@ def build_parser() -> argparse.ArgumentParser:
         help="apply pending Alembic migrations to an existing local database",
     )
     db_upgrade.add_argument("--db", default="data/crawler.sqlite", type=_path)
+
+    auth = sub.add_parser("auth", help="authenticate the ingestion client")
+    auth_sub = auth.add_subparsers(dest="auth_command", required=True)
+    for name, help_text in (
+        ("login", "complete OAuth device login"),
+        ("status", "show local authentication status"),
+        ("logout", "remove local authentication credentials"),
+    ):
+        auth_command = auth_sub.add_parser(name, help=help_text)
+        _sync_connection_args(auth_command)
+
+    sync = sub.add_parser("sync", help="upload persisted publication batches")
+    _sync_connection_args(sync)
+    _sync_storage_args(sync)
+    sync.add_argument("--batch-size", type=int, default=50)
+    sync.add_argument("--max-payload-bytes", type=int, default=2 * 1024 * 1024)
+    sync.add_argument("--max-batches", type=int, default=0, help="0 means all pending batches")
+    sync.add_argument("--max-retries", type=int, default=3)
+
+    sync_backfill_command = sub.add_parser(
+        "sync-backfill",
+        help="enqueue existing articles for later sync without making network requests",
+    )
+    _sync_storage_args(sync_backfill_command)
+    sync_backfill_command.add_argument("--chunk-size", type=int, default=100)
     return parser
+
+
+def _oauth_client(args: argparse.Namespace) -> OAuthDeviceClient:
+    if not args.server:
+        raise ValueError("--server is required for ingestion commands")
+    if not args.client_id:
+        raise ValueError("--client-id is required for ingestion commands")
+    credentials = KeyringCredentialStore(args.server, args.client_id)
+    return OAuthDeviceClient(args.server, args.client_id, credentials)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "auth":
+        oauth = _oauth_client(args)
+        try:
+            if args.auth_command == "login":
+                def show_instructions(instructions: object) -> None:
+                    print(
+                        json.dumps(
+                            {
+                                "userCode": instructions.user_code,
+                                "verificationUri": instructions.verification_uri,
+                                "verificationUriComplete": instructions.verification_uri_complete,
+                                "expiresIn": instructions.expires_in,
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+
+                oauth.login(on_instructions=show_instructions)
+                print(json.dumps(oauth.status(), ensure_ascii=False))
+            elif args.auth_command == "status":
+                print(json.dumps(oauth.status(), ensure_ascii=False, indent=2))
+            else:
+                oauth.logout()
+                print(json.dumps({"authenticated": False}, ensure_ascii=False))
+        finally:
+            oauth.close()
+        return 0
+    if args.command == "sync":
+        oauth = _oauth_client(args)
+        try:
+            store = Store(args.db, args.data_dir)
+            try:
+                client = IngestionSyncClient(store.database, args.data_dir, oauth)
+                print(
+                    json.dumps(
+                        client.sync(
+                            options=SyncOptions(
+                                batch_size=args.batch_size,
+                                max_payload_bytes=args.max_payload_bytes,
+                                max_batches=args.max_batches,
+                                max_retries=args.max_retries,
+                            )
+                        ),
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                )
+            finally:
+                store.close()
+        finally:
+            oauth.close()
+        return 0
+    if args.command == "sync-backfill":
+        store = Store(args.db, args.data_dir)
+        try:
+            print(
+                json.dumps(
+                    sync_backfill(store, chunk_size=args.chunk_size),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        finally:
+            store.close()
+        return 0
     if args.command == "discover-ustc":
         result = discover_units(args.directory_url, args.output)
         print(

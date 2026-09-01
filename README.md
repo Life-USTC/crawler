@@ -91,6 +91,28 @@ uv run ustc-crawler reindex
 uv run ustc-crawler reindex --source unit-math-ustc-edu-cn
 ```
 
+## 同步到服务端
+
+同步客户端使用管理员预注册的公开 OAuth client，通过设备授权登录；访问令牌只保存在操作系统密钥环中，不会写入 SQLite、归档或日志。先配置服务器地址（client id 默认是项目预注册值，也可用环境变量覆盖）：
+
+```bash
+uv run ustc-crawler auth login \
+  --server https://example.invalid
+uv run ustc-crawler auth status --server https://example.invalid
+
+# 先把历史文章分块写入本地 outbox，不发起网络请求
+uv run ustc-crawler sync-backfill \
+  --db data/crawler.sqlite --data-dir data --chunk-size 100
+
+# 重试并上传已持久化的不可变批次
+uv run ustc-crawler sync \
+  --server https://example.invalid \
+  --db data/crawler.sqlite --data-dir data
+uv run ustc-crawler auth logout --server https://example.invalid
+```
+
+同步前请确保系统已配置安全的 Keychain、Secret Service 或 Windows Credential Manager；检测不到安全密钥环时命令会直接报错，不会退回明文文件。批次默认最多 50 篇且正文约 2 MiB，断点重跑使用同一批次和幂等键；上传对象先从本地内容寻址 spool 校验 SHA-256/大小，再按服务端返回的请求头上传。
+
 ## 本地数据
 
 `data/` 完全排除在 Git 之外。主要内容包括：

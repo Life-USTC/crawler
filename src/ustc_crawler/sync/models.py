@@ -185,7 +185,7 @@ class PublicationSourceDescriptor(ProtocolModel):
     _validate_seed_urls = field_validator("seed_urls")(_validate_optional_urls)
 
 
-class PublicationObjectPlanItem(ProtocolModel):
+class PublicationObjectPlanRequestItem(ProtocolModel):
     """The object identity requested by the server before upload."""
 
     kind: ObjectKind
@@ -196,7 +196,7 @@ class PublicationObjectPlanRequest(ProtocolModel):
     """Request body for ``/publication-objects/plan``."""
 
     batch_id: str = Field(alias="batchId", min_length=1, max_length=200)
-    objects: list[PublicationObjectPlanItem] = Field(min_length=1, max_length=500)
+    objects: list[PublicationObjectPlanRequestItem] = Field(min_length=1, max_length=500)
 
 
 class PublicationObjectCompleteRequest(ProtocolModel):
@@ -205,6 +205,67 @@ class PublicationObjectCompleteRequest(ProtocolModel):
     batch_id: str = Field(alias="batchId", min_length=1, max_length=200)
     kind: ObjectKind
     sha256: Sha256
+
+
+class IngestionItemResult(ProtocolModel):
+    """One result returned by the batch ingestion endpoint."""
+
+    source_id: SourceId = Field(alias="sourceId")
+    canonical_url: Url = Field(alias="canonicalUrl")
+    revision_hash: Sha256 = Field(alias="revisionHash")
+    status: Literal["created", "updated", "unchanged", "rejected"]
+    publication_id: str | None = Field(alias="publicationId")
+    revision_id: str | None = Field(alias="revisionId")
+    error: str = Field(default="")
+
+    _validate_canonical_url = field_validator("canonical_url")(_validate_url)
+
+
+class IngestionBatchResponse(ProtocolModel):
+    """Strict response returned by ``/publications/batches``."""
+
+    batch_id: str = Field(alias="batchId", min_length=1)
+    client_run_id: str = Field(alias="clientRunId", min_length=1)
+    payload_digest: Sha256 = Field(alias="payloadDigest")
+    results: list[IngestionItemResult]
+
+
+class RequiredUploadHeaders(ProtocolModel):
+    """Headers the server signed into an object upload request."""
+
+    content_type: str = Field(alias="Content-Type", min_length=1)
+    metadata_kind: str = Field(alias="x-amz-meta-kind", min_length=1)
+    metadata_sha256: str = Field(alias="x-amz-meta-sha256", min_length=1)
+
+
+class PublicationObjectPlanItem(ProtocolModel):
+    """One upload decision returned by the object plan endpoint."""
+
+    kind: ObjectKind
+    sha256: Sha256
+    r2_key: str = Field(alias="r2Key", min_length=1)
+    status: Literal["already_present", "upload_required"]
+    upload_url: str | None = Field(alias="uploadUrl")
+    expires_at: str | None = Field(alias="expiresAt")
+    required_headers: RequiredUploadHeaders = Field(alias="requiredHeaders")
+
+    _validate_upload_url = field_validator("upload_url")(_validate_optional_url)
+
+
+class PublicationObjectPlanResponse(ProtocolModel):
+    """Strict response returned by ``/publication-objects/plan``."""
+
+    batch_id: str = Field(alias="batchId", min_length=1)
+    objects: list[PublicationObjectPlanItem]
+
+
+class PublicationObjectCompleteResponse(ProtocolModel):
+    """Strict response returned by ``/publication-objects/complete``."""
+
+    batch_id: str = Field(alias="batchId", min_length=1)
+    kind: ObjectKind
+    sha256: Sha256
+    status: Literal["verified", "linked"]
 
 class IngestionPublication(ProtocolModel):
     """A non-tombstone item in the server ingestion contract."""
@@ -419,15 +480,21 @@ def build_ingestion_batch(
 __all__ = [
     "INGESTION_PROTOCOL_VERSION",
     "IngestionBatch",
+    "IngestionBatchResponse",
+    "IngestionItemResult",
     "IngestionPublication",
     "LocalObjectManifest",
     "ObjectKind",
     "ObjectManifest",
     "PublicationObjectCompleteRequest",
+    "PublicationObjectCompleteResponse",
     "PublicationObjectPlanItem",
+    "PublicationObjectPlanRequestItem",
     "PublicationObjectPlanRequest",
+    "PublicationObjectPlanResponse",
     "PublicationItem",
     "PublicationSourceDescriptor",
+    "RequiredUploadHeaders",
     "TombstonePublication",
     "build_ingestion_batch",
     "build_publication",

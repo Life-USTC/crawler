@@ -29,6 +29,11 @@ from .models import (
 
 type LocalObjectInput = str | Path | tuple[str | Path, str]
 MAX_OBJECT_SIZE = 32 * 1024 * 1024
+DEFAULT_MAX_BATCH_BYTES = 2 * 1024 * 1024
+
+
+class BatchTooLargeError(ValueError):
+    """Raised when one immutable event cannot fit the wire batch limit."""
 
 
 def _sha256_file(path: Path) -> tuple[str, int]:
@@ -231,8 +236,19 @@ class IngestionOutbox:
             raise ValueError(f"sync run does not exist: {run_id}")
         existing = session.get(SyncOutbox, event_id)
         if existing is not None:
+            try:
+                existing_payload = json.loads(existing.payload_json)
+                current_payload = json.loads(payload_json)
+                existing_payload.pop("observedAt", None)
+                current_payload.pop("observedAt", None)
+                existing_payload_digest = hashlib.sha256(
+                    existing.payload_json.encode("utf-8")
+                ).hexdigest()
+            except (TypeError, ValueError, AttributeError) as exc:
+                raise ValueError(f"invalid immutable outbox event: {event_id}") from exc
             if (
-                existing.payload_sha256 != payload_sha256
+                existing.payload_sha256 != existing_payload_digest
+                or existing_payload != current_payload
                 or existing.object_manifest_json != object_manifest_json
                 or existing.source_json != source_json
             ):
@@ -265,8 +281,29 @@ class IngestionOutbox:
         run_id: str | None = None,
         created_at: str | None = None,
     ) -> str:
+        return self.enqueue_publication_with_status(
+            publication,
+            source=source,
+            local_objects=local_objects,
+            run_id=run_id,
+            created_at=created_at,
+        )[0]
+
+    def enqueue_publication_with_status(
+        self,
+        publication: IngestionPublication,
+        *,
+        source: PublicationSourceDescriptor,
+        local_objects: Iterable[LocalObjectManifest] = (),
+        run_id: str | None = None,
+        created_at: str | None = None,
+    ) -> tuple[str, bool]:
+        """Insert an event and report whether this call created its row."""
+
         with transaction(self.database) as session:
-            return self.enqueue_publication_in_session(
+            event_id = self._event_id(publication)
+            created = session.get(SyncOutbox, event_id) is None
+            event_id = self.enqueue_publication_in_session(
                 session,
                 publication,
                 source=source,
@@ -274,6 +311,7 @@ class IngestionOutbox:
                 run_id=run_id,
                 created_at=created_at,
             )
+            return event_id, created
 
     def enqueue_article(
         self,
@@ -286,6 +324,29 @@ class IngestionOutbox:
         run_id: str | None = None,
         observed_at: str | date | datetime | None = None,
     ) -> str:
+        return self.enqueue_article_with_status(
+            article,
+            data_dir,
+            source=source,
+            media_paths=media_paths,
+            asset_paths=asset_paths,
+            run_id=run_id,
+            observed_at=observed_at,
+        )[0]
+
+    def enqueue_article_with_status(
+        self,
+        article: ArticleDocument,
+        data_dir: str | Path,
+        *,
+        source: PublicationSourceDescriptor,
+        media_paths: dict[str, LocalObjectInput] | None = None,
+        asset_paths: dict[str, LocalObjectInput] | None = None,
+        run_id: str | None = None,
+        observed_at: str | date | datetime | None = None,
+    ) -> tuple[str, bool]:
+        """Snapshot an article and report whether its immutable event was new."""
+
         local_objects = spool_article_objects(
             article,
             data_dir,
@@ -298,7 +359,7 @@ class IngestionOutbox:
             objects=wire_objects,
             observed_at=observed_at,
         )
-        return self.enqueue_publication(
+        return self.enqueue_publication_with_status(
             publication,
             source=source,
             local_objects=local_objects,
@@ -335,6 +396,152 @@ class IngestionOutbox:
             for value in json.loads(row.sources_json)
         ]
 
+    def pending_batches(self) -> list[SyncBatch]:
+        """Return batches that need delivery, oldest first."""
+
+        with self.database.session_factory() as session:
+            return session.scalars(
+                select(SyncBatch)
+                .where(SyncBatch.status.in_(("pending", "uploading")))
+                .order_by(SyncBatch.created_at, SyncBatch.id)
+            ).all()
+
+    def batch_objects(
+        self,
+        batch_id: str,
+        *,
+        item_keys: Iterable[str] | None = None,
+    ) -> tuple[LocalObjectManifest, ...]:
+        """Load immutable manifests, optionally only for selected item keys."""
+
+        with self.database.session_factory() as session:
+            if item_keys is None:
+                item_query = select(SyncBatchItem.item_key).where(
+                    SyncBatchItem.batch_id == batch_id
+                )
+                event_ids = set(session.scalars(item_query).all())
+            else:
+                event_ids = set(item_keys)
+                if not event_ids:
+                    return ()
+            if not event_ids:
+                return ()
+            rows = session.scalars(
+                select(SyncOutbox)
+                .where(
+                    SyncOutbox.batch_id == batch_id,
+                    SyncOutbox.event_id.in_(event_ids),
+                )
+                .order_by(SyncOutbox.created_at, SyncOutbox.event_id)
+            ).all()
+            manifests: list[LocalObjectManifest] = []
+            for row in rows:
+                values = json.loads(row.object_manifest_json)
+                if not isinstance(values, list):
+                    raise ValueError(f"invalid object manifest for outbox event: {row.event_id}")
+                manifests.extend(LocalObjectManifest.model_validate(value) for value in values)
+            return tuple(manifests)
+
+    def batch_item_keys(
+        self,
+        batch_id: str,
+        identities: Iterable[tuple[str, str, str]],
+    ) -> set[str]:
+        """Resolve server item identities to immutable local event keys."""
+
+        requested = set(identities)
+        if not requested:
+            return set()
+        with self.database.session_factory() as session:
+            rows = session.scalars(
+                select(SyncBatchItem).where(SyncBatchItem.batch_id == batch_id)
+            ).all()
+            resolved = {
+                (row.source_id, row.canonical_url, row.revision_hash): row.item_key for row in rows
+            }
+        if not requested.issubset(resolved):
+            raise ValueError("batch item identity does not match persisted items")
+        return {resolved[identity] for identity in requested}
+
+    def mark_batch_results(
+        self,
+        batch_id: str,
+        *,
+        accepted_identities: Iterable[tuple[str, str, str]],
+        rejected_identities: Iterable[tuple[str, str, str]],
+        response_json: str,
+    ) -> str:
+        """Persist per-item outcomes after the server accepted the batch.
+
+        The server response identifies items by source, canonical URL, and
+        revision hash.  Rejected item descriptions are deliberately reduced
+        to ``server_rejected`` so an arbitrary response body cannot become
+        durable local data.
+        """
+
+        accepted = set(accepted_identities)
+        rejected = set(rejected_identities)
+        if accepted & rejected:
+            raise ValueError("an item cannot be both accepted and rejected")
+        if not response_json:
+            raise ValueError("batch response cannot be empty")
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        with transaction(self.database) as session:
+            batch = session.get(SyncBatch, batch_id)
+            if batch is None:
+                raise KeyError(batch_id)
+            batch_items = session.scalars(
+                select(SyncBatchItem)
+                .where(SyncBatchItem.batch_id == batch_id)
+                .order_by(SyncBatchItem.item_key)
+            ).all()
+            expected = {
+                (item.source_id, item.canonical_url, item.revision_hash)
+                for item in batch_items
+            }
+            if expected != accepted | rejected:
+                raise ValueError("batch result membership does not match persisted items")
+            for item in batch_items:
+                row = session.get(SyncOutbox, item.item_key)
+                if row is None:
+                    raise ValueError(f"missing outbox event for batch item: {item.item_key}")
+                identity = (item.source_id, item.canonical_url, item.revision_hash)
+                if identity in accepted:
+                    item.status = "acked"
+                    item.error = None
+                    row.status = "acked"
+                    row.last_error = None
+                else:
+                    item.status = "rejected"
+                    item.error = "server_rejected"
+                    row.status = "failed"
+                    row.last_error = "server_rejected"
+                row.response_json = response_json
+                row.updated_at = now
+            batch.status = (
+                "partial" if accepted and rejected else "failed" if rejected else "acked"
+            )
+            batch.response_json = response_json
+            batch.last_error = "server_rejected" if rejected else None
+            batch.updated_at = now
+            return batch.status
+
+    def mark_batch_error(self, batch_id: str, error_code: str) -> None:
+        """Record a safe error code without persisting response bodies or URLs."""
+
+        if not error_code or any(character.isspace() for character in error_code):
+            raise ValueError("batch error must be a non-empty code without whitespace")
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        with transaction(self.database) as session:
+            batch = session.get(SyncBatch, batch_id)
+            if batch is None:
+                raise KeyError(batch_id)
+            batch.last_error = error_code
+            batch.updated_at = now
+            for row in session.scalars(select(SyncOutbox).where(SyncOutbox.batch_id == batch_id)):
+                row.last_error = error_code
+                row.updated_at = now
+
     def build_batch(
         self,
         *,
@@ -343,11 +550,16 @@ class IngestionOutbox:
         producer_version: str,
         observed_at: str | date | datetime,
         limit: int = 50,
+        max_payload_bytes: int = DEFAULT_MAX_BATCH_BYTES,
     ) -> IngestionBatch | None:
         """Claim pending events and persist their exact immutable batch body."""
 
         if limit < 1:
             raise ValueError("batch limit must be positive")
+        if max_payload_bytes < 1:
+            raise ValueError("max payload bytes must be positive")
+        if max_payload_bytes > DEFAULT_MAX_BATCH_BYTES:
+            raise ValueError(f"max payload bytes cannot exceed {DEFAULT_MAX_BATCH_BYTES}")
         with transaction(self.database) as session:
             existing = session.get(SyncBatch, batch_id)
             if existing is not None:
@@ -368,15 +580,37 @@ class IngestionOutbox:
                     raise ValueError(f"immutable batch payload changed: {batch_id}")
                 return batch
 
-            rows = session.scalars(
+            candidate_rows = session.scalars(
                 select(SyncOutbox)
                 .where(SyncOutbox.status == "pending", SyncOutbox.batch_id.is_(None))
                 .order_by(SyncOutbox.created_at, SyncOutbox.event_id)
                 .limit(limit)
             ).all()
+            if not candidate_rows:
+                return None
+            rows: list[SyncOutbox] = []
+            publications: list[IngestionPublication] = []
+            for candidate in candidate_rows:
+                candidate_rows_for_batch = [*rows, candidate]
+                candidate_publications = [*publications, self._publication(candidate)]
+                candidate_batch = build_ingestion_batch(
+                    candidate_publications,
+                    sources=self._sources(candidate_rows_for_batch),
+                    client_run_id=run_id,
+                    batch_id=batch_id,
+                    observed_at=observed_at,
+                    producer_version=producer_version,
+                )
+                if len(candidate_batch.payload_bytes()) > max_payload_bytes:
+                    if not rows:
+                        raise BatchTooLargeError(
+                            f"event {candidate.event_id} exceeds {max_payload_bytes} byte batch limit"
+                        )
+                    break
+                rows = candidate_rows_for_batch
+                publications = candidate_publications
             if not rows:
                 return None
-            publications = [self._publication(row) for row in rows]
             sources = self._sources(rows)
             batch = build_ingestion_batch(
                 publications,
@@ -427,10 +661,14 @@ class IngestionOutbox:
                 raise KeyError(batch_id)
             batch.status = status
             batch.response_json = response_json or None
+            if status == "acked":
+                batch.last_error = None
             batch.updated_at = now
             for row in session.scalars(select(SyncOutbox).where(SyncOutbox.batch_id == batch_id)):
                 row.status = status
                 row.response_json = response_json or None
+                if status == "acked":
+                    row.last_error = None
                 row.updated_at = now
             for row in session.scalars(
                 select(SyncBatchItem).where(SyncBatchItem.batch_id == batch_id)
@@ -439,6 +677,8 @@ class IngestionOutbox:
 
 
 __all__ = [
+    "BatchTooLargeError",
+    "DEFAULT_MAX_BATCH_BYTES",
     "IngestionOutbox",
     "spool_article_objects",
     "spool_bytes",
