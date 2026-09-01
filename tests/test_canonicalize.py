@@ -4,6 +4,7 @@ from ustc_crawler.canonicalize import (
     host_matches,
     looks_like_asset,
     looks_like_binary,
+    looks_like_uploaded_html_attachment,
     normalize_url,
 )
 
@@ -22,6 +23,17 @@ class CanonicalizeTests(unittest.TestCase):
     def test_assets(self) -> None:
         self.assertTrue(looks_like_asset("https://a.ustc.edu.cn/a.pdf"))
         self.assertFalse(looks_like_asset("https://a.ustc.edu.cn/article/1"))
+
+    def test_ustc_uploaded_html_attachment_is_an_asset(self) -> None:
+        attachment = (
+            "http://scc.ustc.edu.cn/_upload/article/files/7d/f9/"
+            "033cd3b84a9d8a16b2b2eb9987e6/W020150417520333865223.htm"
+        )
+        article = "http://scc.ustc.edu.cn/2009/1014/c396a3060/page.htm"
+        self.assertTrue(looks_like_uploaded_html_attachment(attachment))
+        self.assertTrue(looks_like_asset(attachment))
+        self.assertFalse(looks_like_uploaded_html_attachment(article))
+        self.assertFalse(looks_like_asset(article))
 
     def test_binary_signatures(self) -> None:
         self.assertTrue(looks_like_binary(b"PK\x03\x04office document"))

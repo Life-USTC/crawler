@@ -53,6 +53,20 @@ class ScoringTests(unittest.TestCase):
         self.assertTrue(low)
         self.assertIn("variant", reason)
 
+    def test_uploaded_html_attachment_is_filtered(self) -> None:
+        low, reason = is_obvious_low_value_url(
+            "http://scc.ustc.edu.cn/_upload/article/files/7d/f9/"
+            "033cd3b84a9d8a16b2b2eb9987e6/W020150417520333865223.htm"
+        )
+        self.assertTrue(low)
+        self.assertEqual(reason, "uploaded HTML attachment")
+        self.assertEqual(
+            is_obvious_low_value_url(
+                "http://scc.ustc.edu.cn/2009/1014/c396a3060/page.htm"
+            ),
+            (False, ""),
+        )
+
     def test_cms_download_endpoint_is_a_document_asset(self) -> None:
         self.assertTrue(
             document_asset_url(

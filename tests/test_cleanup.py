@@ -316,6 +316,38 @@ class CleanupExcessImagesTests(unittest.TestCase):
         self.assertEqual(repaired["page_kind"], "document")
         self.assertEqual(repaired["value_tier"], "not_indexed")
 
+    def test_reindex_removes_uploaded_html_attachment_article(self) -> None:
+        url = (
+            "https://www.ustc.edu.cn/_upload/article/files/7d/f9/"
+            "033cd3b84a9d8a16b2b2eb9987e6/W020150417520333865223.htm"
+        )
+        html = """<html><body><article><h1>教程附件</h1>
+        <time>发布时间：2026-08-01</time>
+        <p>这是一个足够长的 HTML 附件正文，用于验证静态附件不会被重新提取为新闻文章。</p>
+        <p>第二段内容让旧版提取结果满足文章阈值，但重新索引必须把它归档为附件。</p>
+        </article></body></html>"""
+        page = extract_page(url, html, source_id="university")
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        page.raw_body = html.encode()
+        self.store.save_page(page, "university", 1)
+        self.store.save_article(page.article)
+
+        result = self.store.reindex_extractions(page_urls={url})
+
+        repaired = store_core(self.store).execute(
+            "SELECT title,page_kind,value_tier,raw_path FROM pages WHERE url=?", (url,)
+        ).fetchone()
+        article = store_core(self.store).execute(
+            "SELECT url FROM articles WHERE url=?", (url,)
+        ).fetchone()
+        self.assertEqual(result["removed"], 1)
+        self.assertEqual(repaired["title"], "W020150417520333865223.htm")
+        self.assertEqual(repaired["page_kind"], "document")
+        self.assertEqual(repaired["value_tier"], "not_indexed")
+        self.assertTrue(repaired["raw_path"])
+        self.assertIsNone(article)
+
 
 class CleanupCliTests(unittest.TestCase):
     def test_cli_dry_run_reports_counts(self) -> None:
