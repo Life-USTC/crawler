@@ -741,10 +741,11 @@ def sync_backfill(store: Store, *, chunk_size: int = 100) -> dict[str, int]:
     cursor = ""
     result = {"scanned": 0, "enqueued": 0, "errors": 0}
     while True:
-        articles = store.sync_article_page(cursor, chunk_size)
-        if not articles:
+        snapshots = store.sync_article_snapshot_page(cursor, chunk_size)
+        if not snapshots:
             break
-        for article in articles:
+        for snapshot in snapshots:
+            article = snapshot.article
             result["scanned"] += 1
             cursor = article.url
             try:
@@ -758,11 +759,8 @@ def sync_backfill(store: Store, *, chunk_size: int = 100) -> dict[str, int]:
                     article,
                     store.data_dir,
                     source=source,
-                    media_paths=store.media_paths_for_article(article.url),
-                    asset_paths=store.asset_paths_for_article(
-                        article.url,
-                        article.source_page_url,
-                    ),
+                    media_paths=snapshot.media_paths,
+                    asset_paths=snapshot.asset_paths,
                 )
             except (OSError, ValueError, KeyError):
                 result["errors"] += 1

@@ -9,11 +9,11 @@ from tempfile import TemporaryDirectory
 
 import httpx
 from pydantic import ValidationError
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 
 from ustc_crawler.cli import build_parser
-from ustc_crawler.db.models import SyncBatch, SyncBatchItem, SyncOutbox
-from ustc_crawler.models import ArticleDocument, SourceConfig
+from ustc_crawler.db.models import Media, SyncBatch, SyncBatchItem, SyncOutbox
+from ustc_crawler.models import ArticleDocument, ImageRef, SourceConfig
 from ustc_crawler.store import Store
 from ustc_crawler.sync.client import (
     DEFAULT_BATCH_CONCURRENCY,
@@ -34,7 +34,12 @@ from ustc_crawler.sync.models import (
     IngestionBatchResponse,
     build_publication,
 )
-from ustc_crawler.sync.outbox import IngestionOutbox, spool_bytes, wire_manifest
+from ustc_crawler.sync.outbox import (
+    IngestionOutbox,
+    spool_article_objects,
+    spool_bytes,
+    wire_manifest,
+)
 
 
 class SyncClientTests(unittest.TestCase):
@@ -1032,6 +1037,137 @@ class SyncClientTests(unittest.TestCase):
                         session.scalar(select(func.count()).select_from(SyncOutbox)),
                         3,
                     )
+            finally:
+                store.close()
+
+    def test_backfill_bulk_snapshot_preserves_payload_and_shared_media(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            try:
+                shared_image = ImageRef(
+                    url="https://example.edu/uploads/shared.png",
+                    alt="shared",
+                    title="Shared image",
+                    caption="A shared image",
+                )
+                articles = [self._article(1), self._article(2)]
+                for article in articles:
+                    article.images = [shared_image]
+                    store.save_article(article)
+                media_path = store.save_media(
+                    shared_image,
+                    b"shared image bytes",
+                    "image/png",
+                    articles[0].url,
+                    articles[0].source_page_url,
+                )
+                assert media_path is not None
+                store.link_media(shared_image, articles[1].url, articles[1].source_page_url)
+                with store.database.session_factory.begin() as session:
+                    session.get(Media, shared_image.url).article_url = None
+                asset_url = "https://example.edu/files/guide.pdf"
+                asset_path = store.save_asset(
+                    url=asset_url,
+                    source_url=articles[1].url,
+                    body=b"%PDF-guide",
+                    mime_type="application/pdf",
+                )
+                assert asset_path is not None
+
+                snapshots = store.sync_article_snapshot_page(limit=2)
+                self.assertEqual(
+                    [snapshot.article.url for snapshot in snapshots],
+                    sorted(article.url for article in articles),
+                )
+                self.assertEqual(
+                    snapshots[1].media_paths[shared_image.url],
+                    (str(media_path), "image/png"),
+                )
+                self.assertEqual(
+                    snapshots[1].asset_paths[asset_url],
+                    (str(asset_path), "application/pdf"),
+                )
+
+                self.assertEqual(
+                    sync_backfill(store, chunk_size=2),
+                    {"scanned": 2, "enqueued": 2, "errors": 0},
+                )
+                with store.database.session_factory() as session:
+                    actual_rows = {
+                        json.loads(row.payload_json)["canonicalUrl"]: row
+                        for row in session.scalars(select(SyncOutbox)).all()
+                    }
+                for snapshot in snapshots:
+                    article = snapshot.article
+                    local_objects = spool_article_objects(
+                        article,
+                        store.data_dir,
+                        media_paths=store.media_paths_for_article(article.url),
+                        asset_paths=store.asset_paths_for_article(
+                            article.url,
+                            article.source_page_url,
+                        ),
+                    )
+                    expected = build_publication(
+                        article,
+                        objects=[wire_manifest(item) for item in local_objects],
+                    )
+                    actual_payload = json.loads(actual_rows[article.url].payload_json)
+                    expected_payload = expected.model_dump(
+                        by_alias=True,
+                        mode="json",
+                        exclude_none=True,
+                    )
+                    # Backfill observations are intentionally generated at
+                    # enqueue time; all immutable publication fields must be
+                    # identical to the pre-optimization snapshot.
+                    expected_payload["observedAt"] = actual_payload["observedAt"]
+                    self.assertEqual(actual_payload, expected_payload)
+                    self.assertEqual(
+                        json.loads(actual_rows[article.url].object_manifest_json),
+                        [item.model_dump(mode="json") for item in local_objects],
+                    )
+            finally:
+                store.close()
+
+    def test_bulk_snapshot_query_count_is_bounded_and_keyset_order_is_stable(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            try:
+                for number in range(10, 0, -1):
+                    article = self._article(number)
+                    with store.database.session_factory.begin() as session:
+                        Store._save_article_record(
+                            session,
+                            article,
+                            hashlib.sha256(article.body_text.encode()).hexdigest(),
+                            f"2026-08-20T00:00:{number:02d}+08:00",
+                        )
+
+                statements: list[str] = []
+
+                def count_selects(_connection, _cursor, statement, _parameters, _context, _executemany):
+                    if statement.lstrip().upper().startswith("SELECT"):
+                        statements.append(statement)
+
+                event.listen(store.database.engine, "before_cursor_execute", count_selects)
+                try:
+                    first = store.sync_article_snapshot_page(limit=10)
+                finally:
+                    event.remove(store.database.engine, "before_cursor_execute", count_selects)
+
+                self.assertEqual(len(first), 10)
+                self.assertEqual(
+                    [snapshot.article.url for snapshot in first],
+                    sorted(snapshot.article.url for snapshot in first),
+                )
+                self.assertEqual(len(statements), 4)
+                self.assertEqual(
+                    [snapshot.article.url for snapshot in store.sync_article_snapshot_page(first[-1].article.url)],
+                    [],
+                )
             finally:
                 store.close()
 
