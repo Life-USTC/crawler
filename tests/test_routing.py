@@ -1,10 +1,11 @@
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from tests.support import store_core
 from ustc_crawler.crawl import AsyncCrawler, CrawlOptions, _parse_since
-from ustc_crawler.models import PageDocument, SourceConfig
+from ustc_crawler.models import FetchResponse, PageDocument, SourceConfig
 from ustc_crawler.routing import source_id_for_url
 from ustc_crawler.store import Store
 
@@ -60,6 +61,94 @@ class SourceRoutingTests(unittest.IsolatedAsyncioTestCase):
         ).fetchone()
         self.assertEqual(row["source_id"], "news")
         self.assertEqual(item[3], "news")
+        store.close()
+
+    async def test_canonical_article_uses_owner_but_page_keeps_fetched_source(self) -> None:
+        fetched_url = "https://www.example.test/info/1/2.htm"
+        canonical_url = "https://news.example.test/info/1/2.htm"
+        html = f"""<html><head>
+          <meta property="og:url" content="{canonical_url}">
+        </head><body><article>
+          <h1>Canonical news article</h1>
+          <p>This body is long enough for the page to be retained as a public article.</p>
+          <p>The fetched page remains attributed to the university source.</p>
+        </article></body></html>"""
+        crawler = self.crawler()
+
+        async def fake_fetch(url: str, *, max_bytes: int | None = None) -> FetchResponse:
+            return FetchResponse(
+                requested_url=url,
+                final_url=url,
+                status=200,
+                content_type="text/html",
+                headers={"content-type": "text/html"},
+                body=html.encode("utf-8"),
+            )
+
+        crawler.fetcher.fetch = fake_fetch
+        await crawler._process(fetched_url, "university", 0, "")
+        await crawler.close()
+
+        store = Store(self.db_path, self.data_dir)
+        page = store_core(store).execute(
+            "SELECT source_id,canonical_url FROM pages WHERE url=?", (fetched_url,)
+        ).fetchone()
+        article = store_core(store).execute(
+            "SELECT source_id,source_page_url FROM articles WHERE url=?", (canonical_url,)
+        ).fetchone()
+        outbox = store_core(store).execute(
+            "SELECT payload_json FROM sync_outbox WHERE entity_key=?",
+            (f"news:{canonical_url}",),
+        ).fetchone()
+        self.assertEqual(dict(page), {"source_id": "university", "canonical_url": canonical_url})
+        self.assertEqual(
+            dict(article), {"source_id": "news", "source_page_url": fetched_url}
+        )
+        self.assertEqual(json.loads(outbox["payload_json"])["sourceId"], "news")
+        store.close()
+
+    async def test_unowned_canonical_article_is_archived_without_publication(self) -> None:
+        fetched_url = "https://www.example.test/info/1/3.htm"
+        canonical_url = "https://external.example.net/?p=4663"
+        html = f"""<html><head>
+          <meta property="og:url" content="{canonical_url}">
+        </head><body><article>
+          <h1>Escaped canonical article</h1>
+          <p>This body is long enough to look like a public article before ownership is checked.</p>
+          <p>The raw page should remain available for audit.</p>
+        </article></body></html>"""
+        crawler = self.crawler()
+
+        async def fake_fetch(url: str, *, max_bytes: int | None = None) -> FetchResponse:
+            return FetchResponse(
+                requested_url=url,
+                final_url=url,
+                status=200,
+                content_type="text/html",
+                headers={"content-type": "text/html"},
+                body=html.encode("utf-8"),
+            )
+
+        crawler.fetcher.fetch = fake_fetch
+        await crawler._process(fetched_url, "university", 0, "")
+        await crawler.close()
+
+        store = Store(self.db_path, self.data_dir)
+        page = store_core(store).execute(
+            "SELECT source_id,canonical_url,raw_path FROM pages WHERE url=?", (fetched_url,)
+        ).fetchone()
+        article = store_core(store).execute(
+            "SELECT 1 FROM articles WHERE url=?", (canonical_url,)
+        ).fetchone()
+        outbox = store_core(store).execute(
+            "SELECT 1 FROM sync_outbox WHERE entity_key=?",
+            (f"university:{canonical_url}",),
+        ).fetchone()
+        self.assertEqual(page["source_id"], "university")
+        self.assertEqual(page["canonical_url"], canonical_url)
+        self.assertTrue(Path(page["raw_path"]).is_file())
+        self.assertIsNone(article)
+        self.assertIsNone(outbox)
         store.close()
 
     async def test_inactive_owner_handoff_stays_pending_without_active_queue_item(self) -> None:
