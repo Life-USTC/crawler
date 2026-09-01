@@ -5,6 +5,7 @@ from ustc_crawler.crawl import _decode, _xml_links
 from ustc_crawler.extract import extract_page, parse_date
 
 SUZHOU_FIXTURE = Path(__file__).parent / "fixtures" / "suzhou_article.html"
+SUZHOU_ENGLISH_FIXTURE = Path(__file__).parent / "fixtures" / "suzhou_english_article.html"
 
 
 class ExtractTests(unittest.TestCase):
@@ -102,6 +103,21 @@ class ExtractTests(unittest.TestCase):
         self.assertIn("应邀做客我校大师论坛", page.article.body_text)
         self.assertNotIn("网站导航", page.article.body_text)
         self.assertNotIn("网站版权信息", page.article.body_text)
+
+    def test_suzhou_english_hidden_content_and_article_title_selector(self) -> None:
+        page = extract_page(
+            "https://sz.ustc.edu.cn/en/en_news_show/74.html",
+            SUZHOU_ENGLISH_FIXTURE.read_text(encoding="utf-8"),
+            source_id="suzhou",
+        )
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "University of Technology Sydney Delegation Visits SIAR")
+        self.assertEqual(page.article.published_at, "2025-11-18")
+        self.assertIn("delegation from the University of Technology Sydney visited SIAR", page.article.body_text)
+        self.assertNotIn("Links", page.article.title)
+        self.assertNotIn("Site navigation", page.article.body_text)
+        self.assertNotIn("Home", page.article.body_text)
 
     def test_wordpress_page_title_overrides_section_heading(self) -> None:
         html = """
