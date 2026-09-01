@@ -1,6 +1,7 @@
 """Client-side publication ingestion protocol and durable outbox."""
 
 from .client import (
+    DEFAULT_HTTP_TIMEOUT,
     DEFAULT_OBJECT_CONCURRENCY,
     INGESTION_SECRET_ENV,
     INGESTION_SECRET_HEADER,
@@ -53,6 +54,7 @@ __all__ = [
     "BatchTooLargeError",
     "DEFAULT_MAX_BATCH_BYTES",
     "DEFAULT_OBJECT_CONCURRENCY",
+    "DEFAULT_HTTP_TIMEOUT",
     "IngestionOutbox",
     "IngestionItemResult",
     "IngestionPublication",

@@ -677,10 +677,11 @@ class AsyncCrawler:
             self.articles += 1
             if not refresh_existing_before_cutoff:
                 await self._download_images(article, response.final_url)
-            self.store.save_article_and_enqueue_for_sync(
-                article,
-                run_id=self.sync_run_id if self.sync_run_started else None,
-            )
+            if not source.discovery_only:
+                self.store.save_article_and_enqueue_for_sync(
+                    article,
+                    run_id=self.sync_run_id if self.sync_run_started else None,
+                )
         should_follow = (
             depth == 0
             or result.value_score >= self.options.min_value_score

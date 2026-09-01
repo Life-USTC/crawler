@@ -16,6 +16,7 @@ from ustc_crawler.db.models import SyncBatch, SyncBatchItem, SyncOutbox
 from ustc_crawler.models import ArticleDocument, SourceConfig
 from ustc_crawler.store import Store
 from ustc_crawler.sync.client import (
+    DEFAULT_HTTP_TIMEOUT,
     INGESTION_SECRET_HEADER,
     IngestionSyncClient,
     SyncClientError,
@@ -53,6 +54,17 @@ class SyncClientTests(unittest.TestCase):
         )
 
     @staticmethod
+    def _discovery_source() -> SourceConfig:
+        return SourceConfig(
+            id="discovery",
+            name="Discovery source",
+            organization_level="department",
+            seed_urls=["https://discovery.example.edu/"],
+            allowed_hosts=["discovery.example.edu"],
+            discovery_only=True,
+        )
+
+    @staticmethod
     def _article(number: int, *, rejected: bool = False) -> ArticleDocument:
         url = f"https://example.edu/news/{number}"
         if rejected:
@@ -77,6 +89,23 @@ class SyncClientTests(unittest.TestCase):
         store = Store(root / "crawler.sqlite", root / "data")
         store.add_source(self._source())
         return store
+
+    def test_default_http_timeout_covers_long_ingestion_transactions(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            sync = IngestionSyncClient(
+                store.database,
+                store.data_dir,
+                self.server,
+                self.ingestion_secret,
+            )
+            try:
+                self.assertEqual(sync.http.timeout.read, DEFAULT_HTTP_TIMEOUT)
+                self.assertEqual(sync.http.timeout.write, DEFAULT_HTTP_TIMEOUT)
+            finally:
+                sync.close()
+                store.close()
 
     @staticmethod
     def _batch_response(request: httpx.Request, *, statuses: dict[str, str] | None = None) -> dict:
@@ -735,6 +764,61 @@ class SyncClientTests(unittest.TestCase):
                         session.scalar(select(func.count()).select_from(SyncOutbox)),
                         3,
                     )
+            finally:
+                store.close()
+
+    def test_discovery_only_article_is_archived_without_an_outbox_event(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "crawler.sqlite", root / "data")
+            try:
+                source = self._discovery_source()
+                store.add_source(source)
+                article = self._article(20)
+                article.source_id = source.id
+
+                store.save_article_and_enqueue_for_sync(article)
+                self.assertTrue(store.article_exists(article.url))
+                self.assertIsNone(store.enqueue_article_for_sync(article))
+                with store.database.session_factory() as session:
+                    self.assertEqual(
+                        session.scalar(select(func.count()).select_from(SyncOutbox)),
+                        0,
+                    )
+            finally:
+                store.close()
+
+    def test_backfill_skips_discovery_only_articles(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "crawler.sqlite", root / "data")
+            try:
+                regular = self._source()
+                discovery = self._discovery_source()
+                store.add_sources([regular, discovery])
+                for number, source_id in ((21, regular.id), (22, discovery.id)):
+                    article = self._article(number)
+                    article.source_id = source_id
+                    with store.database.session_factory.begin() as session:
+                        Store._save_article_record(
+                            session,
+                            article,
+                            hashlib.sha256(article.body_text.encode()).hexdigest(),
+                            f"2026-08-20T00:00:{number - 20:02d}+08:00",
+                        )
+
+                self.assertEqual(
+                    sync_backfill(store, chunk_size=1),
+                    {"scanned": 2, "enqueued": 1, "errors": 0},
+                )
+                self.assertEqual(
+                    sync_backfill(store, chunk_size=1),
+                    {"scanned": 2, "enqueued": 0, "errors": 0},
+                )
+                with store.database.session_factory() as session:
+                    rows = session.scalars(select(SyncOutbox)).all()
+                    self.assertEqual(len(rows), 1)
+                    self.assertEqual(json.loads(rows[0].source_json)["id"], regular.id)
             finally:
                 store.close()
 

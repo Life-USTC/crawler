@@ -297,6 +297,31 @@ class OrmAndOutboxTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_discovery_only_source_is_rejected_at_outbox_boundary(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "crawler.sqlite", root / "data")
+            try:
+                source_config = self._source()
+                source_config.discovery_only = True
+                store.add_source(source_config)
+                source = store.source_descriptor(source_config.id)
+                outbox = IngestionOutbox(store.database)
+
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "discovery-only source cannot enqueue publications",
+                ):
+                    outbox.enqueue_article(
+                        self._article(),
+                        store.data_dir,
+                        source=source,
+                    )
+                with store.database.session_factory() as session:
+                    self.assertEqual(session.scalar(select(func.count()).select_from(SyncOutbox)), 0)
+            finally:
+                store.close()
+
 
 if __name__ == "__main__":
     unittest.main()
