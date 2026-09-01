@@ -1,6 +1,11 @@
 import unittest
 
-from ustc_crawler.canonicalize import host_matches, looks_like_asset, normalize_url
+from ustc_crawler.canonicalize import (
+    host_matches,
+    looks_like_asset,
+    looks_like_binary,
+    normalize_url,
+)
 
 
 class CanonicalizeTests(unittest.TestCase):
@@ -17,6 +22,11 @@ class CanonicalizeTests(unittest.TestCase):
     def test_assets(self) -> None:
         self.assertTrue(looks_like_asset("https://a.ustc.edu.cn/a.pdf"))
         self.assertFalse(looks_like_asset("https://a.ustc.edu.cn/article/1"))
+
+    def test_binary_signatures(self) -> None:
+        self.assertTrue(looks_like_binary(b"PK\x03\x04office document"))
+        self.assertTrue(looks_like_binary(b"%PDF-1.7"))
+        self.assertFalse(looks_like_binary(b"<!doctype html><html>"))
 
     def test_rejects_malformed_port(self) -> None:
         self.assertEqual(

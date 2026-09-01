@@ -367,13 +367,13 @@ supplemental_sources:
   - id: supplemental-xcb
     name: 党委宣传部新闻中心
     organization_level: office
-    seed_urls: [https://xcb.ustc.edu.cn/main.htm]
+    seed_urls: [https://xcb.ustc.edu.cn/]
     allowed_hosts: [xcb.ustc.edu.cn]
     discovery_only: true
   - id: supplemental-yqzx
     name: 综合科研仪器共享中心
     organization_level: center
-    seed_urls: [https://yqzx.ustc.edu.cn/main.htm]
+    seed_urls: [https://yqzx.ustc.edu.cn/]
     allowed_hosts: [yqzx.ustc.edu.cn]
     discovery_only: true
   - id: supplemental-opt
@@ -391,7 +391,7 @@ supplemental_sources:
   - id: supplemental-acsa
     name: ACSA Lab
     organization_level: research
-    seed_urls: [https://acsa.ustc.edu.cn/main.htm]
+    seed_urls: [https://acsa.ustc.edu.cn/]
     allowed_hosts: [acsa.ustc.edu.cn]
     discovery_only: true
   - id: supplemental-ada

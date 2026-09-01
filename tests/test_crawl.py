@@ -8,6 +8,7 @@ from ustc_crawler.crawl import (
     AsyncCrawler,
     CrawlOptions,
     _is_after_since,
+    _is_html,
     _parse_since,
 )
 from ustc_crawler.models import ArticleDocument, FetchResponse, PageDocument, SourceConfig
@@ -23,6 +24,15 @@ class SinceHelpersTests(unittest.TestCase):
         since = _parse_since("2025-01-01")
         self.assertTrue(_is_after_since("", since))
         self.assertTrue(_is_after_since("invalid", since))
+
+    def test_binary_payload_is_not_html_even_when_mislabeled(self) -> None:
+        self.assertFalse(
+            _is_html(
+                "text/html",
+                "https://example.ustc.edu.cn/download",
+                b"PK\x03\x04office document",
+            )
+        )
 
 
 class IncrementalResetTests(unittest.TestCase):
@@ -43,6 +53,7 @@ class IncrementalResetTests(unittest.TestCase):
                 "shallow": ("https://news.example.test/channel/1.htm", 3),
                 "deep": ("https://news.example.test/channel/100.htm", 20),
                 "missing_sitemap": ("https://news.example.test/sitemap.xml", 0),
+                "stale_seed": ("https://news.example.test/main.htm", 0),
             }
             for url, depth in urls.values():
                 parent = urls["seed"][0] if url == urls["missing_sitemap"][0] else ""
@@ -61,7 +72,11 @@ class IncrementalResetTests(unittest.TestCase):
                         images=[],
                         page_kind=(
                             "inaccessible"
-                            if url == urls["missing_sitemap"][0]
+                            if url
+                            in {
+                                urls["missing_sitemap"][0],
+                                urls["stale_seed"][0],
+                            }
                             else "news_listing"
                         ),
                     ),
@@ -70,6 +85,7 @@ class IncrementalResetTests(unittest.TestCase):
                 )
                 store.mark_done(url)
             store.mark_done(urls["missing_sitemap"][0], "http 404")
+            store.mark_done(urls["stale_seed"][0], "http 404")
 
             # Simulate an interrupted older incremental run.
             store_core(store).execute(
@@ -78,7 +94,13 @@ class IncrementalResetTests(unittest.TestCase):
             )
             store_core(store).commit()
 
-            store.reset_seeds_and_listings({"news"})
+            store.reset_seeds_and_listings(
+                {
+                    "news": {
+                        urls["seed"][0],
+                    }
+                }
+            )
             statuses = {
                 row["url"]: row["status"]
                 for row in store_core(store).execute("SELECT url,status FROM frontier")
@@ -89,6 +111,7 @@ class IncrementalResetTests(unittest.TestCase):
         self.assertEqual(statuses[urls["shallow"][0]], "pending")
         self.assertEqual(statuses[urls["deep"][0]], "done")
         self.assertEqual(statuses[urls["missing_sitemap"][0]], "error")
+        self.assertEqual(statuses[urls["stale_seed"][0]], "error")
 
 
 class CrawlSinceTests(unittest.IsolatedAsyncioTestCase):
