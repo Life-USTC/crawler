@@ -1,0 +1,553 @@
+import unittest
+
+from ustc_crawler.crawl import _decode, _xml_links
+from ustc_crawler.extract import extract_page, parse_date
+
+
+class ExtractTests(unittest.TestCase):
+    def test_decode_prefers_real_chinese_encoding_over_bad_header(self) -> None:
+        body = "<html><meta charset='gbk'><p>中国科大</p></html>".encode("gbk")
+        self.assertIn("中国科大", _decode(body, {"content-type": "text/html; charset=iso-8859-1"}))
+
+    def test_sitemap_links(self) -> None:
+        body = b"<urlset><url><loc>/info/1/2.htm</loc></url><url><loc>https://news.ustc.edu.cn/a</loc></url></urlset>"
+        self.assertEqual(
+            _xml_links(body, {"content-type": "application/xml"}, "https://news.ustc.edu.cn/"),
+            ["https://news.ustc.edu.cn/info/1/2.htm", "https://news.ustc.edu.cn/a"],
+        )
+
+    def test_sitemap_links_accept_legacy_multibyte_xml(self) -> None:
+        body = "<?xml version='1.0' encoding='gb2312'?><urlset><url><loc>/通知/1.htm</loc></url></urlset>".encode("gb2312")
+        self.assertEqual(
+            _xml_links(
+                body,
+                {"content-type": "application/xml; charset=gb2312"},
+                "https://example.ustc.edu.cn/",
+            ),
+            ["https://example.ustc.edu.cn/通知/1.htm"],
+        )
+
+    def test_list_link_date_hint(self) -> None:
+        html = "<html><body><ul><li><a href='/article/3509'>新闻标题</a><span>2026-07-21</span></li></ul></body></html>"
+        page = extract_page("https://gradschool.ustc.edu.cn/column/10", html)
+        self.assertEqual(
+            page.link_dates["https://gradschool.ustc.edu.cn/article/3509"], "2026-07-21"
+        )
+
+    def test_list_link_effective_date_is_not_publication_hint(self) -> None:
+        html = """
+        <html><body><ul><li><span><a href='/info/1029/25470.htm'>
+        校园班车运行时刻表（2026年8月30日试运行）</a></span></li></ul></body></html>
+        """
+        page = extract_page("https://www.ustc.edu.cn/ggfw/rdlj.htm", html)
+        self.assertNotIn("https://www.ustc.edu.cn/info/1029/25470.htm", page.link_dates)
+
+    def test_recovers_nested_legacy_href(self) -> None:
+        html = """
+        <html><body><a href="<a href='/2026/0319/c30301a723546/page.htm'
+        target='_blank' title='公告'>公告</a>"><span>2026-03-19</span></a></body></html>
+        """
+        page = extract_page("https://marx.ustc.edu.cn/main.htm", html)
+        self.assertIn(
+            "https://marx.ustc.edu.cn/2026/0319/c30301a723546/page.htm", page.links
+        )
+
+    def test_ignores_javascript_placeholder_links(self) -> None:
+        page = extract_page(
+            "https://example.ustc.edu.cn/main.htm",
+            "<html><body><a href=\"${v_link('%27/\">错误占位符</a></body></html>",
+        )
+        self.assertEqual(page.links, [])
+
+    def test_detail_h1_replaces_generic_section_heading(self) -> None:
+        html = """
+        <html><head><title>真实标题 : 单位网站</title>
+        <meta property='og:title' content='新闻速递'></head>
+        <body><main><h1>新闻速递</h1><article><h1>真实标题</h1>
+        <p>这是正文内容，足够长以便页面被识别为公开文章。</p></article></main></body></html>
+        """
+        page = extract_page("https://example.ustc.edu.cn/info/1/2.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "真实标题")
+
+    def test_legacy_title_and_content_ids_are_used(self) -> None:
+        html = """
+        <html><head><title>单位网站</title></head><body>
+        <div id='left'><a href='view_news.aspx?id=1'>旧文章</a></div>
+        <div id='right'><span id='Title'>真正的通知标题</span>
+        <div id='Content'><p>这是来自旧版栏目页的正文内容，包含通知事项和报名说明，长度足以被识别为公开文章。</p>
+        <p>第二段正文保留在本地检索索引中。</p></div></div>
+        </body></html>
+        """
+        page = extract_page("https://journal.ustc.edu.cn/ch/reader/view_news.aspx?id=20260602112551001", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "真正的通知标题")
+        self.assertIn("报名说明", page.article.body_text)
+
+    def test_wordpress_page_title_overrides_section_heading(self) -> None:
+        html = """
+        <html><head><title>单位网站</title></head><body>
+        <div class='page_header'><h1>新闻速递</h1></div>
+        <article><h1 class='page_title'>我校与合作伙伴举行线上会谈</h1>
+        <p>这是正文内容，包含公开会谈信息和后续合作安排，长度足以被识别为文章。</p></article>
+        </body></html>
+        """
+        page = extract_page("https://oic.ustc.edu.cn/news/detail/19762", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "我校与合作伙伴举行线上会谈")
+
+    def test_blank_legacy_heading_uses_bold_lead_as_title(self) -> None:
+        html = """
+        <html><head><title>　</title></head><body>
+        <div class='wp_articlecontent'><p><strong>物理学院学术交流会</strong></p>
+        <p>这是足够长的公开正文内容，用于验证旧模板首段标题可以进入检索索引。</p></div>
+        </body></html>
+        """
+        page = extract_page("https://physics.ustc.edu.cn/2024/0511/c12804a640625/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "物理学院学术交流会")
+
+    def test_english_generic_heading_uses_lead_when_site_title_is_only_branding(self) -> None:
+        html = """
+        <html><head><title>Lab for Multimodal Biomedical Imaging and Therapy (MBIT)</title></head>
+        <body><h2>News</h2><article><p>The Dushu Forum on Medical-Engineering Integration was held at USTC.</p>
+        <p>This is a sufficiently long public article body for extraction.</p></article></body></html>
+        """
+        page = extract_page("https://example.ustc.edu.cn/news/detail/54", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertTrue(page.article.title.startswith("The Dushu Forum"))
+
+    def test_indico_subpage_ignores_hidden_timezone_widget(self) -> None:
+        html = """
+        <html><head><title>Event 2026 (12 Oct): Public programme · Indico</title></head>
+        <body><article id='tz-selector-widget' style='display: none'>Choose timezone
+        Africa/Abidjan Africa/Accra Africa/Addis_Ababa</article>
+        <div class='mainContent'><div class='conference-page item-summary'>
+        <h1>Public programme</h1><p>公开活动安排正文，包含足够长的文本以便识别为公开详情页面。</p>
+        <p>第二段补充活动地点、报告主题和参会说明，避免隐藏控件污染检索内容。</p>
+        </div></div></body></html>
+        """
+        page = extract_page(
+            "https://indico.pnp.ustc.edu.cn/event/2026/page/42-programme", html
+        )
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "Public programme")
+        self.assertNotIn("Choose timezone", page.article.body_text)
+        self.assertIn("公开活动安排正文", page.article.body_text)
+
+    def test_date_formats(self) -> None:
+        self.assertEqual(parse_date("发布时间：2026年08月21日 12:30"), "2026-08-21T12:30:00")
+        self.assertEqual(parse_date("2026/8/2"), "2026-08-02")
+        self.assertEqual(parse_date("岗位时间为2026.9-2027.1（5个月）"), "")
+
+    def test_detail_date_from_url_and_heading(self) -> None:
+        html = (
+            "<html><body><h2>栏目</h2><h2>文章标题</h2><div class='newsNr'>正文</div></body></html>"
+        )
+        page = extract_page("https://planet.ustc.edu.cn/main/news_detail-20.html", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "文章标题")
+
+    def test_legacy_source_time_is_a_labeled_publication_date(self) -> None:
+        html = """
+        <html><body><td class='content'><td class='bt01'>旧模板文章</td>
+        <p>消息来源： 时间：2022-06-14 14:09:20</p>
+        <p>这是足够长的公开正文内容，用来验证旧模板的来源时间字段可以作为发布时间。</p>
+        </td></body></html>
+        """
+        page = extract_page("https://yz1.ustc.edu.cn/article_1190.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.published_at, "2022-06-14T14:09:20")
+
+    def test_empty_detail_shell_is_not_an_article(self) -> None:
+        page = extract_page(
+            "https://spin.ustc.edu.cn/2024/0221/c35938a631104/page.htm",
+            "<html><head><title>Show - Qdiamond</title></head><body></body></html>",
+        )
+        self.assertIsNone(page.article)
+
+    def test_wordpress_attachment_shell_is_not_an_article(self) -> None:
+        page = extract_page(
+            "https://teach.ustc.edu.cn/?attachment_id=20483",
+            """<html><head><meta property='article:published_time' content='2026-08-11T17:30:00'></head>
+            <body><article><h1>正在下载，请稍候……</h1><p>通知附件即将开始下载。</p></article></body></html>""",
+        )
+        self.assertIsNone(page.article)
+
+    def test_detail_date_survives_cleaning_content_root(self) -> None:
+        html = """
+        <html><body><div class='content'>
+        <aside><span id='time'>发布时间：2025-12-02</span></aside>
+        <h1>公告标题</h1><p>报名截止日期为2026年9月30日。</p>
+        <p>这是足够长的正文内容，用于识别为文章，并避免从正文中的业务日期误判发布时间。</p>
+        </div></body></html>
+        """
+        page = extract_page(
+            "https://www.job.ustc.edu.cn/SelectedTrainee/info.aspx?itemid=11317", html
+        )
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.published_at, "2025-12-02")
+
+    def test_info_bar_publish_date_wins_over_date_range_in_body(self) -> None:
+        html = """
+        <html><body>
+          <h1>2026-2027学年第一学期课程通知</h1>
+          <div class='info-bar'><time>发布时间：2026-07-24</time></div>
+          <article><p>岗位时间为2026.9-2027.1（5个月）。</p></article>
+        </body></html>
+        """
+        page = extract_page("https://example.ustc.edu.cn/article/3384", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.published_at, "2026-07-24")
+
+    def test_unlabelled_schedule_date_is_not_publish_date(self) -> None:
+        html = """
+        <html><body><article>
+          <h1>高新校区班车运行时刻表（2026年8月30日试运行）</h1>
+          <p>试运行日期为2026年8月30日，具体班次见正文。</p>
+          <p>这是足够长的正文，用于验证事件日期不能被误当成文章发布时间。</p>
+        </article></body></html>
+        """
+        page = extract_page("https://www.ustc.edu.cn/info/1029/25469.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.published_at, "")
+
+    def test_trailing_unlabeled_date_at_body_end(self) -> None:
+        html = """
+        <html><body><div class='v_news_content'>
+        <h1>义诊活动通知</h1>
+        <p>免费测血糖、量血压、健康咨询。</p>
+        <p style='text-align: right;'>校医院</p>
+        <p style='text-align: right;'>2023年11月8日</p>
+        </div></body></html>
+        """
+        page = extract_page("https://www.ustc.edu.cn/info/1364/20058.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.published_at, "2023-11-08")
+
+    def test_ustc_notice_content_query_is_an_article(self) -> None:
+        html = """
+        <html><body>
+          <h1>关于开展校园活动的通知</h1>
+          <div class='v_news_content'>
+            <p>现将本次校园活动的安排通知如下，请相关师生按要求参加。</p>
+            <p>具体时间、地点和报名方式请参阅本通知正文及随附材料。</p>
+          </div>
+        </body></html>
+        """
+        page = extract_page(
+            "https://www.ustc.edu.cn/tzggcontent.jsp?urltype=news.NewsContentUrl&wbtreeid=1364&wbnewsid=25470",
+            html,
+            source_id="university",
+        )
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "关于开展校园活动的通知")
+
+    def test_trailing_labeled_date_at_body_end(self) -> None:
+        html = """
+        <html><body><article>
+          <h1>活动通知</h1>
+          <p>具体安排见正文。</p>
+          <p style='text-align: right;'>发布时间：2023年11月8日 14:30</p>
+        </article></body></html>
+        """
+        page = extract_page("https://www.ustc.edu.cn/info/1364/20059.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.published_at, "2023-11-08T14:30:00")
+
+    def test_article_metadata_and_images(self) -> None:
+        html = """
+        <html><head><title>旧标题</title>
+        <meta name='author' content='张三'>
+        <script type='application/ld+json'>
+        {"@type":"NewsArticle","headline":"正式标题","datePublished":"2026-08-21T12:30:00","image":"/hero.jpg"}
+        </script></head><body><header>logo</header>
+        <article><h1>正式标题</h1><p>这是正文。</p><p>这是足够长的正文内容，用于让提取器将页面识别为一篇公开文章并保留图片。</p>
+        <img data-src='/images/a.png' alt='配图'></article><footer>footer</footer></body></html>
+        """
+        page = extract_page("https://news.ustc.edu.cn/info/1/2.htm", html, "text/html", "news")
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "正式标题")
+        self.assertEqual(page.article.published_at, "2026-08-21T12:30:00")
+        self.assertEqual(page.article.author, "张三")
+        self.assertEqual(page.article.images[0].url, "https://news.ustc.edu.cn/images/a.png")
+        self.assertNotIn("logo", page.article.body_text)
+
+    def test_ustc_news_and_legacy_templates(self) -> None:
+        news_html = """
+        <html><body><div class='content'>侧栏链接</div>
+        <div class='media-foucs'><h1>新闻网标题</h1><span class='date'>2026年08月21日</span>
+        <p>新闻网正文。</p><img data-original='/upload/news.jpg' alt='新闻图'></div></body></html>
+        """
+        page = extract_page("https://news.ustc.edu.cn/info/1048/96004.htm", news_html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.published_at, "2026-08-21")
+        self.assertIn("新闻网正文", page.article.body_text)
+        self.assertEqual(page.article.images[0].url, "https://news.ustc.edu.cn/upload/news.jpg")
+
+        legacy_html = """
+        <html><body><table><tr><td class='content'><h1>旧模板</h1>
+        <p>旧模板正文，包含一张图片。</p><img src='/images/old.png'></td></tr></table></body></html>
+        """
+        page = extract_page("https://www.ustc.edu.cn/info/1366/25572.htm", legacy_html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.images[0].url, "https://www.ustc.edu.cn/images/old.png")
+
+    def test_reporter_and_source_signature_at_body_end(self) -> None:
+        html = """
+        <html><body><article><h1>文章标题</h1>
+        <p>这是足够长的正文内容，用于让提取器将页面识别为一篇公开文章。</p>
+        <p>记者：王敏 来源：中国科学报 2025-11-06 15:07</p></article></body></html>
+        """
+        page = extract_page("https://news.ustc.edu.cn/info/1048/96005.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.author, "王敏 / 中国科学报")
+
+    def test_source_only_signature_at_body_end(self) -> None:
+        html = """
+        <html><body><article><h1>文章标题</h1>
+        <p>这是足够长的正文内容，用于让提取器将页面识别为一篇公开文章。</p>
+        <p>来源：新华网</p></article></body></html>
+        """
+        page = extract_page("https://news.ustc.edu.cn/info/1048/96006.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.author, "新华网")
+
+    def test_writer_slash_signature_at_body_end(self) -> None:
+        html = """
+        <html><body><article><h1>文章标题</h1>
+        <p>这是足够长的正文内容，用于让提取器将页面识别为一篇公开文章。</p>
+        <p>文/张三</p></article></body></html>
+        """
+        page = extract_page("https://news.ustc.edu.cn/info/1048/96007.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.author, "张三")
+
+    def test_editor_signature_at_body_end(self) -> None:
+        html = """
+        <html><body><article><h1>文章标题</h1>
+        <p>这是足够长的正文内容，用于让提取器将页面识别为一篇公开文章。</p>
+        <p>责任编辑：李四</p></article></body></html>
+        """
+        page = extract_page("https://news.ustc.edu.cn/info/1048/96008.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.author, "李四")
+
+    def test_reporter_without_colon_at_body_end(self) -> None:
+        html = """
+        <html><body><article><h1>文章标题</h1>
+        <p>这是足够长的正文内容，用于让提取器将页面识别为一篇公开文章。</p>
+        <p>（记者 黎静）</p></article></body></html>
+        """
+        page = extract_page("https://news.ustc.edu.cn/info/1048/96009.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.author, "黎静")
+
+    def test_structured_author_wins_over_body_signature(self) -> None:
+        html = """
+        <html><head><meta name='author' content=' structured-author '></head>
+        <body><article><h1>文章标题</h1>
+        <p>这是足够长的正文内容，用于让提取器将页面识别为一篇公开文章。</p>
+        <p>记者：王敏 来源：中国科学报 2025-11-06 15:07</p></article></body></html>
+        """
+        page = extract_page("https://news.ustc.edu.cn/info/1048/96010.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.author, "structured-author")
+
+    def test_polluted_meta_author_stops_before_publish_time(self) -> None:
+        html = """
+        <html><head><meta name='author' content='万宏艳 发布时间：2024-01-02'></head>
+        <body><article><h1>文章标题</h1>
+        <p>这是足够长的正文内容，用于确认错误拼接的 CMS 作者元数据会被清理。</p>
+        </article></body></html>
+        """
+        page = extract_page("https://math.ustc.edu.cn/2024/0102/c1a2/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.author, "万宏艳")
+
+    def test_metadata_author_stops_before_publish_time(self) -> None:
+        html = """
+        <html><body><h1>招生复试安排</h1>
+        <p class='arti_metas'><span>发布者：黄筑赟</span>
+        <span>发布时间：2026-03-19</span></p>
+        <article><p>这是足够长的招生复试正文，用于确认元数据字段不会互相污染。</p></article>
+        </body></html>
+        """
+        page = extract_page("https://math.ustc.edu.cn/2026/0319/c1a2/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.author, "黄筑赟")
+
+    def test_source_metadata_does_not_consume_article_body(self) -> None:
+        html = """
+        <html><body><h1>自动化系招生复试安排</h1>
+        <div class='ins-res'><span>来源：自动化系</span>
+        <span>发布时间：2026-03-19</span><span>点击：13</span>
+        <article><p>这是足够长的招生复试正文，来源字段只能保留机构名称。</p></article>
+        </div></body></html>
+        """
+        page = extract_page("https://auto.ustc.edu.cn/2026/0319/c1a2/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.author, "自动化系")
+
+    def test_regular_content_does_not_trigger_author_extraction(self) -> None:
+        html = """
+        <html><body><article><h1>文章标题</h1>
+        <p>这是足够长的正文内容，其中提到记者王敏曾报道该事件，但没有明确的署名。</p>
+        <p>光明日报2018年7月22日</p></article></body></html>
+        """
+        page = extract_page("https://news.ustc.edu.cn/info/1048/96011.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.author, "")
+
+    def test_writer_colon_signature_at_body_end(self) -> None:
+        html = """
+        <html><body><article><h1>文章标题</h1>
+        <p>这是足够长的正文内容，用于让提取器将页面识别为一篇公开文章。</p>
+        <p>文：黄筑赟 图：高华丽</p></article></body></html>
+        """
+        page = extract_page("https://news.ustc.edu.cn/info/1047/76512.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.author, "黄筑赟")
+
+    def test_parenthesized_organization_at_body_end(self) -> None:
+        html = """
+        <html><body><article><h1>文章标题</h1>
+        <p>这是足够长的正文内容，用于让提取器将页面识别为一篇公开文章。</p>
+        <p>（生命科学与医学部）</p></article></body></html>
+        """
+        page = extract_page("https://news.ustc.edu.cn/info/1047/79585.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.author, "生命科学与医学部")
+
+    def test_parenthesized_person_is_not_organization_source(self) -> None:
+        html = """
+        <html><body><article><h1>文章标题</h1>
+        <p>这是足够长的正文内容，用于让提取器将页面识别为一篇公开文章。</p>
+        <p>（张三）</p></article></body></html>
+        """
+        page = extract_page("https://news.ustc.edu.cn/info/1048/96012.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.author, "")
+
+    def test_updated_at_from_jsonld_date_modified(self) -> None:
+        html = """
+        <html><head><script type='application/ld+json'>
+        {"@type":"NewsArticle","headline":"标题","datePublished":"2026-08-21T12:30:00",
+         "dateModified":"2026-08-22T09:15:00"}
+        </script></head><body><article><h1>标题</h1>
+        <p>这是足够长的正文内容，用于让提取器将页面识别为一篇公开文章。</p></article></body></html>
+        """
+        page = extract_page("https://news.ustc.edu.cn/info/1/2.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.updated_at, "2026-08-22T09:15:00")
+
+    def test_updated_at_from_meta_modified_time(self) -> None:
+        html = """
+        <html><head><meta property='article:modified_time' content='2026-08-23T16:45:00'>
+        <meta property='article:published_time' content='2026-08-21T12:30:00'></head>
+        <body><article><h1>标题</h1>
+        <p>这是足够长的正文内容，用于让提取器将页面识别为一篇公开文章。</p></article></body></html>
+        """
+        page = extract_page("https://news.ustc.edu.cn/info/1/3.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.updated_at, "2026-08-23T16:45:00")
+
+    def test_updated_at_from_time_element_with_modification_marker(self) -> None:
+        html = """
+        <html><body><article><h1>标题</h1>
+        <p class='post-meta'>发布时间：2026-08-21 12:30
+        <time class='updated' datetime='2026-08-24 10:00'>更新时间：2026-08-24 10:00</time></p>
+        <p>这是足够长的正文内容，用于让提取器将页面识别为一篇公开文章。</p></article></body></html>
+        """
+        page = extract_page("https://news.ustc.edu.cn/info/1/4.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.updated_at, "2026-08-24T10:00:00")
+
+    def test_updated_at_from_labeled_update_time(self) -> None:
+        html = """
+        <html><body><article><h1>标题</h1>
+        <div class='info-bar'>发布时间：2026-08-21 12:30 | 更新时间：2026-08-25 14:20</div>
+        <p>这是足够长的正文内容，用于让提取器将页面识别为一篇公开文章。</p></article></body></html>
+        """
+        page = extract_page("https://news.ustc.edu.cn/info/1/5.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.updated_at, "2026-08-25T14:20:00")
+
+    def test_category_from_meta_article_section(self) -> None:
+        html = """
+        <html><head><meta property='article:section' content='学术动态'></head>
+        <body><article><h1>标题</h1>
+        <p>这是足够长的正文内容，用于让提取器将页面识别为一篇公开文章。</p></article></body></html>
+        """
+        page = extract_page("https://news.ustc.edu.cn/info/1/6.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.category, "学术动态")
+
+    def test_category_from_breadcrumbs_prefers_deepest_meaningful(self) -> None:
+        html = """
+        <html><body><nav aria-label='breadcrumb'><a href='/'>首页</a> &gt;
+        <a href='/news'>新闻中心</a> &gt; <span>学院新闻</span></nav>
+        <article><h1>文章标题</h1>
+        <p>这是足够长的正文内容，用于让提取器将页面识别为一篇公开文章。</p></article></body></html>
+        """
+        page = extract_page("https://news.ustc.edu.cn/info/1/7.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.category, "学院新闻")
+
+    def test_category_rejects_only_generic_breadcrumb_items(self) -> None:
+        html = """
+        <html><body><div class='breadcrumb'><a href='/'>首页</a> &gt; <a href='/news'>新闻中心</a></div>
+        <article><h1>文章标题</h1>
+        <p>这是足够长的正文内容，用于让提取器将页面识别为一篇公开文章。</p></article></body></html>
+        """
+        page = extract_page("https://news.ustc.edu.cn/info/1/8.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.category, "")
+
+    def test_category_from_first_non_generic_section_heading(self) -> None:
+        html = """
+        <html><body><h1>通知公告</h1>
+        <article><h1>文章标题</h1>
+        <p>这是足够长的正文内容，用于让提取器将页面识别为一篇公开文章。</p></article></body></html>
+        """
+        page = extract_page("https://news.ustc.edu.cn/info/1/9.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.category, "通知公告")

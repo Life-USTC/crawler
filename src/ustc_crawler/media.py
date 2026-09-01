@@ -1,0 +1,139 @@
+from __future__ import annotations
+
+import asyncio
+import json
+from dataclasses import dataclass
+from pathlib import Path
+
+from .http import Fetcher
+from .models import ImageRef
+from .store import Store, article_bundle_path
+
+
+@dataclass(slots=True)
+class MediaOptions:
+    db_path: str = "data/crawler.sqlite"
+    data_dir: str = "data"
+    concurrency: int = 16
+    delay: float = 0.5
+    max_image_bytes: int = 20 * 1024 * 1024
+
+
+def _image_jobs(store: Store) -> dict[str, list[ImageRef]]:
+    """Build image jobs from structured relationships and article bundles.
+
+    The crawler already records every extracted image in ``article_media``.
+    Re-parsing every raw page here made a media-only pass needlessly scan
+    hundreds of thousands of HTML files, so only articles without a stored
+    relationship are inspected as a fallback.  This keeps retries fast while
+    retaining the exact per-article metadata captured during crawling.
+    """
+    jobs: dict[str, list[ImageRef]] = {}
+    covered: set[str] = set()
+    for row in store.db.execute(
+        "SELECT article_url,image_url,alt,title,caption FROM article_media ORDER BY article_url,image_url"
+    ):
+        covered.add(row["article_url"])
+        jobs.setdefault(row["image_url"], []).append(
+            ImageRef(
+                url=row["image_url"],
+                alt=row["alt"] or "",
+                title=row["title"] or "",
+                caption=row["caption"] or "",
+                article_url=row["article_url"],
+            )
+        )
+
+    rows = store.db.execute(
+        """SELECT a.url,a.content_hash
+           FROM articles a LEFT JOIN article_media am ON am.article_url=a.url
+           WHERE am.article_url IS NULL ORDER BY a.url"""
+    ).fetchall()
+    for row in rows:
+        bundle = article_bundle_path(store.data_dir, str(row["url"]))
+        if not bundle.exists():
+            continue
+        try:
+            payload = json.loads(bundle.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        values = payload.get("images", []) if isinstance(payload, dict) else []
+        for value in values:
+            if not isinstance(value, dict) or not value.get("url"):
+                continue
+            image = ImageRef(
+                url=str(value["url"]),
+                alt=str(value.get("alt") or ""),
+                title=str(value.get("title") or ""),
+                caption=str(value.get("caption") or ""),
+                article_url=row["url"],
+            )
+            jobs.setdefault(image.url, []).append(image)
+    return jobs
+
+
+async def _run(options: MediaOptions) -> dict[str, int]:
+    store = Store(options.db_path, options.data_dir)
+    fetcher = Fetcher(delay=options.delay)
+    jobs = _image_jobs(store)
+    semaphore = asyncio.Semaphore(max(1, options.concurrency))
+    fetched = 0
+    skipped = 0
+    errors = 0
+
+    async def one(url: str, refs: list[ImageRef]) -> None:
+        nonlocal fetched, skipped, errors
+        existing = store.db.execute(
+            "SELECT * FROM media WHERE url=?", (url,)
+        ).fetchone()
+        if (
+            existing
+            and existing["status"] == "ok"
+            and existing["local_path"]
+            and Path(existing["local_path"]).exists()
+        ):
+            for ref in refs:
+                store.link_media(ref, ref.article_url, existing["source_page_url"] or "")
+            skipped += 1
+            return
+        async with semaphore:
+            response = await fetcher.fetch(url, max_bytes=options.max_image_bytes)
+        if response.status == 200 and response.body:
+            store.save_media(
+                refs[0],
+                response.body,
+                response.content_type,
+                refs[0].article_url,
+                existing["source_page_url"] if existing else "",
+            )
+            for ref in refs[1:]:
+                store.link_media(ref, ref.article_url, refs[0].article_url)
+            fetched += 1
+            return
+        error = response.error or f"http {response.status}"
+        for ref in refs:
+            store.save_media(
+                ref,
+                b"",
+                response.content_type,
+                ref.article_url,
+                ref.article_url,
+                error,
+            )
+        errors += 1
+
+    try:
+        await asyncio.gather(*(one(url, refs) for url, refs in jobs.items()))
+    finally:
+        await fetcher.close()
+        store.close()
+    return {
+        "unique_images": len(jobs),
+        "downloaded": fetched,
+        "already_local": skipped,
+        "errors": errors,
+    }
+
+
+def download_saved_images(options: MediaOptions) -> dict[str, int]:
+    return asyncio.run(_run(options))

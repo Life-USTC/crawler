@@ -1,0 +1,666 @@
+# The curated public publishing sites. Mirrors and software distribution sites
+# are intentionally absent. The crawler only follows links on allowed_hosts.
+sources:
+  - id: news
+    name: 中国科大新闻网
+    organization_level: university
+    seed_urls: [https://news.ustc.edu.cn/]
+    allowed_hosts: [news.ustc.edu.cn]
+  - id: university
+    name: 中国科学技术大学
+    organization_level: university
+    seed_urls: [https://www.ustc.edu.cn/]
+    allowed_hosts: [www.ustc.edu.cn]
+    # Theme/aggregation pages on the university homepage (e.g. the education
+    # campaign subsite) embed many inline CMS images. Keep the article but cap
+    # the number of images downloaded per page.
+    max_images_per_page: 5
+  - id: library
+    name: 中国科大图书馆
+    organization_level: service
+    seed_urls: [https://lib.ustc.edu.cn/]
+    allowed_hosts: [lib.ustc.edu.cn]
+    # Wanfang's journal-data mirror is linked from the library but is not an
+    # official USTC publishing site. Keep its discovered links, do not crawl
+    # the third-party mirror pages.
+    # The library links to many service/mirror subdomains. Keep the library
+    # publication host itself, but do not recursively crawl those products.
+    blocked_hosts:
+      - wfo.lib.ustc.edu.cn
+      - career.lib.ustc.edu.cn
+      - fanglue.lib.ustc.edu.cn
+      - skl.lib.ustc.edu.cn
+      - yuanlai.lib.ustc.edu.cn
+      - en.lib.ustc.edu.cn
+      - opac.lib.ustc.edu.cn
+      - old.lib.ustc.edu.cn
+      - chaxin.lib.ustc.edu.cn
+      - app.lib.ustc.edu.cn
+      - lekao.lib.ustc.edu.cn
+      - thesis-submit.lib.ustc.edu.cn
+      - bookan.lib.ustc.edu.cn
+      - cnki.lib.ustc.edu.cn
+      - cssl.lib.ustc.edu.cn
+      - ic.lib.ustc.edu.cn
+      - lecture.lib.ustc.edu.cn
+      - liser.lib.ustc.edu.cn
+      - wx.lib.ustc.edu.cn
+      - ztd.lib.ustc.edu.cn
+      - hs.lib.ustc.edu.cn
+      - icdd.lib.ustc.edu.cn
+      - start.lib.ustc.edu.cn
+  - id: course
+    name: 网络教学平台
+    organization_level: service
+    seed_urls: [https://course.ustc.edu.cn/portal]
+    allowed_hosts: [course.ustc.edu.cn]
+  - id: teaching
+    name: 教务处
+    organization_level: office
+    seed_urls: [https://www.teach.ustc.edu.cn/]
+    allowed_hosts: [www.teach.ustc.edu.cn]
+  - id: physics-lab
+    name: 大物实验1
+    organization_level: service
+    seed_urls: [https://jxzy.ustc.edu.cn/]
+    allowed_hosts: [jxzy.ustc.edu.cn]
+  - id: gradschool
+    name: 研究生院
+    organization_level: office
+    seed_urls: [https://gradschool.ustc.edu.cn/]
+    allowed_hosts: [gradschool.ustc.edu.cn]
+  - id: graduate-admissions
+    name: 研究生招生在线
+    organization_level: office
+    seed_urls: [https://yz.ustc.edu.cn/]
+    allowed_hosts: [yz.ustc.edu.cn]
+  - id: supercomputing
+    name: 超级计算中心
+    organization_level: service
+    seed_urls: [https://scc.ustc.edu.cn/]
+    allowed_hosts: [scc.ustc.edu.cn]
+  - id: hospital
+    name: 校医院
+    organization_level: service
+    seed_urls: [https://hospital.ustc.edu.cn/]
+    allowed_hosts: [hospital.ustc.edu.cn]
+  - id: welcome
+    name: 迎新网
+    organization_level: university
+    seed_urls: [https://welcome.ustc.edu.cn/]
+    allowed_hosts: [welcome.ustc.edu.cn]
+  - id: admissions
+    name: 本科招生网
+    organization_level: office
+    seed_urls: [https://zsb.ustc.edu.cn/]
+    allowed_hosts: [zsb.ustc.edu.cn]
+  - id: careers
+    name: 就业信息网
+    organization_level: office
+    seed_urls: [https://www.job.ustc.edu.cn/]
+    allowed_hosts: [www.job.ustc.edu.cn]
+  - id: network
+    name: 网络信息中心
+    organization_level: service
+    seed_urls: [https://ustcnet.ustc.edu.cn/]
+    allowed_hosts: [ustcnet.ustc.edu.cn]
+  - id: undergraduate
+    name: 本科生院
+    organization_level: office
+    seed_urls: [https://ugs.ustc.edu.cn/]
+    allowed_hosts: [ugs.ustc.edu.cn]
+
+# Used only by `discover-ustc`; this is not a publishing source itself.
+directory:
+  url: https://www.ustc.edu.cn/yxjs.htm
+
+# Candidates found by a separate subdomain/official-link audit. They are kept
+# out of the default crawl until explicitly requested; several are stale,
+# platform-only, or currently redirect to authentication.
+supplemental_sources:
+  - id: supplemental-bigdata
+    name: 认知智能全国重点实验室
+    organization_level: research
+    seed_urls: [https://bigdata.ustc.edu.cn/, https://bigdata.ustc.edu.cn/class_4/news_list_1.html]
+    allowed_hosts: [bigdata.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-biotraining
+    name: 国家级生命科学实验教学示范中心
+    organization_level: center
+    seed_urls: [https://biotraining.ustc.edu.cn/main.htm, https://biotraining.ustc.edu.cn/28941/list.htm]
+    allowed_hosts: [biotraining.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-arch
+    name: 档案文博院
+    organization_level: office
+    seed_urls: [https://arch.ustc.edu.cn/main.htm]
+    allowed_hosts: [arch.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-bwc
+    name: 保卫处
+    organization_level: office
+    seed_urls: [https://bwc.ustc.edu.cn/main.htm, https://bwc.ustc.edu.cn/5670/list.htm, https://bwc.ustc.edu.cn/5668/list.htm]
+    allowed_hosts: [bwc.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-cec
+    name: 化学实验教学中心
+    organization_level: center
+    seed_urls: [https://cec.ustc.edu.cn/main.htm]
+    allowed_hosts: [cec.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-cfmath
+    name: 中法数学英才班
+    organization_level: program
+    seed_urls: [https://cfmath.ustc.edu.cn/main.htm, https://cfmath.ustc.edu.cn/18873/list.htm, https://cfmath.ustc.edu.cn/18872/list.htm]
+    allowed_hosts: [cfmath.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-complex
+    name: 复杂系统研究组
+    organization_level: research
+    seed_urls: [https://complex.ustc.edu.cn/main.htm, https://complex.ustc.edu.cn/xwNews/list.htm]
+    allowed_hosts: [complex.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-cslab
+    name: 计算机实验教学中心
+    organization_level: center
+    seed_urls: [https://cslab.ustc.edu.cn/main.htm]
+    allowed_hosts: [cslab.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-fc
+    name: 双一流建设办公室
+    organization_level: office
+    seed_urls: [https://fc.ustc.edu.cn/main.htm, https://fc.ustc.edu.cn/14587/list.htm, https://fc.ustc.edu.cn/14586/list.htm]
+    allowed_hosts: [fc.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-kyb
+    name: 科研部
+    organization_level: office
+    seed_urls: [https://kyb.ustc.edu.cn/main.htm, https://kyb.ustc.edu.cn/xwdt/list.htm]
+    allowed_hosts: [kyb.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-lab
+    name: 公共实验中心
+    organization_level: center
+    seed_urls: [https://lab.ustc.edu.cn/main.htm, https://lab.ustc.edu.cn/311/list.htm, https://lab.ustc.edu.cn/309/list.htm]
+    allowed_hosts: [lab.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-linke
+    name: 下一代移动计算及数据创新实验室
+    organization_level: research
+    seed_urls: [https://linke.ustc.edu.cn/main.htm, https://linke.ustc.edu.cn/xwzx/list.htm, https://linke.ustc.edu.cn/tzgg/list.htm]
+    allowed_hosts: [linke.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-meta
+    name: 元模型驱动开放环境项目
+    organization_level: research
+    seed_urls: [https://meta.ustc.edu.cn/main.htm, https://meta.ustc.edu.cn/xmxw/list.htm, https://meta.ustc.edu.cn/tzgg/list.htm]
+    allowed_hosts: [meta.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-nanomedicine
+    name: 纳米药物与生物材料联合实验室
+    organization_level: research
+    seed_urls: [https://nanomedicine.ustc.edu.cn/main.htm, https://nanomedicine.ustc.edu.cn/10410/list.htm]
+    allowed_hosts: [nanomedicine.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-nsti
+    name: 纳米科学技术学院（苏州）
+    organization_level: college
+    seed_urls: [https://nsti.ustc.edu.cn/main.htm, https://nsti.ustc.edu.cn/xwtz/list.htm, https://nsti.ustc.edu.cn/xyxw/list.htm]
+    allowed_hosts: [nsti.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-owc
+    name: 无线光通信与网络研究中心
+    organization_level: research
+    seed_urls: [https://owc.ustc.edu.cn/main.htm, https://owc.ustc.edu.cn/10526/list.htm]
+    allowed_hosts: [owc.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-planet
+    name: 深空技术研究院
+    organization_level: research
+    seed_urls: [https://planet.ustc.edu.cn/main.htm, https://planet.ustc.edu.cn/main/news_list]
+    allowed_hosts: [planet.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-quantum-materials
+    name: 复杂量子材料研究组
+    organization_level: research
+    seed_urls: [https://quantum-materials.ustc.edu.cn/main.htm, https://quantum-materials.ustc.edu.cn/xwdt/list.htm]
+    allowed_hosts: [quantum-materials.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-quantum
+    name: 量子物理与量子信息研究部
+    organization_level: research
+    seed_urls: [https://quantum.ustc.edu.cn/web/news]
+    allowed_hosts: [quantum.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-rwb
+    name: 人武部
+    organization_level: office
+    seed_urls: [https://rwb.ustc.edu.cn/main.htm, https://rwb.ustc.edu.cn/7286/list.htm]
+    allowed_hosts: [rwb.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-scai
+    name: SCAI Lab
+    organization_level: research
+    seed_urls: [https://scai.sz.ustc.edu.cn/main.htm, https://scai.sz.ustc.edu.cn/34585/list.htm]
+    allowed_hosts: [scai.sz.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-seismo
+    name: 地震学算法与程序
+    organization_level: research
+    seed_urls: [https://seismo.training.ustc.edu.cn/main.htm]
+    allowed_hosts: [seismo.training.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-shenliu
+    name: 渗流力学实验室
+    organization_level: research
+    seed_urls: [https://shenliu.ustc.edu.cn/main.htm, https://shenliu.ustc.edu.cn/xwxx/list.htm]
+    allowed_hosts: [shenliu.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-spin
+    name: 顺磁共振组
+    organization_level: research
+    seed_urls: [https://spin.ustc.edu.cn/main.htm, https://spin.ustc.edu.cn/35808/list.htm]
+    allowed_hosts: [spin.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-young
+    name: 校团委青春科大
+    organization_level: office
+    seed_urls: [https://young.ustc.edu.cn/main.htm, https://young.ustc.edu.cn/15063/list.htm]
+    allowed_hosts: [young.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-emba
+    name: EMBA
+    organization_level: program
+    seed_urls: [https://emba.ustc.edu.cn/main.htm, https://emba.ustc.edu.cn/xwzxs/list.htm, https://emba.ustc.edu.cn/tzggs/list.htm]
+    allowed_hosts: [emba.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-cmet
+    name: 现代教育技术中心（网站建设中）
+    organization_level: center
+    seed_urls: [https://www.cmet.ustc.edu.cn/, https://www.cmet.ustc.edu.cn/news/page]
+    allowed_hosts: [www.cmet.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-mbit
+    name: MBIT 实验室
+    organization_level: research
+    seed_urls: [https://www.mbit.ustc.edu.cn/, https://www.mbit.ustc.edu.cn/news]
+    allowed_hosts: [www.mbit.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-bioinspired
+    name: 仿生界面材料科学全国重点实验室
+    organization_level: research
+    seed_urls: [https://bioinspired.sz.ustc.edu.cn/main.htm, https://bioinspired.sz.ustc.edu.cn/xwgg/list.htm]
+    allowed_hosts: [bioinspired.sz.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-flame
+    name: 合肥光源光电离质谱研究中心
+    organization_level: research
+    seed_urls: [https://flame.nsrl.ustc.edu.cn/news/]
+    allowed_hosts: [flame.nsrl.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-gonghui
+    name: 校工会
+    organization_level: office
+    seed_urls: [https://gonghui.ustc.edu.cn/main.htm, https://gonghui.ustc.edu.cn/7504/list.htm, https://gonghui.ustc.edu.cn/7466/list.htm]
+    allowed_hosts: [gonghui.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-po
+    name: 党政办公室
+    organization_level: office
+    seed_urls: [https://po.ustc.edu.cn/main.htm, https://po.ustc.edu.cn/gzdt/list.htm, https://po.ustc.edu.cn/xwdt/list.htm]
+    allowed_hosts: [po.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-sjc
+    name: 审计处
+    organization_level: office
+    seed_urls: [https://sjc.ustc.edu.cn/main.htm, https://sjc.ustc.edu.cn/dtxx/list.htm, https://sjc.ustc.edu.cn/sjgg/list.htm]
+    allowed_hosts: [sjc.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-zhc
+    name: 资产与后勤保障处
+    organization_level: office
+    seed_urls: [https://zhc.ustc.edu.cn/main.htm]
+    allowed_hosts: [zhc.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-ktx
+    name: 反场箍缩磁约束聚变实验室
+    organization_level: research
+    seed_urls: [https://ktx.ustc.edu.cn/main.htm]
+    allowed_hosts: [ktx.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-mane
+    name: 微纳米工程实验室
+    organization_level: research
+    seed_urls: [https://mane.ustc.edu.cn/main.htm, https://mane.ustc.edu.cn/xwdt/main.htm]
+    allowed_hosts: [mane.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-mcip
+    name: 先进感知与数据融合课题组
+    organization_level: research
+    seed_urls: [https://mcip.ustc.edu.cn/main.htm, https://mcip.ustc.edu.cn/xsjl/list.htm]
+    allowed_hosts: [mcip.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-smile
+    name: 心理健康教育与咨询中心
+    organization_level: center
+    seed_urls: [https://smile.ustc.edu.cn/, https://smile.ustc.edu.cn/index/lists/002]
+    allowed_hosts: [smile.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-qybx
+    name: 科教融合专题
+    organization_level: program
+    seed_urls: [https://qybx.ustc.edu.cn/main.htm, https://qybx.ustc.edu.cn/xwtz/list.htm]
+    allowed_hosts: [qybx.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-utfd
+    name: 安徽省教师教学发展联盟
+    organization_level: program
+    seed_urls: [https://utfd.ustc.edu.cn/index.php/newslists]
+    allowed_hosts: [utfd.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-pfunt
+    name: 五校联盟博士生学术论坛
+    organization_level: program
+    seed_urls: [https://pfunt.ustc.edu.cn/main.htm, https://pfunt.ustc.edu.cn/37742/list.htm]
+    allowed_hosts: [pfunt.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-xcb
+    name: 党委宣传部新闻中心
+    organization_level: office
+    seed_urls: [https://xcb.ustc.edu.cn/main.htm]
+    allowed_hosts: [xcb.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-yqzx
+    name: 综合科研仪器共享中心
+    organization_level: center
+    seed_urls: [https://yqzx.ustc.edu.cn/main.htm]
+    allowed_hosts: [yqzx.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-opt
+    name: 光电子科学与技术安徽省重点实验室
+    organization_level: research
+    seed_urls: [https://opt.ustc.edu.cn/main.htm]
+    allowed_hosts: [opt.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-icqd
+    name: 国际功能材料量子设计中心
+    organization_level: research
+    seed_urls: [https://icqd.ustc.edu.cn/main.htm]
+    allowed_hosts: [icqd.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-acsa
+    name: ACSA Lab
+    organization_level: research
+    seed_urls: [https://acsa.ustc.edu.cn/main.htm]
+    allowed_hosts: [acsa.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-ada
+    name: 算法与数据应用研究组
+    organization_level: research
+    seed_urls: [https://ada.ustc.edu.cn/main.htm]
+    allowed_hosts: [ada.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-apst
+    name: 量子材料与光子技术实验室
+    organization_level: research
+    seed_urls: [https://apst.ustc.edu.cn/main.htm]
+    allowed_hosts: [apst.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-bfd
+    name: 脑功能与脑疾病重点实验室
+    organization_level: research
+    seed_urls: [https://bfd.ustc.edu.cn/main.htm]
+    allowed_hosts: [bfd.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-cfmc
+    name: 中法数学中心
+    organization_level: center
+    seed_urls: [https://cfmc.ustc.edu.cn/main.htm]
+    allowed_hosts: [cfmc.ustc.edu.cn]
+    discovery_only: true
+  # Homepage-audit additions: these official hosts were observed in existing
+  # USTC pages and returned a public homepage with a publication signal. They
+  # remain supplemental so the curated product entry list is unchanged.
+  - id: supplemental-oic
+    name: 国际合作与交流部暨港澳台事务办公室
+    organization_level: office
+    seed_urls: [https://oic.ustc.edu.cn/]
+    allowed_hosts: [oic.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-finance
+    name: 财务处
+    organization_level: office
+    seed_urls: [https://finance.ustc.edu.cn/main.htm]
+    allowed_hosts: [finance.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-job
+    name: 就业信息网（主域名）
+    organization_level: office
+    seed_urls: [https://job.ustc.edu.cn/]
+    allowed_hosts: [job.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-aga
+    name: 中国科大校友总会
+    organization_level: office
+    seed_urls: [https://aga.ustc.edu.cn/]
+    allowed_hosts: [aga.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-djyszw
+    name: 党建与思政网
+    organization_level: office
+    seed_urls: [https://djyszw.ustc.edu.cn/]
+    allowed_hosts: [djyszw.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-zzb
+    name: 党委组织部（党校）
+    organization_level: office
+    seed_urls: [https://zzb.ustc.edu.cn/main.htm]
+    allowed_hosts: [zzb.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-journals
+    name: 期刊中心
+    organization_level: center
+    seed_urls: [https://journals.ustc.edu.cn/main.htm]
+    allowed_hosts: [journals.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-museum
+    name: 中国科学技术大学博物馆
+    organization_level: center
+    seed_urls: [https://museum.ustc.edu.cn/main.htm]
+    allowed_hosts: [museum.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-mba
+    name: 管理学院 MBA 中心
+    organization_level: program
+    seed_urls: [https://mba.ustc.edu.cn/main.htm]
+    allowed_hosts: [mba.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-mpa
+    name: 公共管理硕士教育中心
+    organization_level: program
+    seed_urls: [https://mpa.ustc.edu.cn/main.htm]
+    allowed_hosts: [mpa.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-business
+    name: 科技商学院、管理学院（业务域名）
+    organization_level: college
+    seed_urls: [https://business.ustc.edu.cn/main.htm]
+    allowed_hosts: [business.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-ic
+    name: 国际学院
+    organization_level: college
+    seed_urls: [https://ic.ustc.edu.cn/]
+    allowed_hosts: [ic.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-iphs
+    name: 公共卫生研究院
+    organization_level: research
+    seed_urls: [https://iphs.ustc.edu.cn/main.htm]
+    allowed_hosts: [iphs.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-esetc
+    name: 工程科学实验教学中心
+    organization_level: center
+    seed_urls: [https://esetc.ustc.edu.cn/main.htm]
+    allowed_hosts: [esetc.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-nercslip
+    name: 语音及语言信息处理国家工程研究中心（旧域名）
+    organization_level: research
+    seed_urls: [https://nercslip.ustc.edu.cn/main.htm]
+    allowed_hosts: [nercslip.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-yz1
+    name: 研究生招生在线（旧域名）
+    organization_level: office
+    seed_urls: [https://yz1.ustc.edu.cn/]
+    allowed_hosts: [yz1.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-gcl
+    name: 图形计算与感知交互重点实验室
+    organization_level: research
+    seed_urls: [https://gcl.ustc.edu.cn/]
+    allowed_hosts: [gcl.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-pnp
+    name: 粒子物理与原子核物理学科
+    organization_level: research
+    seed_urls: [https://pnp.ustc.edu.cn/main.htm]
+    allowed_hosts: [pnp.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-lfn
+    name: 未来网络实验室
+    organization_level: research
+    seed_urls: [https://lfn.ustc.edu.cn/main.htm]
+    allowed_hosts: [lfn.ustc.edu.cn]
+    discovery_only: true
+  # Second audit pass: additional official public hosts with a homepage-level
+  # publication/date signal. These are crawl candidates, not product catalog
+  # entries; low-value or inactive responses remain in the audit trail only.
+  - id: supplemental-ef
+    name: 中国科大教育基金会
+    organization_level: office
+    seed_urls: [https://ef.ustc.edu.cn/]
+    allowed_hosts: [ef.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-pms-cmet
+    name: 质量工程项目管理信息系统
+    organization_level: center
+    seed_urls: [https://pms.cmet.ustc.edu.cn/]
+    allowed_hosts: [pms.cmet.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-lcd
+    name: Laboratory of Cellular Dynamics
+    organization_level: research
+    seed_urls: [https://lcd.ustc.edu.cn/]
+    allowed_hosts: [lcd.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-iia
+    name: 工业自动化研究所
+    organization_level: research
+    seed_urls: [https://iia.ustc.edu.cn/]
+    allowed_hosts: [iia.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-gradunion
+    name: 研究生会
+    organization_level: student
+    seed_urls: [https://gradunion.ustc.edu.cn/]
+    allowed_hosts: [gradunion.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-jgdw
+    name: 机关党委办公室
+    organization_level: office
+    seed_urls: [https://jgdw.ustc.edu.cn/]
+    allowed_hosts: [jgdw.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-iotsec
+    name: 物联网与智慧城市安全保障关键技术研究
+    organization_level: research
+    seed_urls: [https://iotsec.ustc.edu.cn/]
+    allowed_hosts: [iotsec.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-etcis
+    name: 信息与计算机科学实验教学中心
+    organization_level: center
+    seed_urls: [https://etcis.ustc.edu.cn/]
+    allowed_hosts: [etcis.ustc.edu.cn, etcis-web.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-jm
+    name: 公共事务学院法律硕士教育中心
+    organization_level: program
+    seed_urls: [https://jm.ustc.edu.cn/]
+    allowed_hosts: [jm.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-zhb
+    name: 科技成果转化处
+    organization_level: office
+    seed_urls: [https://zhb.ustc.edu.cn/]
+    allowed_hosts: [zhb.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-nano
+    name: 微纳研究与制造中心
+    organization_level: center
+    seed_urls: [https://nano.ustc.edu.cn/]
+    allowed_hosts: [nano.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-hzdt
+    name: 火灾安全全国重点实验室党团网
+    organization_level: research
+    seed_urls: [https://hzdt.ustc.edu.cn/]
+    allowed_hosts: [hzdt.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-ahmath
+    name: 安徽省数学会
+    organization_level: society
+    seed_urls: [https://ahmath.ustc.edu.cn/]
+    allowed_hosts: [ahmath.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-jgb
+    name: 中国科大师德教育网
+    organization_level: office
+    seed_urls: [https://jgb.ustc.edu.cn/]
+    allowed_hosts: [jgb.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-journal
+    name: 《研究生教育研究》杂志社
+    organization_level: journal
+    seed_urls: [https://journal.ustc.edu.cn/]
+    allowed_hosts: [journal.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-pba
+    name: 粒子束交叉应用实验室
+    organization_level: research
+    seed_urls: [https://pba.ustc.edu.cn/]
+    allowed_hosts: [pba.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-sie
+    name: 创新创业学院
+    organization_level: college
+    seed_urls: [https://sie.ustc.edu.cn/]
+    allowed_hosts: [sie.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-ircls
+    name: 人文与社会科学学院语言科学交叉研究中心
+    organization_level: center
+    seed_urls: [https://ircls.ustc.edu.cn/]
+    allowed_hosts: [ircls.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-ahiptc
+    name: 国家知识产权培训（安徽）基地
+    organization_level: center
+    seed_urls: [https://ahiptc.ustc.edu.cn/]
+    allowed_hosts: [ahiptc.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-dm
+    name: 认知智能全国重点实验室
+    organization_level: research
+    seed_urls: [https://dm.ustc.edu.cn/]
+    allowed_hosts: [dm.ustc.edu.cn]
+    discovery_only: true
+  - id: supplemental-ispc
+    name: 中国科学技术大学信息科学实验中心
+    organization_level: center
+    seed_urls: [https://ispc.ustc.edu.cn/]
+    allowed_hosts: [ispc.ustc.edu.cn]
+    discovery_only: true

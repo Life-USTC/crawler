@@ -1,0 +1,31 @@
+# Python and tooling
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+.env*
+!.env.example
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Local runtime state and generated archives
+data/*
+!data/.gitkeep
+test-incr/
+test_inc/
+
+# Logs and process state
+*.log
+*.pid
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/

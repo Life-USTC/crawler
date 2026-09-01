@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.13"
+      - run: uv sync --locked
+      - run: uv run ruff check src tests scripts
+      - run: uv run pytest -q
+      - run: uv run ustc-crawler --help
+      - run: uv build

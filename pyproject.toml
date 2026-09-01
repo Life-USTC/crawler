@@ -1,0 +1,43 @@
+[project]
+name = "ustc-public-site-crawler"
+version = "0.1.0"
+description = "A respectful, resumable local crawler for public USTC news and unit sites"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+  "beautifulsoup4>=4.15.0",
+  "httpx>=0.28.1",
+  "pyyaml>=6.0.3",
+]
+
+[project.optional-dependencies]
+browser = ["patchright>=1.58.2"]
+
+[project.scripts]
+ustc-crawler = "ustc_crawler.cli:main"
+
+[project.urls]
+Repository = "https://github.com/Life-USTC/crawler"
+Issues = "https://github.com/Life-USTC/crawler/issues"
+
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ustc_crawler"]
+
+[dependency-groups]
+dev = ["ruff>=0.16.0", "pytest>=8.0"]
+
+[tool.uv]
+package = true
+default-groups = ["dev"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = ["E501"]

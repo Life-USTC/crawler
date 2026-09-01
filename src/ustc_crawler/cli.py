@@ -1,0 +1,323 @@
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+from .crawl import CrawlOptions, run_crawl
+from .discover import discover_units
+from .media import MediaOptions, download_saved_images
+from .store import Store
+from .web import serve_dashboard
+
+
+def _path(value: str) -> str:
+    return str(Path(value))
+
+
+def _iso_date(value: str) -> str:
+    from datetime import datetime
+
+    if value == "":
+        return value
+    try:
+        datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"--since must be YYYY-MM-DD: {value}") from exc
+    return value
+
+
+def _source_image_caps(config_path: str) -> dict[str, int]:
+    from .config import load_config
+
+    sources, _ = load_config(config_path, include_supplemental=True)
+    return {
+        source.id: source.max_images_per_page
+        for source in sources
+        if source.max_images_per_page is not None and source.max_images_per_page > 0
+    }
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="ustc-crawler", description="Crawl public USTC news and unit sites locally"
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    discover = sub.add_parser(
+        "discover-ustc", help="discover colleges/departments from the official directory"
+    )
+    discover.add_argument("--directory-url", default="https://www.ustc.edu.cn/yxjs.htm")
+    discover.add_argument("--output", default="data/discovered_units.json", type=_path)
+
+    crawl = sub.add_parser("crawl", help="crawl configured sources; rerun to resume")
+    crawl.add_argument("--config", default="config/sources.yaml", type=_path)
+    crawl.add_argument("--db", default="data/crawler.sqlite", type=_path)
+    crawl.add_argument("--data-dir", default="data", type=_path)
+    crawl.add_argument("--units", default="data/discovered_units.json", type=_path)
+    crawl.add_argument("--include-units", action="store_true")
+    crawl.add_argument(
+        "--include-supplemental",
+        action="store_true",
+        help="include audited subdomain candidates outside the official directory",
+    )
+    crawl.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        help="limit crawl to one or more source IDs (repeatable); default is all sources",
+    )
+    crawl.add_argument("--max-pages", type=int, default=0, help="0 means unlimited")
+    crawl.add_argument("--max-pages-per-source", type=int, default=0, help="0 means unlimited")
+    crawl.add_argument("--max-depth", type=int, default=0, help="0 means unlimited")
+    crawl.add_argument("--concurrency", type=int, default=2)
+    crawl.add_argument(
+        "--delay", type=float, default=1.0, help="minimum seconds between requests to one host"
+    )
+    crawl.add_argument("--no-images", action="store_true")
+    crawl.add_argument(
+        "--max-images-per-page",
+        type=int,
+        default=30,
+        help="0 means download every discovered article image",
+    )
+    crawl.add_argument("--max-image-bytes", type=int, default=20 * 1024 * 1024)
+    crawl.add_argument(
+        "--ignore-robots", action="store_true", help="only use with explicit site-owner permission"
+    )
+    crawl.add_argument(
+        "--min-value-score",
+        type=int,
+        default=16,
+        help="index/follow article content at or above this score; low-score pages remain in the audit trail",
+    )
+    crawl.add_argument(
+        "--no-news-first",
+        action="store_true",
+        help="disable publication/news priority ordering (normally news is crawled first)",
+    )
+    crawl.add_argument(
+        "--since",
+        type=_iso_date,
+        default="",
+        help="skip articles and undiscovered pages whose publication date is earlier than YYYY-MM-DD",
+    )
+    crawl.add_argument(
+        "--incremental",
+        action="store_true",
+        help="refresh shallow listings, recover unseen current links, and avoid replaying older archives",
+    )
+
+    stats = sub.add_parser("stats", help="show local crawl counts")
+    stats.add_argument("--db", default="data/crawler.sqlite", type=_path)
+    stats.add_argument("--data-dir", default="data", type=_path)
+
+    export = sub.add_parser("export", help="export articles as UTF-8 JSONL")
+    export.add_argument("--db", default="data/crawler.sqlite", type=_path)
+    export.add_argument("--data-dir", default="data", type=_path)
+    export.add_argument("--output", default="data/exports/articles.jsonl", type=_path)
+
+    reindex = sub.add_parser("reindex", help="re-extract saved pages without network requests")
+    reindex.add_argument("--config", default="config/sources.yaml", type=_path)
+    reindex.add_argument("--db", default="data/crawler.sqlite", type=_path)
+    reindex.add_argument("--data-dir", default="data", type=_path)
+    reindex.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        help="limit re-extraction to one or more source IDs (repeatable)",
+    )
+
+    rebuild_bundles = sub.add_parser(
+        "rebuild-bundles", help="rebuild URL-specific article JSON/HTML archives"
+    )
+    rebuild_bundles.add_argument("--db", default="data/crawler.sqlite", type=_path)
+    rebuild_bundles.add_argument("--data-dir", default="data", type=_path)
+
+    score = sub.add_parser(
+        "score-pages",
+        help="quickly rescore the saved page inventory without reparsing HTML or making requests",
+    )
+    score.add_argument("--db", default="data/crawler.sqlite", type=_path)
+    score.add_argument("--data-dir", default="data", type=_path)
+
+    assets = sub.add_parser(
+        "backfill-assets",
+        help="copy legacy document responses already stored under pages into data/assets",
+    )
+    assets.add_argument("--db", default="data/crawler.sqlite", type=_path)
+    assets.add_argument("--data-dir", default="data", type=_path)
+
+    report = sub.add_parser("report", help="summarize publication activity per source")
+    report.add_argument("--db", default="data/crawler.sqlite", type=_path)
+    report.add_argument("--data-dir", default="data", type=_path)
+    report.add_argument("--output", default="data/exports/source-report.json", type=_path)
+
+    cleanup = sub.add_parser(
+        "cleanup-data",
+        help="remove misclassified blocked-host articles and orphan media (dry-run by default)",
+    )
+    cleanup.add_argument("--config", default="config/sources.yaml", type=_path)
+    cleanup.add_argument("--db", default="data/crawler.sqlite", type=_path)
+    cleanup.add_argument("--data-dir", default="data", type=_path)
+    cleanup.add_argument(
+        "--source",
+        default="",
+        help="limit blocked-host cleanup to one source (default: all sources)",
+    )
+    cleanup.add_argument(
+        "--commit",
+        action="store_true",
+        help="actually delete rows; without this flag only counts are reported",
+    )
+
+    media = sub.add_parser(
+        "download-images", help="download all images referenced by locally saved articles"
+    )
+    media.add_argument("--db", default="data/crawler.sqlite", type=_path)
+    media.add_argument("--data-dir", default="data", type=_path)
+    media.add_argument("--concurrency", type=int, default=16)
+    media.add_argument(
+        "--delay", type=float, default=0.5, help="minimum seconds between requests to one host"
+    )
+    media.add_argument("--max-image-bytes", type=int, default=20 * 1024 * 1024)
+
+    serve = sub.add_parser("serve", help="serve a read-only local crawl dashboard")
+    serve.add_argument("--db", default="data/crawler.sqlite", type=_path)
+    serve.add_argument("--data-dir", default="data", type=_path)
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", default=8765, type=int)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    if args.command == "discover-ustc":
+        result = discover_units(args.directory_url, args.output)
+        print(
+            json.dumps(
+                {
+                    "units": len(result.get("units", [])),
+                    "excluded": len(result.get("excluded", [])),
+                    "error": result.get("error", ""),
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 0 if not result.get("error") else 1
+    if args.command == "crawl":
+        options = CrawlOptions(
+            config_path=args.config,
+            db_path=args.db,
+            data_dir=args.data_dir,
+            units_path=args.units,
+            include_units=args.include_units,
+            include_supplemental=args.include_supplemental,
+            max_pages=args.max_pages,
+            max_pages_per_source=args.max_pages_per_source,
+            max_depth=args.max_depth,
+            concurrency=args.concurrency,
+            delay=args.delay,
+            download_images=not args.no_images,
+            max_images_per_page=args.max_images_per_page,
+            max_image_bytes=args.max_image_bytes,
+            ignore_robots=args.ignore_robots,
+            min_value_score=args.min_value_score,
+            news_first=not args.no_news_first,
+            since=args.since,
+            incremental=args.incremental,
+            source_ids=args.source,
+        )
+        print(json.dumps(run_crawl(options), ensure_ascii=False, indent=2))
+        return 0
+    if args.command == "stats":
+        store = Store(args.db, args.data_dir)
+        try:
+            print(json.dumps(store.stats(), ensure_ascii=False, indent=2))
+        finally:
+            store.close()
+        return 0
+    if args.command == "export":
+        store = Store(args.db, args.data_dir)
+        try:
+            print(store.export_jsonl(args.output))
+        finally:
+            store.close()
+        return 0
+    if args.command == "reindex":
+        store = Store(args.db, args.data_dir)
+        try:
+            print(
+                json.dumps(
+                    store.reindex_extractions(
+                        set(args.source) or None,
+                        _source_image_caps(args.config),
+                    ),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        finally:
+            store.close()
+        return 0
+    if args.command == "rebuild-bundles":
+        store = Store(args.db, args.data_dir)
+        try:
+            print(json.dumps(store.rebuild_article_bundles(), ensure_ascii=False, indent=2))
+        finally:
+            store.close()
+        return 0
+    if args.command == "score-pages":
+        store = Store(args.db, args.data_dir)
+        try:
+            print(json.dumps(store.rescore_pages(), ensure_ascii=False, indent=2))
+        finally:
+            store.close()
+        return 0
+    if args.command == "backfill-assets":
+        store = Store(args.db, args.data_dir)
+        try:
+            print(json.dumps(store.backfill_assets_from_pages(), ensure_ascii=False, indent=2))
+        finally:
+            store.close()
+        return 0
+    if args.command == "report":
+        store = Store(args.db, args.data_dir)
+        try:
+            report = store.source_report(args.output)
+            print(
+                json.dumps(
+                    {"sources": len(report), "output": args.output}, ensure_ascii=False, indent=2
+                )
+            )
+        finally:
+            store.close()
+        return 0
+    if args.command == "cleanup-data":
+        source_caps = _source_image_caps(args.config)
+        store = Store(args.db, args.data_dir)
+        try:
+            result = store.cleanup_data(
+                source_id=args.source or None,
+                commit=args.commit,
+                source_caps=source_caps,
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        finally:
+            store.close()
+        return 0
+    if args.command == "download-images":
+        result = download_saved_images(
+            MediaOptions(
+                db_path=args.db,
+                data_dir=args.data_dir,
+                concurrency=args.concurrency,
+                delay=args.delay,
+                max_image_bytes=args.max_image_bytes,
+            )
+        )
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
+    if args.command == "serve":
+        return serve_dashboard(args.db, args.data_dir, args.host, args.port)
+    return 2
