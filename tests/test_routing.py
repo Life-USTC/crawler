@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from tests.support import store_core
 from ustc_crawler.crawl import AsyncCrawler, CrawlOptions, _parse_since
 from ustc_crawler.models import PageDocument, SourceConfig
 from ustc_crawler.routing import source_id_for_url
@@ -54,7 +55,7 @@ class SourceRoutingTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         store = Store(self.db_path, self.data_dir)
-        row = store.db.execute(
+        row = store_core(store).execute(
             "SELECT source_id,status FROM frontier WHERE url=?", (url,)
         ).fetchone()
         self.assertEqual(row["source_id"], "news")
@@ -71,7 +72,7 @@ class SourceRoutingTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         store = Store(self.db_path, self.data_dir)
-        row = store.db.execute(
+        row = store_core(store).execute(
             "SELECT source_id,status FROM frontier WHERE url=?", (url,)
         ).fetchone()
         self.assertEqual(dict(row), {"source_id": "news", "status": "pending"})
@@ -91,7 +92,7 @@ class SourceRoutingTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         store = Store(self.db_path, self.data_dir)
-        row = store.db.execute(
+        row = store_core(store).execute(
             "SELECT status,last_error FROM frontier WHERE url=?", (url,)
         ).fetchone()
         self.assertEqual(row["status"], "pending")
@@ -130,7 +131,7 @@ class SourceRoutingTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         store = Store(self.db_path, self.data_dir)
-        row = store.db.execute(
+        row = store_core(store).execute(
             "SELECT status FROM frontier WHERE url=?", (url,)
         ).fetchone()
         self.assertEqual(row["status"], "pending")
@@ -148,7 +149,7 @@ class SourceRoutingTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         store = Store(self.db_path, self.data_dir)
-        row = store.db.execute(
+        row = store_core(store).execute(
             "SELECT status FROM frontier WHERE url=?", (url,)
         ).fetchone()
         self.assertEqual(row["status"], "pending")

@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from tests.support import store_core
 from ustc_crawler.cli import main as cli_main
 from ustc_crawler.extract import extract_page
 from ustc_crawler.models import ArticleDocument, ImageRef, SourceConfig
@@ -56,7 +57,7 @@ class CleanupBlockedHostArticlesTests(unittest.TestCase):
         self.assertEqual(result["candidate_urls"], 2)
         self.assertEqual(result["removed_articles"], 0)
         self.assertTrue(result["dry_run"])
-        count = self.store.db.execute(
+        count = store_core(self.store).execute(
             "SELECT COUNT(*) FROM articles WHERE source_id='library'"
         ).fetchone()[0]
         self.assertEqual(count, 3)
@@ -73,21 +74,21 @@ class CleanupBlockedHostArticlesTests(unittest.TestCase):
         self.assertEqual(result["removed_articles"], 1)
         self.assertFalse(result["dry_run"])
         self.assertIsNone(
-            self.store.db.execute(
+            store_core(self.store).execute(
                 "SELECT url FROM articles WHERE url=?", (bad_url,)
             ).fetchone()
         )
         self.assertIsNotNone(
-            self.store.db.execute(
+            store_core(self.store).execute(
                 "SELECT url FROM articles WHERE url=?", (good_url,)
             ).fetchone()
         )
         self.assertIsNone(
-            self.store.db.execute(
+            store_core(self.store).execute(
                 "SELECT article_url FROM article_media WHERE article_url=?", (bad_url,)
             ).fetchone()
         )
-        media_row = self.store.db.execute(
+        media_row = store_core(self.store).execute(
             "SELECT article_url FROM media WHERE url=?", (image.url,)
         ).fetchone()
         self.assertIsNotNone(media_row)
@@ -140,8 +141,8 @@ class CleanupOrphanMediaTests(unittest.TestCase):
         self._save_article(url, [image])
         self.store.save_media(image, b"data", "image/png", url, url)
         # Delete the article_media row but keep media, simulating stale linkage.
-        self.store.db.execute("DELETE FROM article_media WHERE image_url=?", (image.url,))
-        self.store.db.commit()
+        store_core(self.store).execute("DELETE FROM article_media WHERE image_url=?", (image.url,))
+        store_core(self.store).commit()
         result = self.store.cleanup_orphan_media(commit=False)
         self.assertEqual(result["orphan_media"], 1)
         self.assertEqual(result["stale_linkage"], 1)
@@ -157,14 +158,14 @@ class CleanupOrphanMediaTests(unittest.TestCase):
         )
         self._save_article(url, [image])
         self.store.save_media(image, b"data", "image/png", url, url)
-        self.store.db.execute("DELETE FROM article_media WHERE image_url=?", (image.url,))
-        self.store.db.commit()
+        store_core(self.store).execute("DELETE FROM article_media WHERE image_url=?", (image.url,))
+        store_core(self.store).commit()
         result = self.store.cleanup_orphan_media(commit=True)
         self.assertEqual(result["orphan_media"], 1)
         self.assertEqual(result["stale_linkage"], 1)
         self.assertEqual(result["relinked"], 1)
         self.assertEqual(result["deleted"], 0)
-        link = self.store.db.execute(
+        link = store_core(self.store).execute(
             "SELECT article_url, alt FROM article_media WHERE image_url=?", (image.url,)
         ).fetchone()
         self.assertIsNotNone(link)
@@ -179,17 +180,17 @@ class CleanupOrphanMediaTests(unittest.TestCase):
         self._save_article(url, [image])
         self.store.save_media(image, b"data", "image/png", url, url)
         # Remove both the article and its media link, leaving an unreferenced media row.
-        self.store.db.execute("DELETE FROM article_media WHERE image_url=?", (image.url,))
-        self.store.db.execute("UPDATE media SET article_url=NULL WHERE url=?", (image.url,))
-        self.store.db.execute("DELETE FROM articles WHERE url=?", (url,))
-        self.store.db.commit()
+        store_core(self.store).execute("DELETE FROM article_media WHERE image_url=?", (image.url,))
+        store_core(self.store).execute("UPDATE media SET article_url=NULL WHERE url=?", (image.url,))
+        store_core(self.store).execute("DELETE FROM articles WHERE url=?", (url,))
+        store_core(self.store).commit()
         result = self.store.cleanup_orphan_media(commit=True)
         self.assertEqual(result["orphan_media"], 1)
         self.assertEqual(result["unreferenced"], 1)
         self.assertEqual(result["relinked"], 0)
         self.assertEqual(result["deleted"], 1)
         self.assertIsNone(
-            self.store.db.execute(
+            store_core(self.store).execute(
                 "SELECT url FROM media WHERE url=?", (image.url,)
             ).fetchone()
         )
@@ -251,12 +252,12 @@ class CleanupExcessImagesTests(unittest.TestCase):
         self.assertEqual(result["excess_images"]["deleted"], 2)
         self.assertEqual(result["orphan_media"]["deleted"], 2)
         self.assertEqual(
-            self.store.db.execute(
+            store_core(self.store).execute(
                 "SELECT COUNT(*) FROM article_media WHERE article_url=?", (url,)
             ).fetchone()[0],
             2,
         )
-        self.assertEqual(self.store.db.execute("SELECT COUNT(*) FROM media").fetchone()[0], 2)
+        self.assertEqual(store_core(self.store).execute("SELECT COUNT(*) FROM media").fetchone()[0], 2)
 
     def test_reindex_respects_source_image_cap(self) -> None:
         url = "https://www.ustc.edu.cn/info/1/2.htm"
@@ -283,7 +284,7 @@ class CleanupExcessImagesTests(unittest.TestCase):
 
         self.assertEqual(result["articles"], 1)
         self.assertEqual(
-            self.store.db.execute(
+            store_core(self.store).execute(
                 "SELECT COUNT(*) FROM article_media WHERE article_url=?", (url,)
             ).fetchone()[0],
             2,

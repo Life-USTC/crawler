@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 from urllib.parse import quote
 from urllib.request import urlopen
 
+from tests.support import store_core
 from ustc_crawler.models import SourceConfig
 from ustc_crawler.store import Store
 from ustc_crawler.web import DashboardHTTPServer, DashboardStore, _safe_article_html
@@ -29,7 +30,7 @@ class DashboardTests(unittest.TestCase):
             )
         )
         today = date.today().isoformat()
-        store.db.execute(
+        store_core(store).execute(
             """
             INSERT INTO pages(
               url,source_id,final_url,status,content_type,fetched_at,depth,discovered_from,
@@ -61,7 +62,7 @@ class DashboardTests(unittest.TestCase):
                 "",
             ),
         )
-        store.db.execute(
+        store_core(store).execute(
             """
             INSERT INTO articles(
               url,source_id,title,author,published_at,updated_at,category,summary,body_html,
@@ -89,7 +90,7 @@ class DashboardTests(unittest.TestCase):
                 today,
             ),
         )
-        store.db.execute(
+        store_core(store).execute(
             """
             INSERT INTO articles(
               url,source_id,title,author,published_at,updated_at,category,summary,body_html,
@@ -120,7 +121,7 @@ class DashboardTests(unittest.TestCase):
         image_path = self.data_dir / "media" / "aa" / "image.png"
         image_path.parent.mkdir(parents=True)
         image_path.write_bytes(b"PNG")
-        store.db.execute(
+        store_core(store).execute(
             "INSERT INTO media(url,article_url,source_page_url,local_path,mime_type,sha256,size,status,fetched_at) VALUES(?,?,?,?,?,?,?,?,?)",
             (
                 "https://news.example.test/image.png",
@@ -134,7 +135,7 @@ class DashboardTests(unittest.TestCase):
                 today,
             ),
         )
-        store.db.execute(
+        store_core(store).execute(
             "INSERT INTO article_media(article_url,image_url,local_path,alt,title,caption,created_at) VALUES(?,?,?,?,?,?,?)",
             (
                 "https://news.example.test/article/1",
@@ -149,7 +150,7 @@ class DashboardTests(unittest.TestCase):
         asset_path = self.data_dir / "assets" / "aa" / "assignment.pdf"
         asset_path.parent.mkdir(parents=True)
         asset_path.write_bytes(b"PDF")
-        store.db.execute(
+        store_core(store).execute(
             "INSERT INTO assets(url,source_url,local_path,mime_type,size,status,fetched_at,page_kind,access_mode,value_score,score_reasons) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (
                 "https://news.example.test/assignment.pdf",
@@ -165,7 +166,7 @@ class DashboardTests(unittest.TestCase):
                 "[]",
             ),
         )
-        store.db.commit()
+        store_core(store).commit()
         store.close()
 
     def tearDown(self) -> None:
@@ -194,7 +195,7 @@ class DashboardTests(unittest.TestCase):
         today = date.today().isoformat()
 
         def add(url: str, title: str, page_kind: str, discovered_from: str = "") -> None:
-            store.db.execute(
+            store_core(store).execute(
                 """
                 INSERT INTO pages(
                   url,source_id,final_url,status,content_type,fetched_at,depth,discovered_from,
@@ -208,7 +209,7 @@ class DashboardTests(unittest.TestCase):
                     100, "full_index", "[]", today, "",
                 ),
             )
-            store.db.execute(
+            store_core(store).execute(
                 """
                 INSERT INTO articles(
                   url,source_id,title,author,published_at,updated_at,category,summary,body_html,
@@ -225,10 +226,10 @@ class DashboardTests(unittest.TestCase):
         add("https://news.example.test/item/section", "本周工作动态", "news_article", "https://news.example.test/tzgg/list.htm")
         add("https://news.example.test/item/bus", "校园班车运行时刻表", "news_article")
         add("https://news.example.test/course/1", "课程资料", "course_resource")
-        store.db.execute(
+        store_core(store).execute(
             "UPDATE articles SET published_at='' WHERE url='https://news.example.test/item/bus'"
         )
-        store.db.commit()
+        store_core(store).commit()
         store.close()
 
         dashboard = DashboardStore(self.db_path, self.data_dir)

@@ -3,6 +3,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from tests.support import store_core
 from ustc_crawler.crawl import (
     AsyncCrawler,
     CrawlOptions,
@@ -71,16 +72,16 @@ class IncrementalResetTests(unittest.TestCase):
             store.mark_done(urls["missing_sitemap"][0], "http 404")
 
             # Simulate an interrupted older incremental run.
-            store.db.execute(
+            store_core(store).execute(
                 "UPDATE frontier SET status='pending' WHERE url=?",
                 (urls["deep"][0],),
             )
-            store.db.commit()
+            store_core(store).commit()
 
             store.reset_seeds_and_listings({"news"})
             statuses = {
                 row["url"]: row["status"]
-                for row in store.db.execute("SELECT url,status FROM frontier")
+                for row in store_core(store).execute("SELECT url,status FROM frontier")
             }
             store.close()
 
@@ -149,7 +150,7 @@ class CrawlSinceTests(unittest.IsolatedAsyncioTestCase):
         store = Store(self.db_path, self.data_dir)
         statuses = {
             row["url"]: row["status"]
-            for row in store.db.execute("SELECT url, status FROM frontier").fetchall()
+            for row in store_core(store).execute("SELECT url, status FROM frontier").fetchall()
         }
         self.assertEqual(statuses["https://news.example.test/old/article.htm"], "filtered")
         self.assertEqual(statuses["https://news.example.test/new/article.htm"], "pending")
@@ -168,7 +169,7 @@ class CrawlSinceTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         store = Store(self.db_path, self.data_dir)
-        row = store.db.execute(
+        row = store_core(store).execute(
             "SELECT status,last_error FROM frontier WHERE url=?", (url,)
         ).fetchone()
         self.assertEqual(row["status"], "filtered")
@@ -198,8 +199,8 @@ class CrawlSinceTests(unittest.IsolatedAsyncioTestCase):
             "news",
             2,
         )
-        store.db.execute("UPDATE frontier SET status='pending' WHERE url=?", (url,))
-        store.db.commit()
+        store_core(store).execute("UPDATE frontier SET status='pending' WHERE url=?", (url,))
+        store_core(store).commit()
         store.close()
 
         crawler = self._crawler()
@@ -209,7 +210,7 @@ class CrawlSinceTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         store = Store(self.db_path, self.data_dir)
-        row = store.db.execute(
+        row = store_core(store).execute(
             "SELECT status,last_error FROM frontier WHERE url=?", (url,)
         ).fetchone()
         self.assertEqual(row["status"], "filtered")
@@ -230,7 +231,7 @@ class CrawlSinceTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         store = Store(self.db_path, self.data_dir)
-        row = store.db.execute(
+        row = store_core(store).execute(
             "SELECT status FROM frontier WHERE url=?",
             ("https://news.example.test/old/article.htm",),
         ).fetchone()
@@ -257,7 +258,7 @@ class CrawlSinceTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         store = Store(self.db_path, self.data_dir)
-        row = store.db.execute(
+        row = store_core(store).execute(
             "SELECT status,last_error FROM frontier WHERE url=?",
             (url,),
         ).fetchone()
@@ -280,7 +281,7 @@ class CrawlSinceTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         store = Store(self.db_path, self.data_dir)
-        row = store.db.execute(
+        row = store_core(store).execute(
             "SELECT 1 FROM frontier WHERE url=?", (url,)
         ).fetchone()
         self.assertIsNone(row)
@@ -304,7 +305,7 @@ class CrawlSinceTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         store = Store(self.db_path, self.data_dir)
-        row = store.db.execute(
+        row = store_core(store).execute(
             "SELECT status,last_error FROM frontier WHERE url=?", (url,)
         ).fetchone()
         self.assertIsNotNone(row)
@@ -339,7 +340,7 @@ class CrawlSinceTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         store = Store(self.db_path, self.data_dir)
-        article = store.db.execute(
+        article = store_core(store).execute(
             "SELECT url FROM articles WHERE url=?",
             ("https://news.example.test/article/1",),
         ).fetchone()
@@ -373,7 +374,7 @@ class CrawlSinceTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         store = Store(self.db_path, self.data_dir)
-        article = store.db.execute(
+        article = store_core(store).execute(
             "SELECT url FROM articles WHERE url=?",
             ("https://news.example.test/article/2",),
         ).fetchone()
@@ -408,7 +409,7 @@ class CrawlSinceTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         store = Store(self.db_path, self.data_dir)
-        article = store.db.execute(
+        article = store_core(store).execute(
             "SELECT url FROM articles WHERE url=?",
             ("https://news.example.test/article/3",),
         ).fetchone()
@@ -465,10 +466,10 @@ class CrawlSinceTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         store = Store(self.db_path, self.data_dir)
-        article = store.db.execute(
+        article = store_core(store).execute(
             "SELECT title FROM articles WHERE url=?", (url,)
         ).fetchone()
-        related = store.db.execute(
+        related = store_core(store).execute(
             "SELECT 1 FROM frontier WHERE url=?", (archive_url,)
         ).fetchone()
         self.assertIsNotNone(article)
@@ -501,10 +502,10 @@ class CrawlSinceTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         store = Store(self.db_path, self.data_dir)
-        article = store.db.execute(
+        article = store_core(store).execute(
             "SELECT published_at FROM articles WHERE url=?", (final_url,)
         ).fetchone()
-        page = store.db.execute(
+        page = store_core(store).execute(
             "SELECT published_at FROM pages WHERE url=?", (requested_url,)
         ).fetchone()
         self.assertIsNotNone(article)

@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from tests.support import store_core
 from ustc_crawler.store import Store
 
 
@@ -18,7 +19,7 @@ class AssetStorageTests(unittest.TestCase):
                 body=b"",
                 mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
-            row = store.db.execute(
+            row = store_core(store).execute(
                 "SELECT status,error,size,local_path FROM assets WHERE url=?", (url,)
             ).fetchone()
             store.close()

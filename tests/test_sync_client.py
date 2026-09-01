@@ -1,0 +1,717 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from urllib.parse import parse_qs
+
+import httpx
+from pydantic import ValidationError
+from sqlalchemy import func, select
+
+from ustc_crawler.cli import build_parser
+from ustc_crawler.db.models import SyncBatch, SyncBatchItem, SyncOutbox
+from ustc_crawler.models import ArticleDocument, SourceConfig
+from ustc_crawler.store import Store
+from ustc_crawler.sync.auth import (
+    OAUTH_SCOPE,
+    OAuthDeviceClient,
+    OAuthTokenState,
+)
+from ustc_crawler.sync.client import IngestionSyncClient, SyncOptions, sync_backfill
+from ustc_crawler.sync.models import IngestionBatchResponse
+from ustc_crawler.sync.outbox import IngestionOutbox
+
+
+class FakeCredentialStore:
+    def __init__(self, state: OAuthTokenState | None = None) -> None:
+        self.state = state
+
+    def load(self) -> OAuthTokenState | None:
+        return self.state
+
+    def save(self, state: OAuthTokenState) -> None:
+        self.state = state
+
+    def delete(self) -> None:
+        self.state = None
+
+
+class SyncClientTests(unittest.TestCase):
+    server = "https://ingest.example.test"
+
+    def test_batch_response_digest_is_strict_sha256(self) -> None:
+        with self.assertRaises(ValidationError):
+            IngestionBatchResponse.model_validate(
+                {
+                    "batchId": "batch",
+                    "clientRunId": "run",
+                    "payloadDigest": "not-a-digest",
+                    "results": [],
+                }
+            )
+
+    @staticmethod
+    def _source() -> SourceConfig:
+        return SourceConfig(
+            id="source",
+            name="Test source",
+            organization_level="department",
+            seed_urls=["https://example.edu/"],
+            allowed_hosts=["example.edu"],
+        )
+
+    @staticmethod
+    def _article(number: int, *, rejected: bool = False) -> ArticleDocument:
+        url = f"https://example.edu/news/{number}"
+        if rejected:
+            url += "-rejected"
+        return ArticleDocument(
+            url=url,
+            source_id="source",
+            title=f"Notice {number}",
+            author="",
+            published_at="2026-08-20",
+            updated_at="2026-08-20T09:30:00",
+            category="通知公告",
+            summary="Summary",
+            body_html=f"<p>HTML {number}</p>",
+            body_text=f"Text {number}",
+            body_markdown=f"Markdown {number}",
+            extraction_method="article",
+            source_page_url=url,
+        )
+
+    def _store(self, root: Path) -> Store:
+        store = Store(root / "crawler.sqlite", root / "data")
+        store.add_source(self._source())
+        return store
+
+    def _oauth(
+        self,
+        credentials: FakeCredentialStore,
+        client: httpx.Client,
+        *,
+        now: float = 100.0,
+    ) -> OAuthDeviceClient:
+        return OAuthDeviceClient(
+            self.server,
+            "crawler-public-client",
+            credentials,
+            http_client=client,
+            now=lambda: now,
+        )
+
+    @staticmethod
+    def _batch_response(request: httpx.Request, *, statuses: dict[str, str] | None = None) -> dict:
+        payload = json.loads(request.content)
+        results = []
+        for item in payload["items"]:
+            results.append(
+                {
+                    "sourceId": item["sourceId"],
+                    "canonicalUrl": item["canonicalUrl"],
+                    "revisionHash": item["revisionHash"],
+                    "status": (statuses or {}).get(item["canonicalUrl"], "created"),
+                    "publicationId": "publication-id",
+                    "revisionId": "revision-id",
+                    **(
+                        {"error": "unsafe server detail containing secret-token"}
+                        if (statuses or {}).get(item["canonicalUrl"]) == "rejected"
+                        else {}
+                    ),
+                }
+            )
+        return {
+            "batchId": payload["batchId"],
+            "clientRunId": payload["clientRunId"],
+            "payloadDigest": hashlib.sha256(request.content).hexdigest(),
+            "results": results,
+        }
+
+    def _plan_response(self, request: httpx.Request, *, upload: bool) -> dict:
+        payload = json.loads(request.content)
+        objects = []
+        for item in payload["objects"]:
+            objects.append(
+                {
+                    "kind": item["kind"],
+                    "sha256": item["sha256"],
+                    "r2Key": f"publications/{item['sha256']}",
+                    "status": "upload_required" if upload else "already_present",
+                    "uploadUrl": f"{self.server}/signed/{item['sha256']}" if upload else None,
+                    "expiresAt": None,
+                    "requiredHeaders": {
+                        "Content-Type": "text/html" if item["kind"] == "body_html" else "text/markdown",
+                        "x-amz-meta-kind": item["kind"],
+                        "x-amz-meta-sha256": item["sha256"],
+                    },
+                }
+            )
+        return {"batchId": payload["batchId"], "objects": objects}
+
+    def test_device_login_pending_slow_down_and_refresh(self) -> None:
+        calls: list[httpx.Request] = []
+        token_calls = 0
+        clock = [0.0]
+        sleeps: list[float] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal token_calls
+            calls.append(request)
+            if request.url.path == "/.well-known/oauth-authorization-server/api/auth":
+                return httpx.Response(404, request=request)
+            if request.url.path == "/.well-known/oauth-authorization-server":
+                return httpx.Response(
+                    200,
+                    json={
+                        "device_authorization_endpoint": f"{self.server}/oauth/device",
+                        "token_endpoint": f"{self.server}/oauth/token",
+                    },
+                    request=request,
+                )
+            if request.url.path == "/oauth/device":
+                form = parse_qs(request.content.decode())
+                self.assertEqual(form["client_id"], ["crawler-public-client"])
+                self.assertEqual(form["scope"], [OAUTH_SCOPE])
+                self.assertEqual(form["resource"], [f"{self.server}/api/auth"])
+                return httpx.Response(
+                    200,
+                    json={
+                        "device_code": "do-not-display",
+                        "user_code": "ABCD-EFGH",
+                        "verification_uri": f"{self.server}/verify",
+                        "verification_uri_complete": f"{self.server}/verify?code=ABCD-EFGH",
+                        "expires_in": 100,
+                        "interval": 2,
+                    },
+                    request=request,
+                )
+            if request.url.path == "/oauth/token":
+                token_calls += 1
+                form = parse_qs(request.content.decode())
+                if token_calls == 1:
+                    self.assertEqual(form["grant_type"], [
+                        "urn:ietf:params:oauth:grant-type:device_code"
+                    ])
+                    return httpx.Response(400, json={"error": "authorization_pending"}, request=request)
+                if token_calls == 2:
+                    return httpx.Response(400, json={"error": "slow_down"}, request=request)
+                if token_calls == 3:
+                    return httpx.Response(
+                        200,
+                        json={
+                            "access_token": "access-secret",
+                            "refresh_token": "refresh-secret",
+                            "token_type": "Bearer",
+                            "expires_in": 300,
+                            "scope": OAUTH_SCOPE,
+                        },
+                        request=request,
+                    )
+                self.assertEqual(form["grant_type"], ["refresh_token"])
+                self.assertEqual(form["refresh_token"], ["refresh-secret"])
+                return httpx.Response(
+                    200,
+                    json={
+                        "access_token": "refreshed-secret",
+                        "expires_in": 300,
+                    },
+                    request=request,
+                )
+            raise AssertionError(f"unexpected OAuth request: {request.url}")
+
+        def sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            clock[0] += seconds
+
+        credentials = FakeCredentialStore()
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        oauth = OAuthDeviceClient(
+            self.server,
+            "crawler-public-client",
+            credentials,
+            http_client=client,
+            sleep=sleep,
+            monotonic=lambda: clock[0],
+            now=lambda: 1_000.0,
+        )
+        try:
+            instructions: list[object] = []
+            state = oauth.login(on_instructions=instructions.append)
+            self.assertEqual(state.access_token, "access-secret")
+            self.assertEqual(sleeps, [2, 2, 7])
+            self.assertEqual(instructions[0].user_code, "ABCD-EFGH")
+            self.assertNotIn("device_code", repr(instructions[0]))
+            refreshed = oauth.refresh()
+            self.assertEqual(refreshed.access_token, "refreshed-secret")
+            self.assertEqual(refreshed.refresh_token, "refresh-secret")
+            self.assertTrue(oauth.status()["authenticated"])
+        finally:
+            oauth.close()
+
+    def test_sync_uploads_plan_objects_with_exact_headers_and_no_secrets(self) -> None:
+        batch_requests: list[httpx.Request] = []
+        plan_requests: list[dict] = []
+        upload_requests: list[httpx.Request] = []
+        credentials = FakeCredentialStore(
+            OAuthTokenState(
+                access_token="access-secret",
+                refresh_token="refresh-secret",
+                expires_at=10_000,
+                scope=OAUTH_SCOPE,
+            )
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/ingestion/publications/batches":
+                batch_requests.append(request)
+                return httpx.Response(
+                    200,
+                    json=self._batch_response(request),
+                    request=request,
+                )
+            if request.url.path == "/api/ingestion/publications/objects/plan":
+                plan_requests.append(json.loads(request.content))
+                return httpx.Response(200, json=self._plan_response(request, upload=True), request=request)
+            if request.url.path.startswith("/signed/"):
+                upload_requests.append(request)
+                return httpx.Response(200, request=request)
+            if request.url.path == "/api/ingestion/publications/objects/complete":
+                payload = json.loads(request.content)
+                return httpx.Response(
+                    200,
+                    json={
+                        "batchId": payload["batchId"],
+                        "kind": payload["kind"],
+                        "sha256": payload["sha256"],
+                        "status": "verified",
+                    },
+                    request=request,
+                )
+            raise AssertionError(f"unexpected sync request: {request.url}")
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            oauth = self._oauth(credentials, client)
+            try:
+                store.enqueue_article_for_sync(self._article(1))
+                sync = IngestionSyncClient(store.database, store.data_dir, oauth)
+                summary = sync.sync()
+                self.assertEqual(summary["acked"], 1)
+                self.assertEqual(summary["failed"], 0)
+                self.assertEqual(len(batch_requests), 1)
+                batch_payload = json.loads(batch_requests[0].content)
+                self.assertEqual(
+                    batch_requests[0].headers["Idempotency-Key"],
+                    batch_payload["batchId"],
+                )
+                self.assertEqual(batch_requests[0].headers["Authorization"], "Bearer access-secret")
+                self.assertEqual(len(plan_requests), 1)
+                self.assertEqual(len(upload_requests), len(plan_requests[0]["objects"]))
+                for request in upload_requests:
+                    self.assertNotIn("authorization", request.headers)
+                    self.assertIn(request.headers["x-amz-meta-kind"], {"body_html", "body_markdown"})
+                    self.assertEqual(
+                        request.headers["x-amz-meta-sha256"],
+                        request.url.path.rsplit("/", 1)[-1],
+                    )
+                with store.database.session_factory() as session:
+                    batch = session.scalar(select(SyncBatch))
+                    outbox = session.scalars(select(SyncOutbox)).all()
+                    self.assertEqual(batch.status, "acked")
+                    self.assertTrue(all(row.status == "acked" for row in outbox))
+                    durable = " ".join(
+                        [
+                            batch.response_json or "",
+                            *(row.payload_json for row in outbox),
+                            *(row.object_manifest_json for row in outbox),
+                        ]
+                    )
+                    self.assertNotIn("access-secret", durable)
+                    self.assertNotIn("refresh-secret", durable)
+                    self.assertNotIn("uploadUrl", durable)
+                    self.assertNotIn("signed/", durable)
+            finally:
+                oauth.close()
+                store.close()
+
+    def test_mixed_result_only_plans_accepted_objects_and_marks_partial(self) -> None:
+        plan_requests: list[dict] = []
+        credentials = FakeCredentialStore(
+            OAuthTokenState(access_token="access", expires_at=10_000, scope=OAUTH_SCOPE)
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/ingestion/publications/batches":
+                payload = json.loads(request.content)
+                statuses = {item["canonicalUrl"]: "created" for item in payload["items"]}
+                rejected_url = next(url for url in statuses if url.endswith("-rejected"))
+                statuses[rejected_url] = "rejected"
+                return httpx.Response(
+                    200,
+                    json=self._batch_response(request, statuses=statuses),
+                    request=request,
+                )
+            if request.url.path == "/api/ingestion/publications/objects/plan":
+                plan_requests.append(json.loads(request.content))
+                return httpx.Response(200, json=self._plan_response(request, upload=False), request=request)
+            if request.url.path == "/api/ingestion/publications/objects/complete":
+                payload = json.loads(request.content)
+                return httpx.Response(
+                    200,
+                    json={**payload, "status": "linked"},
+                    request=request,
+                )
+            raise AssertionError(f"rejected item should not cause object request: {request.url}")
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            oauth = self._oauth(credentials, client)
+            try:
+                store.enqueue_article_for_sync(self._article(1))
+                store.enqueue_article_for_sync(self._article(2, rejected=True))
+                summary = IngestionSyncClient(store.database, store.data_dir, oauth).sync()
+                self.assertEqual(summary["failed"], 1)
+                self.assertEqual(summary["rejected"], 1)
+                self.assertEqual(len(plan_requests), 1)
+                with store.database.session_factory() as session:
+                    batch = session.scalar(select(SyncBatch))
+                    items = session.scalars(
+                        select(SyncBatchItem).order_by(SyncBatchItem.canonical_url)
+                    ).all()
+                    rows = {
+                        row.entity_key: row
+                        for row in session.scalars(select(SyncOutbox)).all()
+                    }
+                    self.assertEqual(batch.status, "partial")
+                    self.assertEqual(batch.last_error, "server_rejected")
+                    self.assertEqual(
+                        {item.status for item in items},
+                        {"acked", "rejected"},
+                    )
+                    self.assertEqual(
+                        {row.status for row in rows.values()},
+                        {"acked", "failed"},
+                    )
+                    self.assertNotIn("unsafe server detail", batch.response_json or "")
+                    self.assertNotIn("secret-token", batch.response_json or "")
+            finally:
+                oauth.close()
+                store.close()
+
+    def test_duplicate_url_revisions_use_triple_result_identity(self) -> None:
+        credentials = FakeCredentialStore(
+            OAuthTokenState(access_token="access", expires_at=10_000, scope=OAUTH_SCOPE)
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/ingestion/publications/batches":
+                return httpx.Response(200, json=self._batch_response(request), request=request)
+            if request.url.path == "/api/ingestion/publications/objects/plan":
+                return httpx.Response(200, json=self._plan_response(request, upload=False), request=request)
+            if request.url.path == "/api/ingestion/publications/objects/complete":
+                payload = json.loads(request.content)
+                return httpx.Response(200, json={**payload, "status": "linked"}, request=request)
+            raise AssertionError(f"unexpected request: {request.url}")
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            oauth = self._oauth(credentials, client)
+            try:
+                first = self._article(6)
+                second = self._article(6)
+                second.title = "Revised notice"
+                second.body_text = "Revised text"
+                second.body_html = "<p>Revised HTML</p>"
+                second.body_markdown = "Revised markdown"
+                store.enqueue_article_for_sync(first)
+                store.enqueue_article_for_sync(second)
+                summary = IngestionSyncClient(store.database, store.data_dir, oauth).sync()
+                self.assertEqual(summary["acked"], 1)
+                with store.database.session_factory() as session:
+                    self.assertEqual(
+                        session.scalar(select(func.count()).select_from(SyncBatchItem)),
+                        2,
+                    )
+                    self.assertEqual(
+                        {
+                            row.status for row in session.scalars(select(SyncOutbox)).all()
+                        },
+                        {"acked"},
+                    )
+            finally:
+                oauth.close()
+                store.close()
+
+    def test_lost_batch_response_retries_same_idempotent_request(self) -> None:
+        requests: list[httpx.Request] = []
+        sleeps: list[float] = []
+        first = True
+        credentials = FakeCredentialStore(
+            OAuthTokenState(access_token="access", expires_at=10_000, scope=OAUTH_SCOPE)
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal first
+            if request.url.path == "/api/ingestion/publications/batches":
+                requests.append(request)
+                if first:
+                    first = False
+                    raise httpx.ReadError("response lost", request=request)
+                return httpx.Response(200, json=self._batch_response(request), request=request)
+            if request.url.path == "/api/ingestion/publications/objects/plan":
+                return httpx.Response(200, json=self._plan_response(request, upload=False), request=request)
+            if request.url.path == "/api/ingestion/publications/objects/complete":
+                payload = json.loads(request.content)
+                return httpx.Response(200, json={**payload, "status": "linked"}, request=request)
+            raise AssertionError(f"unexpected request: {request.url}")
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            oauth = self._oauth(credentials, client)
+            try:
+                store.enqueue_article_for_sync(self._article(3))
+                summary = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    oauth,
+                    sleep=sleeps.append,
+                ).sync(options=SyncOptions(max_retries=1))
+                self.assertEqual(summary["acked"], 1)
+                self.assertEqual(len(requests), 2)
+                self.assertEqual(
+                    requests[0].headers["Idempotency-Key"],
+                    requests[1].headers["Idempotency-Key"],
+                )
+                self.assertEqual(requests[0].content, requests[1].content)
+                self.assertEqual(sleeps, [1])
+            finally:
+                oauth.close()
+                store.close()
+
+    def test_nonretryable_response_marks_batch_failed_without_body(self) -> None:
+        credentials = FakeCredentialStore(
+            OAuthTokenState(access_token="access", expires_at=10_000, scope=OAUTH_SCOPE)
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                json={"error": "invalid_batch", "message": "contains secret-token"},
+                request=request,
+            )
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            oauth = self._oauth(credentials, client)
+            try:
+                store.enqueue_article_for_sync(self._article(4))
+                summary = IngestionSyncClient(store.database, store.data_dir, oauth).sync()
+                self.assertEqual(summary["failed"], 1)
+                with store.database.session_factory() as session:
+                    batch = session.scalar(select(SyncBatch))
+                    row = session.scalar(select(SyncOutbox))
+                    self.assertEqual(batch.status, "failed")
+                    self.assertEqual(batch.last_error, "invalid_batch")
+                    self.assertIsNone(batch.response_json)
+                    self.assertEqual(row.last_error, "invalid_batch")
+                    self.assertNotIn("secret-token", row.payload_json)
+            finally:
+                oauth.close()
+                store.close()
+
+    def test_permanent_failure_stops_before_claiming_remaining_events(self) -> None:
+        batch_calls = 0
+        credentials = FakeCredentialStore(
+            OAuthTokenState(access_token="access", expires_at=10_000, scope=OAUTH_SCOPE)
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal batch_calls
+            if request.url.path != "/api/ingestion/publications/batches":
+                raise AssertionError(f"no follow-up request expected: {request.url}")
+            batch_calls += 1
+            return httpx.Response(
+                403,
+                json={"error": "forbidden", "message": "do not persist this detail"},
+                request=request,
+            )
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            oauth = self._oauth(credentials, client)
+            try:
+                store.enqueue_article_for_sync(self._article(7))
+                store.enqueue_article_for_sync(self._article(8))
+                summary = IngestionSyncClient(store.database, store.data_dir, oauth).sync(
+                    options=SyncOptions(batch_size=1)
+                )
+                self.assertEqual(batch_calls, 1)
+                self.assertEqual(summary["batches"], 1)
+                self.assertEqual(summary["status"], "partial")
+                with store.database.session_factory() as session:
+                    rows = session.scalars(select(SyncOutbox).order_by(SyncOutbox.entity_key)).all()
+                    self.assertEqual({row.status for row in rows}, {"failed", "pending"})
+                    self.assertEqual(sum(row.batch_id is not None for row in rows), 1)
+            finally:
+                oauth.close()
+                store.close()
+
+    def test_local_object_mutation_is_rejected_before_put(self) -> None:
+        put_count = 0
+        credentials = FakeCredentialStore(
+            OAuthTokenState(access_token="access", expires_at=10_000, scope=OAUTH_SCOPE)
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal put_count
+            if request.url.path == "/api/ingestion/publications/batches":
+                return httpx.Response(200, json=self._batch_response(request), request=request)
+            if request.url.path == "/api/ingestion/publications/objects/plan":
+                return httpx.Response(200, json=self._plan_response(request, upload=True), request=request)
+            if request.url.path.startswith("/signed/"):
+                put_count += 1
+                return httpx.Response(200, request=request)
+            raise AssertionError(f"unexpected request: {request.url}")
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            oauth = self._oauth(credentials, client)
+            try:
+                store.enqueue_article_for_sync(self._article(5))
+                with store.database.session_factory() as session:
+                    row = session.scalar(select(SyncOutbox))
+                    path = Path(json.loads(row.object_manifest_json)[0]["local_path"])
+                path.write_bytes(b"changed after spool")
+                summary = IngestionSyncClient(store.database, store.data_dir, oauth).sync(
+                    options=SyncOptions(max_retries=0)
+                )
+                self.assertEqual(summary["failed"], 1)
+                self.assertEqual(put_count, 0)
+                with store.database.session_factory() as session:
+                    batch = session.scalar(select(SyncBatch))
+                    self.assertEqual(batch.last_error, "immutable_object_changed")
+            finally:
+                oauth.close()
+                store.close()
+
+    def test_backfill_is_keyset_paginated_and_idempotent_without_network(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            try:
+                source_descriptor_calls = 0
+                original_source_descriptor = store.source_descriptor
+
+                def counted_source_descriptor(source_id: str):
+                    nonlocal source_descriptor_calls
+                    source_descriptor_calls += 1
+                    return original_source_descriptor(source_id)
+
+                store.source_descriptor = counted_source_descriptor
+                for number in range(1, 4):
+                    article = self._article(number)
+                    with store.database.session_factory.begin() as session:
+                        Store._save_article_record(
+                            session,
+                            article,
+                            hashlib.sha256(article.body_text.encode()).hexdigest(),
+                            f"2026-08-20T00:00:0{number}+08:00",
+                        )
+                first = sync_backfill(store, chunk_size=1)
+                self.assertEqual(source_descriptor_calls, 1)
+                second = sync_backfill(store, chunk_size=1)
+                self.assertEqual(source_descriptor_calls, 2)
+                self.assertEqual(first, {"scanned": 3, "enqueued": 3, "errors": 0})
+                self.assertEqual(second, {"scanned": 3, "enqueued": 0, "errors": 0})
+                with store.database.session_factory() as session:
+                    self.assertEqual(
+                        session.scalar(select(func.count()).select_from(SyncOutbox)),
+                        3,
+                    )
+            finally:
+                store.close()
+
+    def test_same_revision_preserves_first_observation_timestamp(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            try:
+                outbox = IngestionOutbox(store.database)
+                article = self._article(9)
+                source = store.source_descriptor("source")
+                first_id, first_created = outbox.enqueue_article_with_status(
+                    article,
+                    store.data_dir,
+                    source=source,
+                    observed_at="2026-08-20T10:00:00+08:00",
+                )
+                second_id, second_created = outbox.enqueue_article_with_status(
+                    article,
+                    store.data_dir,
+                    source=source,
+                    observed_at="2026-08-21T10:00:00+08:00",
+                )
+                self.assertEqual(first_id, second_id)
+                self.assertTrue(first_created)
+                self.assertFalse(second_created)
+                with store.database.session_factory() as session:
+                    row = session.scalar(select(SyncOutbox))
+                    self.assertEqual(
+                        json.loads(row.payload_json)["observedAt"],
+                        "2026-08-20T10:00:00+08:00",
+                    )
+            finally:
+                store.close()
+
+    def test_cli_exposes_explicit_auth_sync_and_backfill_flags(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "sync",
+                "--server",
+                self.server,
+                "--client-id",
+                "client",
+                "--db",
+                "db.sqlite",
+                "--data-dir",
+                "data",
+            ]
+        )
+        self.assertEqual(args.command, "sync")
+        self.assertEqual(args.server, self.server)
+        self.assertEqual(args.client_id, "client")
+        self.assertEqual(
+            parser.parse_args(["sync", "--server", self.server]).client_id,
+            "life-ustc-publication-crawler",
+        )
+        self.assertEqual(
+            parser.parse_args(["auth", "status", "--server", self.server, "--client-id", "client"]).auth_command,
+            "status",
+        )
+        self.assertEqual(
+            parser.parse_args(["sync-backfill", "--db", "db.sqlite"]).command,
+            "sync-backfill",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
