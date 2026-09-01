@@ -1375,7 +1375,7 @@ class SyncClientTests(unittest.TestCase):
         )
         self.assertIn("max: 100", sync_parser.format_help())
         self.assertIn("max: 64", sync_parser.format_help())
-        self.assertIn("max: 8", sync_parser.format_help())
+        self.assertIn(f"max: {MAX_BATCH_CONCURRENCY}", sync_parser.format_help())
         self.assertEqual(
             parser.parse_args(
                 [
