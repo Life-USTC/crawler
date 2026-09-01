@@ -10,7 +10,13 @@ from __future__ import annotations
 from typing import Literal
 
 PublicationType = Literal["news", "notice", "other"]
-CLASSIFIER_VERSION = "publication-v1"
+CLASSIFIER_VERSION = "publication-v2"
+
+
+def _news_reportage_title(title: str) -> bool:
+    """Return whether a title describes reportage rather than an announcement."""
+
+    return "新闻" in title or "报道" in title
 
 
 def _notice_signal(*values: str) -> bool:
@@ -70,9 +76,20 @@ def classify_publication(
         return "notice"
     if "时刻表" in title_value:
         return "notice"
-    if "招生" in title_value and any(
-        token in title_value for token in ("安排", "简章", "名单", "方案", "通告")
+    # Keep reportage titles in the news stream even when they mention an
+    # admissions topic that would otherwise look administrative.
+    if not _news_reportage_title(title_value) and "通告" in title_value:
+        return "notice"
+    if not _news_reportage_title(title_value) and "招生" in title_value and any(
+        token in title_value
+        for token in ("安排", "简章", "名单", "方案", "通告", "导师", "研究方向")
     ):
+        return "notice"
+    if not _news_reportage_title(title_value) and "复试" in title_value and any(
+        token in title_value for token in ("办法", "流程", "规定", "录取")
+    ):
+        return "notice"
+    if not _news_reportage_title(title_value) and "补充规定" in title_value:
         return "notice"
     if page_kind in {"course_resource", "document", "asset", "unknown"}:
         return "other"
@@ -110,10 +127,17 @@ def publication_type_sql(article_alias: str = "a", page_alias: str = "p") -> str
         OR (({title} LIKE '%的通知%' OR {title} LIKE '%通知' OR {title} LIKE '%通知：%')
             AND {title} NOT LIKE '%通知书%')
         OR {title} LIKE '%时刻表%'
-        OR ({title} LIKE '%招生%' AND (
+        OR ({title} NOT LIKE '%新闻%' AND {title} NOT LIKE '%报道%' AND {title} LIKE '%通告%')
+        OR ({title} NOT LIKE '%新闻%' AND {title} NOT LIKE '%报道%' AND {title} LIKE '%招生%' AND (
           {title} LIKE '%安排%' OR {title} LIKE '%简章%' OR {title} LIKE '%名单%'
           OR {title} LIKE '%方案%' OR {title} LIKE '%通告%'
+          OR {title} LIKE '%导师%' OR {title} LIKE '%研究方向%'
         ))
+        OR ({title} NOT LIKE '%新闻%' AND {title} NOT LIKE '%报道%' AND {title} LIKE '%复试%' AND (
+          {title} LIKE '%办法%' OR {title} LIKE '%流程%' OR {title} LIKE '%规定%'
+          OR {title} LIKE '%录取%'
+        ))
+        OR ({title} NOT LIKE '%新闻%' AND {title} NOT LIKE '%报道%' AND {title} LIKE '%补充规定%')
       THEN 'notice'
       WHEN COALESCE({page_alias}.page_kind, '') IN ('course_resource', 'document', 'asset', 'unknown')
       THEN 'other'

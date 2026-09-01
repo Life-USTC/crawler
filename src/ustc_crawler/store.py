@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from .canonicalize import host_matches, looks_like_asset, looks_like_binary, normalize_url
@@ -750,7 +750,21 @@ class Store:
 
     def media_paths_for_article(self, article_url: str) -> dict[str, tuple[str, str]]:
         with self.database.session_factory() as session:
-            rows = session.scalars(select(Media).where(Media.article_url == article_url)).all()
+            # ``media.article_url`` identifies the page that first downloaded
+            # an object, while ``article_media`` records every article that
+            # references it.  Shared media can therefore have a NULL owner
+            # URL and still be a valid object for this article.
+            rows = session.scalars(
+                select(Media)
+                .outerjoin(ArticleMedia, ArticleMedia.image_url == Media.url)
+                .where(
+                    or_(
+                        Media.article_url == article_url,
+                        ArticleMedia.article_url == article_url,
+                    )
+                )
+                .order_by(Media.url)
+            ).all()
             return {
                 str(row.url): (str(row.local_path), str(row.mime_type or "application/octet-stream"))
                 for row in rows
