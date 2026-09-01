@@ -1,16 +1,8 @@
 """Client-side publication ingestion protocol and durable outbox."""
 
-from .auth import (
-    CredentialStore,
-    CredentialStoreUnavailable,
-    DeviceInstructions,
-    KeyringCredentialStore,
-    OAuthClientError,
-    OAuthDeviceClient,
-    OAuthProtocolError,
-    OAuthTokenState,
-)
 from .client import (
+    INGESTION_SECRET_ENV,
+    INGESTION_SECRET_HEADER,
     ImmutableObjectChangedError,
     IngestionSyncClient,
     SyncClient,
@@ -19,6 +11,7 @@ from .client import (
     SyncPermanentError,
     SyncProtocolError,
     SyncTransientError,
+    ingestion_secret_from_environment,
     sync_backfill,
 )
 from .models import (
@@ -51,9 +44,6 @@ from .outbox import (
 
 __all__ = [
     "INGESTION_PROTOCOL_VERSION",
-    "CredentialStore",
-    "CredentialStoreUnavailable",
-    "DeviceInstructions",
     "IngestionBatch",
     "IngestionBatchResponse",
     "BatchTooLargeError",
@@ -63,13 +53,10 @@ __all__ = [
     "IngestionPublication",
     "IngestionSyncClient",
     "ImmutableObjectChangedError",
-    "KeyringCredentialStore",
+    "INGESTION_SECRET_ENV",
+    "INGESTION_SECRET_HEADER",
     "LocalObjectManifest",
     "ObjectManifest",
-    "OAuthClientError",
-    "OAuthDeviceClient",
-    "OAuthProtocolError",
-    "OAuthTokenState",
     "PublicationObjectCompleteRequest",
     "PublicationObjectCompleteResponse",
     "PublicationObjectPlanItem",
@@ -89,5 +76,6 @@ __all__ = [
     "SyncPermanentError",
     "SyncProtocolError",
     "SyncTransientError",
+    "ingestion_secret_from_environment",
     "sync_backfill",
 ]

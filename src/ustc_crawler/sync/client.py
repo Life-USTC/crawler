@@ -4,21 +4,22 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import time
 import uuid
 from collections import Counter
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 import httpx
 
 from .. import __version__
 from ..db.models import SyncRun
-from .auth import OAuthClientError, OAuthDeviceClient
 from .models import (
     IngestionBatch,
     IngestionBatchResponse,
@@ -42,6 +43,8 @@ if TYPE_CHECKING:
 BATCH_ENDPOINT = "/api/ingestion/publications/batches"
 OBJECT_PLAN_ENDPOINT = "/api/ingestion/publications/objects/plan"
 OBJECT_COMPLETE_ENDPOINT = "/api/ingestion/publications/objects/complete"
+INGESTION_SECRET_ENV = "USTC_CRAWLER_INGESTION_SECRET"
+INGESTION_SECRET_HEADER = "X-Publication-Ingestion-Secret"
 RETRY_STATUS_CODES = frozenset({408, 429})
 SAFE_SERVER_ERROR_CODES = frozenset(
     {
@@ -61,6 +64,14 @@ SAFE_SERVER_ERROR_CODES = frozenset(
         "unauthorized",
     }
 )
+
+
+def _server_base(server: str) -> str:
+    value = server.strip().rstrip("/")
+    parsed = urlsplit(value)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("server must be an absolute HTTP(S) URL")
+    return value
 
 
 class SyncClientError(RuntimeError):
@@ -85,6 +96,18 @@ class SyncProtocolError(SyncPermanentError):
 
 class ImmutableObjectChangedError(SyncPermanentError):
     """A local spool file no longer matches its persisted manifest."""
+
+
+def ingestion_secret_from_environment(
+    environ: Mapping[str, str] | None = None,
+) -> str:
+    """Read the machine credential without exposing its value in errors."""
+
+    values = os.environ if environ is None else environ
+    secret = values.get(INGESTION_SECRET_ENV)
+    if not isinstance(secret, str) or not secret.strip():
+        raise SyncClientError("missing_ingestion_secret")
+    return secret
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,25 +164,35 @@ def _retry_after(response: httpx.Response, now: Callable[[], float]) -> float | 
 
 
 class IngestionSyncClient:
-    """Replay immutable outbox batches and upload their referenced objects."""
+    """Replay immutable outbox batches with a machine service credential."""
 
     def __init__(
         self,
         database: Any,
         data_dir: str | Path,
-        oauth: OAuthDeviceClient,
+        server: str,
+        ingestion_secret: str,
         *,
         http_client: httpx.Client | None = None,
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], float] = time.time,
     ) -> None:
+        if not isinstance(ingestion_secret, str) or not ingestion_secret.strip():
+            raise ValueError("ingestion secret must not be empty")
         self.database = database
         self.data_dir = Path(data_dir)
-        self.oauth = oauth
-        self.http = http_client or oauth.http
+        self.server = _server_base(server)
+        self._ingestion_secret = ingestion_secret
+        # Do not forward the machine secret through an unexpected redirect.
+        self.http = http_client or httpx.Client(timeout=30.0, follow_redirects=False)
+        self._owns_http = http_client is None
         self._sleep = sleep
         self._now = now
         self.outbox = IngestionOutbox(database)
+
+    def close(self) -> None:
+        if self._owns_http:
+            self.http.close()
 
     def sync(
         self,
@@ -302,12 +335,6 @@ class IngestionSyncClient:
         except SyncTransientError as exc:
             self.outbox.mark_batch_error(batch.batch_id, exc.code)
             raise
-        except OAuthClientError as exc:
-            code = getattr(exc, "code", "oauth_error")
-            safe_code = f"oauth_{code}" if code else "oauth_error"
-            self.outbox.mark_batch_error(batch.batch_id, safe_code)
-            raise SyncTransientError(safe_code) from exc
-
     @staticmethod
     def _result_identities(
         batch: IngestionBatch,
@@ -486,21 +513,17 @@ class IngestionSyncClient:
         headers: dict[str, str],
         **kwargs: Any,
     ) -> httpx.Response:
-        force_refresh = False
-        for _ in range(2):
-            token = self.oauth.access_token(force_refresh=force_refresh)
-            request_headers = {"Authorization": f"Bearer {token}", **headers}
-            response = self._request(
-                method,
-                f"{self.oauth.server}{path}",
-                options=options,
-                headers=request_headers,
-                **kwargs,
-            )
-            if response.status_code != 401 or force_refresh:
-                return response
-            force_refresh = True
-        raise SyncPermanentError("http_401")
+        request_headers = {
+            **headers,
+            INGESTION_SECRET_HEADER: self._ingestion_secret,
+        }
+        return self._request(
+            method,
+            f"{self.server}{path}",
+            options=options,
+            headers=request_headers,
+            **kwargs,
+        )
 
     def _request(
         self,
@@ -614,8 +637,11 @@ __all__ = [
     "BATCH_ENDPOINT",
     "OBJECT_COMPLETE_ENDPOINT",
     "OBJECT_PLAN_ENDPOINT",
+    "INGESTION_SECRET_ENV",
+    "INGESTION_SECRET_HEADER",
     "ImmutableObjectChangedError",
     "IngestionSyncClient",
+    "ingestion_secret_from_environment",
     "SyncClient",
     "SyncClientError",
     "SyncOptions",

@@ -93,12 +93,11 @@ uv run ustc-crawler reindex --source unit-math-ustc-edu-cn
 
 ## 同步到服务端
 
-同步客户端使用管理员预注册的公开 OAuth client，通过设备授权登录；访问令牌只保存在操作系统密钥环中，不会写入 SQLite、归档或日志。先配置服务器地址（client id 默认是项目预注册值，也可用环境变量覆盖）：
+同步客户端使用部署在爬虫机器上的服务密钥，不依赖任何个人账号或本地密钥环。服务器地址和服务密钥分别通过环境变量提供；密钥只在内存中用于发送 `X-Publication-Ingestion-Secret` 请求头，不会写入 SQLite、归档、命令参数、输出或日志：
 
 ```bash
-uv run ustc-crawler auth login \
-  --server https://example.invalid
-uv run ustc-crawler auth status --server https://example.invalid
+export USTC_CRAWLER_SERVER=https://example.invalid
+export USTC_CRAWLER_INGESTION_SECRET='set-this-in-the-machine-secret-store'
 
 # 先把历史文章分块写入本地 outbox，不发起网络请求
 uv run ustc-crawler sync-backfill \
@@ -106,12 +105,10 @@ uv run ustc-crawler sync-backfill \
 
 # 重试并上传已持久化的不可变批次
 uv run ustc-crawler sync \
-  --server https://example.invalid \
   --db data/crawler.sqlite --data-dir data
-uv run ustc-crawler auth logout --server https://example.invalid
 ```
 
-同步前请确保系统已配置安全的 Keychain、Secret Service 或 Windows Credential Manager；检测不到安全密钥环时命令会直接报错，不会退回明文文件。批次默认最多 50 篇且正文约 2 MiB，断点重跑使用同一批次和幂等键；上传对象先从本地内容寻址 spool 校验 SHA-256/大小，再按服务端返回的请求头上传。
+批次默认最多 50 篇且正文约 2 MiB，断点重跑使用同一批次和幂等键；上传对象先从本地内容寻址 spool 校验 SHA-256/大小，再按服务端返回的请求头上传。未配置服务密钥时命令会以安全错误码退出。
 
 ## 本地数据
 
