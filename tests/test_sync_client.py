@@ -24,8 +24,12 @@ from ustc_crawler.sync.client import (
     ingestion_secret_from_environment,
     sync_backfill,
 )
-from ustc_crawler.sync.models import MAX_OBJECT_PLAN_OBJECTS, IngestionBatchResponse
-from ustc_crawler.sync.outbox import IngestionOutbox
+from ustc_crawler.sync.models import (
+    MAX_OBJECT_PLAN_OBJECTS,
+    IngestionBatchResponse,
+    build_publication,
+)
+from ustc_crawler.sync.outbox import IngestionOutbox, spool_bytes, wire_manifest
 
 
 class SyncClientTests(unittest.TestCase):
@@ -342,8 +346,26 @@ class SyncClientTests(unittest.TestCase):
             store = self._store(root)
             client = httpx.Client(transport=httpx.MockTransport(handler))
             try:
-                for number in range(251):
-                    store.enqueue_article_for_sync(self._article(number))
+                outbox = IngestionOutbox(store.database)
+                source = store.source_descriptor("source")
+                for number in range(100):
+                    local_objects = tuple(
+                        spool_bytes(
+                            root / "data",
+                            f"{number}-{index}".encode(),
+                            kind="asset",
+                            content_type="application/octet-stream",
+                        )
+                        for index in range(6)
+                    )
+                    outbox.enqueue_publication(
+                        build_publication(
+                            self._article(number),
+                            objects=[wire_manifest(item) for item in local_objects],
+                        ),
+                        source=source,
+                        local_objects=local_objects,
+                    )
                 sync = IngestionSyncClient(
                     store.database,
                     store.data_dir,
@@ -351,12 +373,12 @@ class SyncClientTests(unittest.TestCase):
                     self.ingestion_secret,
                     http_client=client,
                 )
-                summary = sync.sync(options=SyncOptions(batch_size=500))
+                summary = sync.sync(options=SyncOptions(batch_size=100))
                 self.assertEqual(summary["acked"], 1)
                 self.assertEqual(summary["failed"], 0)
                 self.assertEqual(
                     [len(request["objects"]) for request in plan_requests],
-                    [MAX_OBJECT_PLAN_OBJECTS, 2],
+                    [MAX_OBJECT_PLAN_OBJECTS] * 6,
                 )
                 object_keys = [
                     (item["kind"], item["sha256"])
@@ -365,6 +387,23 @@ class SyncClientTests(unittest.TestCase):
                 ]
                 self.assertEqual(object_keys, sorted(object_keys))
                 self.assertEqual(len(object_keys), len(set(object_keys)))
+            finally:
+                sync.close()
+                store.close()
+
+    def test_sync_rejects_batch_size_above_protocol_limit(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            try:
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                )
+                with self.assertRaisesRegex(ValueError, "between 1 and 100"):
+                    sync.sync(options=SyncOptions(batch_size=101))
             finally:
                 sync.close()
                 store.close()
@@ -879,6 +918,12 @@ class SyncClientTests(unittest.TestCase):
         self.assertEqual(args.command, "sync")
         self.assertEqual(args.server, self.server)
         self.assertEqual(args.object_concurrency, 8)
+        sync_parser = next(
+            action.choices["sync"]
+            for action in parser._actions
+            if hasattr(action, "choices") and action.choices and "sync" in action.choices
+        )
+        self.assertIn("max: 100", sync_parser.format_help())
         self.assertEqual(
             parser.parse_args(
                 [

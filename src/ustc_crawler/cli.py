@@ -13,6 +13,7 @@ from .store import Store
 from .sync import (
     DEFAULT_OBJECT_CONCURRENCY,
     MAX_OBJECT_CONCURRENCY,
+    MAX_PUBLICATION_BATCH_ITEMS,
     IngestionSyncClient,
     SyncOptions,
     ingestion_secret_from_environment,
@@ -231,7 +232,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _sync_connection_args(sync)
     _sync_storage_args(sync)
-    sync.add_argument("--batch-size", type=int, default=50)
+    sync.add_argument(
+        "--batch-size",
+        type=int,
+        default=50,
+        metavar="N",
+        help=f"items per ingestion request (default: 50, max: {MAX_PUBLICATION_BATCH_ITEMS})",
+    )
     sync.add_argument("--max-payload-bytes", type=int, default=2 * 1024 * 1024)
     sync.add_argument("--max-batches", type=int, default=0, help="0 means all pending batches")
     sync.add_argument("--max-retries", type=int, default=3)

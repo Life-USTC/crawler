@@ -16,7 +16,8 @@ from ..publication import CLASSIFIER_VERSION, PublicationType, classify_publicat
 INGESTION_PROTOCOL_VERSION = "1"
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 MAX_PUBLICATION_OBJECTS = 100
-MAX_OBJECT_PLAN_OBJECTS = 500
+MAX_PUBLICATION_BATCH_ITEMS = 100
+MAX_OBJECT_PLAN_OBJECTS = 100
 MAX_PUBLICATION_TITLE_LENGTH = 1_000
 MAX_PUBLICATION_AUTHOR_LENGTH = 500
 MAX_PUBLICATION_CATEGORY_LENGTH = 500
@@ -253,7 +254,10 @@ class IngestionBatchResponse(ProtocolModel):
     batch_id: str = Field(alias="batchId", min_length=1)
     client_run_id: str = Field(alias="clientRunId", min_length=1)
     payload_digest: Sha256 = Field(alias="payloadDigest")
-    results: list[IngestionItemResult]
+    results: list[IngestionItemResult] = Field(
+        min_length=1,
+        max_length=MAX_PUBLICATION_BATCH_ITEMS,
+    )
 
 
 class RequiredUploadHeaders(ProtocolModel):
@@ -282,7 +286,10 @@ class PublicationObjectPlanResponse(ProtocolModel):
     """Strict response returned by ``/publication-objects/plan``."""
 
     batch_id: str = Field(alias="batchId", min_length=1)
-    objects: list[PublicationObjectPlanItem]
+    objects: list[PublicationObjectPlanItem] = Field(
+        min_length=1,
+        max_length=MAX_OBJECT_PLAN_OBJECTS,
+    )
 
 
 class PublicationObjectCompleteResponse(ProtocolModel):
@@ -359,7 +366,7 @@ class IngestionBatch(ProtocolModel):
     batch_id: str = Field(alias="batchId", min_length=1, max_length=200)
     observed_at: str = Field(alias="observedAt", min_length=1)
     sources: list[PublicationSourceDescriptor] = Field(min_length=1, max_length=500)
-    items: list[PublicationItem] = Field(min_length=1, max_length=500)
+    items: list[PublicationItem] = Field(min_length=1, max_length=MAX_PUBLICATION_BATCH_ITEMS)
 
     _normalize_observed_at = field_validator("observed_at")(_normalize_required_timestamp)
 
@@ -522,6 +529,7 @@ def build_ingestion_batch(
 
 __all__ = [
     "INGESTION_PROTOCOL_VERSION",
+    "MAX_PUBLICATION_BATCH_ITEMS",
     "MAX_OBJECT_PLAN_OBJECTS",
     "IngestionBatch",
     "IngestionBatchResponse",
