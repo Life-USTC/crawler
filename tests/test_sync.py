@@ -13,6 +13,7 @@ from ustc_crawler.models import ArticleDocument, SourceConfig
 from ustc_crawler.store import Store
 from ustc_crawler.sync.models import (
     IngestionBatch,
+    ObjectManifest,
     PublicationObjectCompleteRequest,
     PublicationObjectPlanRequest,
     PublicationSourceDescriptor,
@@ -113,6 +114,42 @@ class IngestionProtocolTests(unittest.TestCase):
             producer_version="test",
         )
         self.assertEqual(batch.payload_dict()["items"], [item | {"observedAt": "2026-08-20T00:00:00+08:00"}])
+
+    def test_publication_builder_bounds_malformed_parser_fields(self) -> None:
+        article = ArticleDocument(
+            url="https://example.edu/news/oversized",
+            source_id="source",
+            title="T" * 1_001,
+            author="A" * 501,
+            published_at="",
+            updated_at="",
+            category="C" * 501,
+            summary="S" * 20_001,
+            body_html="",
+            body_text="B" * 5_000_001,
+            body_markdown="",
+            extraction_method="E" * 201,
+            source_page_url="https://example.edu/news/oversized",
+        )
+        objects = [
+            ObjectManifest(
+                kind="asset",
+                sha256=f"{index:064x}",
+                size=1,
+                contentType="application/octet-stream",
+            )
+            for index in range(101)
+        ]
+
+        publication = build_publication(article, objects=objects)
+
+        self.assertEqual(len(publication.title), 1_000)
+        self.assertEqual(len(publication.author or ""), 500)
+        self.assertEqual(len(publication.category or ""), 500)
+        self.assertEqual(len(publication.summary or ""), 20_000)
+        self.assertEqual(len(publication.body_text or ""), 5_000_000)
+        self.assertEqual(len(publication.extraction_method or ""), 200)
+        self.assertEqual(len(publication.objects), 100)
 
 
 class OrmAndOutboxTests(unittest.TestCase):
