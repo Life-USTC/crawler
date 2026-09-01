@@ -50,6 +50,7 @@ INGESTION_SECRET_HEADER = "X-Publication-Ingestion-Secret"
 RETRY_STATUS_CODES = frozenset({408, 429})
 DEFAULT_OBJECT_CONCURRENCY = 8
 MAX_OBJECT_CONCURRENCY = 32
+DEFAULT_HTTP_TIMEOUT = 60.0
 SAFE_SERVER_ERROR_CODES = frozenset(
     {
         "bad_request",
@@ -189,7 +190,10 @@ class IngestionSyncClient:
         self.server = _server_base(server)
         self._ingestion_secret = ingestion_secret
         # Do not forward the machine secret through an unexpected redirect.
-        self.http = http_client or httpx.Client(timeout=30.0, follow_redirects=False)
+        self.http = http_client or httpx.Client(
+            timeout=DEFAULT_HTTP_TIMEOUT,
+            follow_redirects=False,
+        )
         self._owns_http = http_client is None
         self._sleep = sleep
         self._now = now
@@ -675,6 +679,8 @@ def sync_backfill(store: Store, *, chunk_size: int = 100) -> dict[str, int]:
                 if source is None:
                     source = store.source_descriptor(article.source_id)
                     sources[article.source_id] = source
+                if source.discovery_only:
+                    continue
                 _event_id, created = outbox.enqueue_article_with_status(
                     article,
                     store.data_dir,
@@ -699,6 +705,7 @@ SyncClient = IngestionSyncClient
 __all__ = [
     "BATCH_ENDPOINT",
     "DEFAULT_OBJECT_CONCURRENCY",
+    "DEFAULT_HTTP_TIMEOUT",
     "MAX_OBJECT_CONCURRENCY",
     "OBJECT_COMPLETE_ENDPOINT",
     "OBJECT_PLAN_ENDPOINT",

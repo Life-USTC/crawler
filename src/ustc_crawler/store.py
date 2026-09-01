@@ -685,6 +685,11 @@ class Store:
         """Snapshot spool objects and write the article/event in one UoW."""
 
         self._core.commit()
+        source = self.source_descriptor(article.source_id)
+        if source.discovery_only:
+            # Discovery sources still populate the local archive, but are not
+            # publication ingestion inputs.
+            return self.save_article(article)
         content_hash = sha256_bytes(article.body_text.encode("utf-8", errors="replace"))
         publication_type = classify_publication(
             url=article.url,
@@ -707,7 +712,6 @@ class Store:
             article,
             objects=[wire_manifest(item) for item in local_objects],
         )
-        source = self.source_descriptor(article.source_id)
         self.write_article_bundle(article, content_hash)
         now = utc_now()
         outbox = IngestionOutbox(self.database)
@@ -727,15 +731,18 @@ class Store:
         article: ArticleDocument,
         *,
         run_id: str | None = None,
-    ) -> str:
+    ) -> str | None:
         """Snapshot an article and its local objects into the durable outbox."""
 
+        source = self.source_descriptor(article.source_id)
+        if source.discovery_only:
+            return None
         media_paths = self.media_paths_for_article(article.url)
         asset_paths = self.asset_paths_for_article(article.url, article.source_page_url)
         return IngestionOutbox(self.database).enqueue_article(
             article,
             self.data_dir,
-            source=self.source_descriptor(article.source_id),
+            source=source,
             media_paths=media_paths,
             asset_paths=asset_paths,
             run_id=run_id,

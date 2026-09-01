@@ -203,6 +203,11 @@ class IngestionOutbox:
         self.database = database
 
     @staticmethod
+    def _ensure_ingestion_source(source: PublicationSourceDescriptor) -> None:
+        if source.discovery_only:
+            raise ValueError("discovery-only source cannot enqueue publications")
+
+    @staticmethod
     def _event_id(publication: IngestionPublication) -> str:
         value = f"{publication.source_id}\n{publication.canonical_url}\n{publication.revision_hash}"
         return hashlib.sha256(value.encode("utf-8")).hexdigest()
@@ -221,6 +226,7 @@ class IngestionOutbox:
 
         if source.id != publication.source_id:
             raise ValueError("source descriptor does not match publication sourceId")
+        self._ensure_ingestion_source(source)
         payload_json = _dump_json(publication.model_dump(by_alias=True, mode="json", exclude_none=True))
         payload_sha256 = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
         manifests = tuple(local_objects)
@@ -301,6 +307,7 @@ class IngestionOutbox:
     ) -> tuple[str, bool]:
         """Insert an event and report whether this call created its row."""
 
+        self._ensure_ingestion_source(source)
         with transaction(self.database) as session:
             event_id = self._event_id(publication)
             created = session.get(SyncOutbox, event_id) is None
@@ -313,6 +320,24 @@ class IngestionOutbox:
                 created_at=created_at,
             )
             return event_id, created
+
+    def delete_unbatched_discovery_only_events(self) -> int:
+        """Delete legacy discovery-only events that were never batched.
+
+        Once an event is assigned to a batch, it is part of the immutable
+        batch audit trail and is deliberately left untouched.
+        """
+
+        with transaction(self.database) as session:
+            rows = session.scalars(
+                select(SyncOutbox).where(SyncOutbox.batch_id.is_(None))
+            ).all()
+            deleted = 0
+            for row in rows:
+                if self._source(row).discovery_only:
+                    session.delete(row)
+                    deleted += 1
+            return deleted
 
     def enqueue_article(
         self,
@@ -348,6 +373,7 @@ class IngestionOutbox:
     ) -> tuple[str, bool]:
         """Snapshot an article and report whether its immutable event was new."""
 
+        self._ensure_ingestion_source(source)
         local_objects = spool_article_objects(
             article,
             data_dir,
