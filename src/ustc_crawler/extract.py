@@ -692,6 +692,7 @@ def extract_page(
         canonical = normalize_url(link["href"], url) or canonical
     detail_heading = soup.select_one(
         ".arti_title, .zkd-title, .articel-show-title, #articel-show-title .n-f-10, "
+        ".c-f-30.c-lh-36.n-text-center.n-f-bold, "
         ".News-detail-title, "
         ".article-title, .post-title, .entry-title, .page_title, #Title, "
         ".person-title, .titles, .page-header h1, .bt01"
