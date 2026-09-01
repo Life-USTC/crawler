@@ -6,17 +6,20 @@ from typing import Any
 
 
 def sanitize_text(value: str) -> str:
-    """Remove non-whitespace Unicode control characters from persisted text.
+    """Remove encoding artifacts and non-whitespace controls from text.
 
-    PostgreSQL rejects U+0000 in text and JSON values.  Preserve ordinary
-    layout whitespace (tab, line feed, and carriage return) while removing
-    other C0/C1 control characters before a value reaches storage or sync.
+    PostgreSQL rejects U+0000 in text and JSON values.  U+FEFF is a byte-order
+    mark rather than meaningful article content and JavaScript ``trim()`` also
+    removes it at field boundaries.  Preserve ordinary layout whitespace
+    (tab, line feed, and carriage return) while removing those artifacts before
+    a value reaches storage or sync.
     """
 
     return "".join(
         character
         for character in value
-        if character in "\t\n\r" or unicodedata.category(character) != "Cc"
+        if character != "\ufeff"
+        and (character in "\t\n\r" or unicodedata.category(character) != "Cc")
     )
 
 
