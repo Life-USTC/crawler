@@ -17,7 +17,14 @@ from .canonicalize import host_matches, looks_like_asset, looks_like_binary, nor
 from .db import ALEMBIC_HEAD, Database, upgrade_database
 from .db.core import CoreConnection, RowMapping
 from .db.models import Article, ArticleMedia, Asset, Frontier, Media, Page, Source, SyncRun
-from .models import ArticleDocument, ImageRef, PageDocument, SourceConfig
+from .models import (
+    ArticleDocument,
+    ImageRef,
+    PageDocument,
+    SourceConfig,
+    sanitize_article_document,
+    sanitize_json_value,
+)
 from .publication import CLASSIFIER_VERSION, classify_publication
 from .scoring import url_priority
 from .sync.models import build_publication
@@ -628,6 +635,7 @@ class Store:
         # that Core transaction before the single pooled engine connection is
         # borrowed by the ORM session.
         self._core.commit()
+        sanitize_article_document(article)
         content_hash = sha256_bytes(article.body_text.encode("utf-8", errors="replace"))
         now = utc_now()
         publication_type = classify_publication(
@@ -651,7 +659,8 @@ class Store:
         content_hash: str,
         now: str,
     ) -> None:
-        raw_json = json.dumps(article.raw_metadata, ensure_ascii=False)
+        sanitize_article_document(article)
+        raw_json = json.dumps(sanitize_json_value(article.raw_metadata), ensure_ascii=False)
         record = session.get(Article, article.url)
         if record is None:
             record = Article(
@@ -695,6 +704,7 @@ class Store:
         """Snapshot spool objects and write the article/event in one UoW."""
 
         self._core.commit()
+        sanitize_article_document(article)
         source = self.source_descriptor(article.source_id)
         if source.discovery_only:
             # Discovery sources still populate the local archive, but are not
@@ -744,6 +754,7 @@ class Store:
     ) -> str | None:
         """Snapshot an article and its local objects into the durable outbox."""
 
+        sanitize_article_document(article)
         source = self.source_descriptor(article.source_id)
         if source.discovery_only:
             return None
@@ -1011,6 +1022,7 @@ class Store:
     def write_article_bundle(
         self, article: ArticleDocument, content_hash: str | None = None
     ) -> None:
+        sanitize_article_document(article)
         content_hash = content_hash or sha256_bytes(
             article.body_text.encode("utf-8", errors="replace")
         )

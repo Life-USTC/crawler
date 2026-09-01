@@ -31,7 +31,10 @@ from ustc_crawler.sync.client import (
 )
 from ustc_crawler.sync.models import (
     MAX_OBJECT_PLAN_OBJECTS,
+    IngestionBatch,
     IngestionBatchResponse,
+    PublicationSourceDescriptor,
+    build_ingestion_batch,
     build_publication,
 )
 from ustc_crawler.sync.outbox import (
@@ -56,6 +59,73 @@ class SyncClientTests(unittest.TestCase):
                     "results": [],
                 }
             )
+
+    def test_batch_digest_matches_server_after_trim_transform(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            self.assertEqual(request.url.path, "/api/ingestion/publications/batches")
+            payload = json.loads(request.content)
+            # Zod parses and trims the request before the server computes its
+            # canonical payload digest.
+            server_payload = IngestionBatch.model_validate(payload)
+            item = payload["items"][0]
+            return httpx.Response(
+                200,
+                json={
+                    "batchId": payload["batchId"],
+                    "clientRunId": payload["clientRunId"],
+                    "payloadDigest": hashlib.sha256(server_payload.payload_bytes()).hexdigest(),
+                    "results": [
+                        {
+                            "sourceId": item["sourceId"],
+                            "canonicalUrl": item["canonicalUrl"],
+                            "revisionHash": item["revisionHash"],
+                            "status": "created",
+                            "publicationId": "publication-id",
+                            "revisionId": "revision-id",
+                        }
+                    ],
+                },
+                request=request,
+            )
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            sync = IngestionSyncClient(
+                store.database,
+                store.data_dir,
+                self.server,
+                self.ingestion_secret,
+                http_client=client,
+            )
+            try:
+                article = self._article(1)
+                article.title = "T" * 999 + " " + "overflow"
+                publication = build_publication(
+                    article,
+                    publication_type="notice",
+                    observed_at="2026-08-20",
+                )
+                batch = build_ingestion_batch(
+                    [publication],
+                    sources=[
+                        PublicationSourceDescriptor(
+                            id="source",
+                            name=" Test source ",
+                            allowedHosts=[" example.edu "],
+                        )
+                    ],
+                    client_run_id=" run ",
+                    batch_id=" batch ",
+                    observed_at="2026-08-20",
+                    producer_version=" crawler ",
+                )
+                response = sync._post_batch(batch, SyncOptions())
+                self.assertEqual(response.payload_digest, batch.payload_sha256())
+            finally:
+                sync.close()
+                store.close()
 
     @staticmethod
     def _source() -> SourceConfig:

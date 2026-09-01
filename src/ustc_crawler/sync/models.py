@@ -8,9 +8,16 @@ from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    field_validator,
+)
 
-from ..models import ArticleDocument, SourceConfig
+from ..models import ArticleDocument, SourceConfig, sanitize_json_value, sanitize_text
 from ..publication import CLASSIFIER_VERSION, PublicationType, classify_publication
 
 INGESTION_PROTOCOL_VERSION = "1"
@@ -25,26 +32,52 @@ MAX_PUBLICATION_SUMMARY_LENGTH = 20_000
 MAX_PUBLICATION_BODY_TEXT_LENGTH = 5_000_000
 MAX_PUBLICATION_EXTRACTION_METHOD_LENGTH = 200
 
+
+def _strip_text(value: Any) -> Any:
+    """Mirror the ingestion server's Zod ``string().trim()`` transform."""
+
+    return sanitize_text(value).strip() if isinstance(value, str) else value
+
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+
+
 SourceId = Annotated[
     str,
+    BeforeValidator(_strip_text),
     StringConstraints(
         min_length=1,
         max_length=64,
         pattern=r"^[a-z0-9][a-z0-9._-]*$",
     ),
 ]
-Url = Annotated[str, StringConstraints(min_length=1, max_length=2048)]
-Host = Annotated[str, StringConstraints(min_length=1, max_length=253)]
-Alias = Annotated[str, StringConstraints(min_length=1, max_length=200)]
+Url = Annotated[
+    str,
+    BeforeValidator(_strip_text),
+    StringConstraints(min_length=1, max_length=2048),
+]
+Host = Annotated[
+    str,
+    BeforeValidator(_strip_text),
+    StringConstraints(min_length=1, max_length=253),
+]
+Alias = Annotated[
+    str,
+    BeforeValidator(_strip_text),
+    StringConstraints(min_length=1, max_length=200),
+]
 ContentType = Annotated[
     str,
+    BeforeValidator(_strip_text),
     StringConstraints(
         min_length=1,
         max_length=200,
         pattern=r"^[^\s/]+/[A-Za-z0-9!#$&^_.+-]+$",
     ),
 ]
+TrimmedText = Annotated[str, BeforeValidator(_strip_text)]
+TrimmedOptionalText = Annotated[str | None, BeforeValidator(_strip_text)]
+SanitizedText = Annotated[str, BeforeValidator(sanitize_text)]
+SanitizedOptionalText = Annotated[str | None, BeforeValidator(sanitize_text)]
 ObjectKind = Literal["body_html", "body_markdown", "media", "asset", "raw_page"]
 
 
@@ -75,13 +108,7 @@ def _validate_optional_url(value: str | None) -> str | None:
 def _json_value(value: Any) -> Any:
     """Normalize arbitrary parser metadata into deterministic JSON values."""
 
-    if isinstance(value, dict):
-        return {str(key): _json_value(item) for key, item in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_json_value(item) for item in value]
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    return str(value)
+    return sanitize_json_value(value)
 
 
 def normalize_publication_timestamp(value: str | date | datetime) -> str:
@@ -97,7 +124,7 @@ def normalize_publication_timestamp(value: str | date | datetime) -> str:
     elif isinstance(value, date):
         parsed = datetime.combine(value, datetime.min.time())
     else:
-        raw = value.strip()
+        raw = sanitize_text(value).strip()
         if not raw:
             return ""
         try:
@@ -128,11 +155,26 @@ def _optional_text(value: str | None) -> str | None:
 
 
 def _bounded_required_text(value: str, max_length: int) -> str:
-    return value[:max_length]
+    # The server trims before validating its bounds.  Trim again after the
+    # bound so a truncation boundary cannot leave whitespace for the server to
+    # transform a second time (and therefore change the batch digest).
+    normalized = sanitize_text(value).strip()[:max_length].strip()
+    if not normalized:
+        raise ValueError("required publication text must not be blank")
+    return normalized
 
 
 def _bounded_optional_text(value: str | None, max_length: int) -> str | None:
-    normalized = _optional_text(value)
+    if value is None:
+        return None
+    normalized = sanitize_text(value).strip()[:max_length].strip()
+    return normalized or None
+
+
+def _bounded_body_text(value: str | None, max_length: int) -> str | None:
+    """Bound body text without trimming; the server deliberately preserves it."""
+
+    normalized = sanitize_text(value) if value else _optional_text(value)
     return normalized[:max_length] if normalized is not None else None
 
 
@@ -170,7 +212,7 @@ class ObjectManifest(ProtocolModel):
     size: int = Field(ge=0, le=32 * 1024 * 1024)
     content_type: ContentType = Field(alias="contentType")
     sort_order: int | None = Field(default=None, alias="sortOrder", ge=0, le=10_000)
-    alt_text: str | None = Field(default=None, alias="altText", max_length=1_000)
+    alt_text: TrimmedOptionalText = Field(default=None, alias="altText", max_length=1_000)
 
 
 class LocalObjectManifest(ObjectManifest):
@@ -187,8 +229,8 @@ class PublicationSourceDescriptor(ProtocolModel):
     """A source snapshot embedded in each immutable ingestion batch."""
 
     id: SourceId
-    name: str = Field(min_length=1, max_length=200)
-    organization_level: str | None = Field(
+    name: TrimmedText = Field(min_length=1, max_length=200)
+    organization_level: TrimmedOptionalText = Field(
         default=None,
         alias="organizationLevel",
         min_length=1,
@@ -219,7 +261,7 @@ class PublicationObjectPlanRequestItem(ProtocolModel):
 class PublicationObjectPlanRequest(ProtocolModel):
     """Request body for ``/publication-objects/plan``."""
 
-    batch_id: str = Field(alias="batchId", min_length=1, max_length=200)
+    batch_id: TrimmedText = Field(alias="batchId", min_length=1, max_length=200)
     objects: list[PublicationObjectPlanRequestItem] = Field(
         min_length=1,
         max_length=MAX_OBJECT_PLAN_OBJECTS,
@@ -229,7 +271,7 @@ class PublicationObjectPlanRequest(ProtocolModel):
 class PublicationObjectCompleteRequest(ProtocolModel):
     """Request body for ``/publication-objects/complete``."""
 
-    batch_id: str = Field(alias="batchId", min_length=1, max_length=200)
+    batch_id: TrimmedText = Field(alias="batchId", min_length=1, max_length=200)
     kind: ObjectKind
     sha256: Sha256
 
@@ -309,24 +351,28 @@ class IngestionPublication(ProtocolModel):
     observed_at: str = Field(alias="observedAt", min_length=1)
     tombstone: Literal[False] = False
     publication_type: PublicationType = Field(alias="publicationType")
-    title: str = Field(min_length=1, max_length=MAX_PUBLICATION_TITLE_LENGTH)
-    author: str | None = Field(default=None, max_length=MAX_PUBLICATION_AUTHOR_LENGTH)
+    title: TrimmedText = Field(min_length=1, max_length=MAX_PUBLICATION_TITLE_LENGTH)
+    author: TrimmedOptionalText = Field(default=None, max_length=MAX_PUBLICATION_AUTHOR_LENGTH)
     published_at: str | None = Field(default=None, alias="publishedAt")
     updated_at_source: str | None = Field(default=None, alias="updatedAtSource")
-    category: str | None = Field(default=None, max_length=MAX_PUBLICATION_CATEGORY_LENGTH)
-    summary: str | None = Field(default=None, max_length=MAX_PUBLICATION_SUMMARY_LENGTH)
-    body_text: str | None = Field(
+    category: TrimmedOptionalText = Field(default=None, max_length=MAX_PUBLICATION_CATEGORY_LENGTH)
+    summary: TrimmedOptionalText = Field(default=None, max_length=MAX_PUBLICATION_SUMMARY_LENGTH)
+    body_text: SanitizedOptionalText = Field(
         default=None,
         alias="bodyText",
         max_length=MAX_PUBLICATION_BODY_TEXT_LENGTH,
     )
     source_page_url: Url | None = Field(default=None, alias="sourcePageUrl")
-    extraction_method: str | None = Field(
+    extraction_method: TrimmedOptionalText = Field(
         default=None,
         alias="extractionMethod",
         max_length=MAX_PUBLICATION_EXTRACTION_METHOD_LENGTH,
     )
-    classifier_version: str | None = Field(default=None, alias="classifierVersion", max_length=200)
+    classifier_version: TrimmedOptionalText = Field(
+        default=None,
+        alias="classifierVersion",
+        max_length=200,
+    )
     raw_metadata: dict[str, Any] | None = Field(default=None, alias="rawMetadata")
     objects: list[ObjectManifest] = Field(
         default_factory=list,
@@ -339,6 +385,7 @@ class IngestionPublication(ProtocolModel):
     _normalize_published_at = field_validator("published_at", "updated_at_source")(
         _normalize_optional_timestamp
     )
+    _normalize_raw_metadata = field_validator("raw_metadata", mode="before")(_json_value)
 
 
 class TombstonePublication(ProtocolModel):
@@ -361,9 +408,9 @@ class IngestionBatch(ProtocolModel):
     """The exact immutable JSON body for the publications batch endpoint."""
 
     protocol_version: Literal["1"] = Field(default=INGESTION_PROTOCOL_VERSION, alias="protocolVersion")
-    producer_version: str = Field(alias="producerVersion", min_length=1, max_length=200)
-    client_run_id: str = Field(alias="clientRunId", min_length=1, max_length=200)
-    batch_id: str = Field(alias="batchId", min_length=1, max_length=200)
+    producer_version: TrimmedText = Field(alias="producerVersion", min_length=1, max_length=200)
+    client_run_id: TrimmedText = Field(alias="clientRunId", min_length=1, max_length=200)
+    batch_id: TrimmedText = Field(alias="batchId", min_length=1, max_length=200)
     observed_at: str = Field(alias="observedAt", min_length=1)
     sources: list[PublicationSourceDescriptor] = Field(min_length=1, max_length=500)
     items: list[PublicationItem] = Field(min_length=1, max_length=MAX_PUBLICATION_BATCH_ITEMS)
@@ -403,6 +450,87 @@ def _source_descriptor(source: SourceConfig) -> PublicationSourceDescriptor:
     )
 
 
+def _normalized_source_page_url(article: ArticleDocument) -> str:
+    source_page_url = sanitize_text(article.source_page_url or "").strip()
+    return source_page_url or sanitize_text(article.url).strip()
+
+
+def _normalized_publication_values(
+    article: ArticleDocument,
+    *,
+    publication_type: PublicationType | None,
+    classifier_version: str,
+    objects: list[ObjectManifest] | tuple[ObjectManifest, ...],
+) -> dict[str, Any]:
+    """Return one normalized representation shared by hashing and the wire model."""
+
+    source_id = sanitize_text(article.source_id).strip()
+    canonical_url = sanitize_text(article.url).strip()
+    source_page_url = _normalized_source_page_url(article)
+    title = _bounded_required_text(article.title, MAX_PUBLICATION_TITLE_LENGTH)
+    author = _bounded_optional_text(article.author, MAX_PUBLICATION_AUTHOR_LENGTH)
+    category = _bounded_optional_text(article.category, MAX_PUBLICATION_CATEGORY_LENGTH)
+    summary = _bounded_optional_text(article.summary, MAX_PUBLICATION_SUMMARY_LENGTH)
+    kind = publication_type or classify_publication(
+        url=canonical_url,
+        source_id=source_id,
+        title=title,
+        category=category or "",
+        source_page_url=source_page_url,
+    )
+    return {
+        "sourceId": source_id,
+        "canonicalUrl": canonical_url,
+        "title": title,
+        "author": author,
+        "publishedAt": _wire_timestamp(article.published_at),
+        "updatedAtSource": _wire_timestamp(article.updated_at),
+        "category": category,
+        "summary": summary,
+        "bodyText": _bounded_body_text(article.body_text, MAX_PUBLICATION_BODY_TEXT_LENGTH),
+        "sourcePageUrl": source_page_url,
+        "extractionMethod": _bounded_optional_text(
+            article.extraction_method,
+            MAX_PUBLICATION_EXTRACTION_METHOD_LENGTH,
+        ),
+        "classifierVersion": _bounded_optional_text(classifier_version, 200),
+        "publicationType": kind,
+        "rawMetadata": _json_value(article.raw_metadata),
+        "objects": _bounded_objects(objects),
+    }
+
+
+def _wire_publication_values(values: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **values,
+        "objects": [
+            manifest.model_dump(by_alias=True, mode="json", exclude_none=True)
+            for manifest in values["objects"]
+        ],
+    }
+
+
+def _revision_hash_for_values(values: dict[str, Any]) -> str:
+    revision_values = {
+        **values,
+        "objects": sorted(
+            values["objects"],
+            key=lambda item: (
+                item.kind,
+                item.sort_order if item.sort_order is not None else -1,
+                item.sha256,
+            ),
+        ),
+    }
+    encoded = json.dumps(
+        _wire_publication_values(revision_values),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def revision_hash_for_article(
     article: ArticleDocument,
     *,
@@ -416,50 +544,13 @@ def revision_hash_for_article(
     later crawl must not create a new server revision.
     """
 
-    kind = publication_type or classify_publication(
-        url=article.url,
-        source_id=article.source_id,
-        title=article.title,
-        category=article.category,
-        source_page_url=article.source_page_url,
+    values = _normalized_publication_values(
+        article,
+        publication_type=publication_type,
+        classifier_version=classifier_version,
+        objects=objects,
     )
-    payload = {
-        "sourceId": article.source_id,
-        "canonicalUrl": article.url,
-        "title": _bounded_required_text(article.title, MAX_PUBLICATION_TITLE_LENGTH),
-        "author": _bounded_optional_text(article.author, MAX_PUBLICATION_AUTHOR_LENGTH),
-        "publishedAt": _wire_timestamp(article.published_at),
-        "updatedAtSource": _wire_timestamp(article.updated_at),
-        "category": _bounded_optional_text(article.category, MAX_PUBLICATION_CATEGORY_LENGTH),
-        "summary": _bounded_optional_text(article.summary, MAX_PUBLICATION_SUMMARY_LENGTH),
-        "bodyText": _bounded_optional_text(article.body_text, MAX_PUBLICATION_BODY_TEXT_LENGTH),
-        "sourcePageUrl": article.source_page_url or article.url,
-        "extractionMethod": _bounded_optional_text(
-            article.extraction_method,
-            MAX_PUBLICATION_EXTRACTION_METHOD_LENGTH,
-        ),
-        "classifierVersion": classifier_version,
-        "publicationType": kind,
-        "rawMetadata": _json_value(article.raw_metadata),
-        "objects": [
-            manifest.model_dump(by_alias=True, mode="json", exclude_none=True)
-            for manifest in sorted(
-                _bounded_objects(objects),
-                key=lambda item: (
-                    item.kind,
-                    item.sort_order if item.sort_order is not None else -1,
-                    item.sha256,
-                ),
-            )
-        ],
-    }
-    encoded = json.dumps(
-        payload,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return _revision_hash_for_values(values)
 
 
 def build_publication(
@@ -470,41 +561,32 @@ def build_publication(
     classifier_version: str = CLASSIFIER_VERSION,
     observed_at: str | date | datetime | None = None,
 ) -> IngestionPublication:
-    kind = publication_type or classify_publication(
-        url=article.url,
-        source_id=article.source_id,
-        title=article.title,
-        category=article.category,
-        source_page_url=article.source_page_url,
-    )
-    revision_hash = revision_hash_for_article(
+    values = _normalized_publication_values(
         article,
-        publication_type=kind,
+        publication_type=publication_type,
         classifier_version=classifier_version,
-        objects=list(objects),
+        objects=objects,
     )
+    revision_hash = _revision_hash_for_values(values)
     observation = observed_at or datetime.now(SHANGHAI)
     return IngestionPublication(
-        sourceId=article.source_id,
-        canonicalUrl=article.url,
+        sourceId=values["sourceId"],
+        canonicalUrl=values["canonicalUrl"],
         revisionHash=revision_hash,
         observedAt=normalize_publication_timestamp(observation),
-        publicationType=kind,
-        title=_bounded_required_text(article.title, MAX_PUBLICATION_TITLE_LENGTH),
-        author=_bounded_optional_text(article.author, MAX_PUBLICATION_AUTHOR_LENGTH),
-        publishedAt=_wire_timestamp(article.published_at),
-        updatedAtSource=_wire_timestamp(article.updated_at),
-        category=_bounded_optional_text(article.category, MAX_PUBLICATION_CATEGORY_LENGTH),
-        summary=_bounded_optional_text(article.summary, MAX_PUBLICATION_SUMMARY_LENGTH),
-        bodyText=_bounded_optional_text(article.body_text, MAX_PUBLICATION_BODY_TEXT_LENGTH),
-        sourcePageUrl=article.source_page_url or article.url,
-        extractionMethod=_bounded_optional_text(
-            article.extraction_method,
-            MAX_PUBLICATION_EXTRACTION_METHOD_LENGTH,
-        ),
-        classifierVersion=classifier_version,
-        rawMetadata=_json_value(article.raw_metadata) or None,
-        objects=_bounded_objects(objects),
+        publicationType=values["publicationType"],
+        title=values["title"],
+        author=values["author"],
+        publishedAt=values["publishedAt"],
+        updatedAtSource=values["updatedAtSource"],
+        category=values["category"],
+        summary=values["summary"],
+        bodyText=values["bodyText"],
+        sourcePageUrl=values["sourcePageUrl"],
+        extractionMethod=values["extractionMethod"],
+        classifierVersion=values["classifierVersion"],
+        rawMetadata=values["rawMetadata"] or None,
+        objects=values["objects"],
     )
 
 
