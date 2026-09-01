@@ -24,7 +24,9 @@ from .models import (
     LocalObjectManifest,
     ObjectKind,
     ObjectManifest,
+    PublicationItem,
     PublicationSourceDescriptor,
+    TombstonePublication,
     build_ingestion_batch,
     build_publication,
 )
@@ -209,14 +211,14 @@ class IngestionOutbox:
             raise ValueError("discovery-only source cannot enqueue publications")
 
     @staticmethod
-    def _event_id(publication: IngestionPublication) -> str:
+    def _event_id(publication: PublicationItem) -> str:
         value = f"{publication.source_id}\n{publication.canonical_url}\n{publication.revision_hash}"
         return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
     def enqueue_publication_in_session(
         self,
         session: Session,
-        publication: IngestionPublication,
+        publication: PublicationItem,
         *,
         source: PublicationSourceDescriptor,
         local_objects: Iterable[LocalObjectManifest] = (),
@@ -231,9 +233,15 @@ class IngestionOutbox:
         payload_json = _dump_json(publication.model_dump(by_alias=True, mode="json", exclude_none=True))
         payload_sha256 = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
         manifests = tuple(local_objects)
-        wire_objects = [wire_manifest(manifest) for manifest in manifests]
-        if wire_objects != publication.objects:
-            raise ValueError("local object manifests do not match publication objects")
+        if isinstance(publication, IngestionPublication):
+            wire_objects = [wire_manifest(manifest) for manifest in manifests]
+            if wire_objects != publication.objects:
+                raise ValueError("local object manifests do not match publication objects")
+        elif isinstance(publication, TombstonePublication):
+            if manifests:
+                raise ValueError("tombstone publication cannot have local object manifests")
+        else:
+            raise TypeError(f"unsupported publication item: {type(publication).__name__}")
         object_manifest_json = _dump_json(
             [manifest.model_dump(mode="json") for manifest in manifests]
         )
@@ -282,7 +290,7 @@ class IngestionOutbox:
 
     def enqueue_publication(
         self,
-        publication: IngestionPublication,
+        publication: PublicationItem,
         *,
         source: PublicationSourceDescriptor,
         local_objects: Iterable[LocalObjectManifest] = (),
@@ -299,7 +307,7 @@ class IngestionOutbox:
 
     def enqueue_publication_with_status(
         self,
-        publication: IngestionPublication,
+        publication: PublicationItem,
         *,
         source: PublicationSourceDescriptor,
         local_objects: Iterable[LocalObjectManifest] = (),
@@ -395,9 +403,12 @@ class IngestionOutbox:
         )
 
     @staticmethod
-    def _publication(row: SyncOutbox) -> IngestionPublication:
+    def _publication(row: SyncOutbox) -> PublicationItem:
         value = json.loads(row.payload_json)
-        parsed = IngestionPublication.model_validate(value)
+        if isinstance(value, dict) and value.get("tombstone") is True:
+            parsed: PublicationItem = TombstonePublication.model_validate(value)
+        else:
+            parsed = IngestionPublication.model_validate(value)
         if parsed.revision_hash != row.revision_hash:
             raise ValueError(f"outbox revision hash mismatch: {row.event_id}")
         return parsed
@@ -622,7 +633,7 @@ class IngestionOutbox:
             if not candidate_rows:
                 return None
             rows: list[SyncOutbox] = []
-            publications: list[IngestionPublication] = []
+            publications: list[PublicationItem] = []
             for candidate in candidate_rows:
                 candidate_rows_for_batch = [*rows, candidate]
                 candidate_publications = [*publications, self._publication(candidate)]
