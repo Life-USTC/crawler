@@ -25,6 +25,7 @@ DATE_PATTERNS = (
 REMOVE_TAGS = {"script", "style", "noscript", "template", "svg", "canvas", "iframe"}
 CONTENT_SELECTORS = (
     "#Content",
+    "#divContent",
     ".media-foucs",
     ".detail-content",
     ".wp_articlecontent",
@@ -63,6 +64,7 @@ CONTENT_SELECTORS = (
 )
 CONTENT_BOOSTS = {
     "#Content": 2200,
+    "#divContent": 2200,
     ".media-foucs": 100,
     ".detail-content": 1800,
     ".wp_articlecontent": 1800,
@@ -607,7 +609,13 @@ def _content_root(soup: BeautifulSoup) -> Tag:
     candidates: list[tuple[int, Tag]] = []
     for selector in CONTENT_SELECTORS:
         for node in soup.select(selector):
-            if _is_hidden(node) or any(_is_hidden(parent) for parent in node.parents):
+            # Some legacy CMS templates keep the article markup in a hidden
+            # ``#divContent`` node and reveal it with JavaScript after load.
+            # It is still the authoritative server-rendered article body.
+            hidden_content = selector == "#divContent"
+            if (not hidden_content and _is_hidden(node)) or any(
+                _is_hidden(parent) for parent in node.parents
+            ):
                 continue
             clone_text = node.get_text(" ", strip=True)
             if len(clone_text) < 40:
@@ -683,7 +691,8 @@ def extract_page(
     if link and link.get("href"):
         canonical = normalize_url(link["href"], url) or canonical
     detail_heading = soup.select_one(
-        ".arti_title, .zkd-title, .articel-show-title, .News-detail-title, "
+        ".arti_title, .zkd-title, .articel-show-title, #articel-show-title .n-f-10, "
+        ".News-detail-title, "
         ".article-title, .post-title, .entry-title, .page_title, #Title, "
         ".person-title, .titles, .page-header h1, .bt01"
     )
