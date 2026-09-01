@@ -664,3 +664,8 @@ supplemental_sources:
     seed_urls: [https://ispc.ustc.edu.cn/]
     allowed_hosts: [ispc.ustc.edu.cn]
     discovery_only: true
+  - id: unit-igp-ustc-edu-cn
+    name: 几何与物理研究中心
+    organization_level: research
+    seed_urls: [https://igp.ustc.edu.cn/]
+    allowed_hosts: [igp.ustc.edu.cn]
