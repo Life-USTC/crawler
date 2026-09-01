@@ -5,7 +5,6 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from urllib.parse import parse_qs
 
 import httpx
 from pydantic import ValidationError
@@ -15,32 +14,21 @@ from ustc_crawler.cli import build_parser
 from ustc_crawler.db.models import SyncBatch, SyncBatchItem, SyncOutbox
 from ustc_crawler.models import ArticleDocument, SourceConfig
 from ustc_crawler.store import Store
-from ustc_crawler.sync.auth import (
-    OAUTH_SCOPE,
-    OAuthDeviceClient,
-    OAuthTokenState,
+from ustc_crawler.sync.client import (
+    INGESTION_SECRET_HEADER,
+    IngestionSyncClient,
+    SyncClientError,
+    SyncOptions,
+    ingestion_secret_from_environment,
+    sync_backfill,
 )
-from ustc_crawler.sync.client import IngestionSyncClient, SyncOptions, sync_backfill
 from ustc_crawler.sync.models import IngestionBatchResponse
 from ustc_crawler.sync.outbox import IngestionOutbox
 
 
-class FakeCredentialStore:
-    def __init__(self, state: OAuthTokenState | None = None) -> None:
-        self.state = state
-
-    def load(self) -> OAuthTokenState | None:
-        return self.state
-
-    def save(self, state: OAuthTokenState) -> None:
-        self.state = state
-
-    def delete(self) -> None:
-        self.state = None
-
-
 class SyncClientTests(unittest.TestCase):
     server = "https://ingest.example.test"
+    ingestion_secret = "machine-ingestion-secret"
 
     def test_batch_response_digest_is_strict_sha256(self) -> None:
         with self.assertRaises(ValidationError):
@@ -88,21 +76,6 @@ class SyncClientTests(unittest.TestCase):
         store = Store(root / "crawler.sqlite", root / "data")
         store.add_source(self._source())
         return store
-
-    def _oauth(
-        self,
-        credentials: FakeCredentialStore,
-        client: httpx.Client,
-        *,
-        now: float = 100.0,
-    ) -> OAuthDeviceClient:
-        return OAuthDeviceClient(
-            self.server,
-            "crawler-public-client",
-            credentials,
-            http_client=client,
-            now=lambda: now,
-        )
 
     @staticmethod
     def _batch_response(request: httpx.Request, *, statuses: dict[str, str] | None = None) -> dict:
@@ -152,118 +125,11 @@ class SyncClientTests(unittest.TestCase):
             )
         return {"batchId": payload["batchId"], "objects": objects}
 
-    def test_device_login_pending_slow_down_and_refresh(self) -> None:
-        calls: list[httpx.Request] = []
-        token_calls = 0
-        clock = [0.0]
-        sleeps: list[float] = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            nonlocal token_calls
-            calls.append(request)
-            if request.url.path == "/.well-known/oauth-authorization-server/api/auth":
-                return httpx.Response(404, request=request)
-            if request.url.path == "/.well-known/oauth-authorization-server":
-                return httpx.Response(
-                    200,
-                    json={
-                        "device_authorization_endpoint": f"{self.server}/oauth/device",
-                        "token_endpoint": f"{self.server}/oauth/token",
-                    },
-                    request=request,
-                )
-            if request.url.path == "/oauth/device":
-                form = parse_qs(request.content.decode())
-                self.assertEqual(form["client_id"], ["crawler-public-client"])
-                self.assertEqual(form["scope"], [OAUTH_SCOPE])
-                self.assertEqual(form["resource"], [f"{self.server}/api/auth"])
-                return httpx.Response(
-                    200,
-                    json={
-                        "device_code": "do-not-display",
-                        "user_code": "ABCD-EFGH",
-                        "verification_uri": f"{self.server}/verify",
-                        "verification_uri_complete": f"{self.server}/verify?code=ABCD-EFGH",
-                        "expires_in": 100,
-                        "interval": 2,
-                    },
-                    request=request,
-                )
-            if request.url.path == "/oauth/token":
-                token_calls += 1
-                form = parse_qs(request.content.decode())
-                if token_calls == 1:
-                    self.assertEqual(form["grant_type"], [
-                        "urn:ietf:params:oauth:grant-type:device_code"
-                    ])
-                    return httpx.Response(400, json={"error": "authorization_pending"}, request=request)
-                if token_calls == 2:
-                    return httpx.Response(400, json={"error": "slow_down"}, request=request)
-                if token_calls == 3:
-                    return httpx.Response(
-                        200,
-                        json={
-                            "access_token": "access-secret",
-                            "refresh_token": "refresh-secret",
-                            "token_type": "Bearer",
-                            "expires_in": 300,
-                            "scope": OAUTH_SCOPE,
-                        },
-                        request=request,
-                    )
-                self.assertEqual(form["grant_type"], ["refresh_token"])
-                self.assertEqual(form["refresh_token"], ["refresh-secret"])
-                return httpx.Response(
-                    200,
-                    json={
-                        "access_token": "refreshed-secret",
-                        "expires_in": 300,
-                    },
-                    request=request,
-                )
-            raise AssertionError(f"unexpected OAuth request: {request.url}")
-
-        def sleep(seconds: float) -> None:
-            sleeps.append(seconds)
-            clock[0] += seconds
-
-        credentials = FakeCredentialStore()
-        client = httpx.Client(transport=httpx.MockTransport(handler))
-        oauth = OAuthDeviceClient(
-            self.server,
-            "crawler-public-client",
-            credentials,
-            http_client=client,
-            sleep=sleep,
-            monotonic=lambda: clock[0],
-            now=lambda: 1_000.0,
-        )
-        try:
-            instructions: list[object] = []
-            state = oauth.login(on_instructions=instructions.append)
-            self.assertEqual(state.access_token, "access-secret")
-            self.assertEqual(sleeps, [2, 2, 7])
-            self.assertEqual(instructions[0].user_code, "ABCD-EFGH")
-            self.assertNotIn("device_code", repr(instructions[0]))
-            refreshed = oauth.refresh()
-            self.assertEqual(refreshed.access_token, "refreshed-secret")
-            self.assertEqual(refreshed.refresh_token, "refresh-secret")
-            self.assertTrue(oauth.status()["authenticated"])
-        finally:
-            oauth.close()
-
     def test_sync_uploads_plan_objects_with_exact_headers_and_no_secrets(self) -> None:
         batch_requests: list[httpx.Request] = []
         plan_requests: list[dict] = []
         upload_requests: list[httpx.Request] = []
-        credentials = FakeCredentialStore(
-            OAuthTokenState(
-                access_token="access-secret",
-                refresh_token="refresh-secret",
-                expires_at=10_000,
-                scope=OAUTH_SCOPE,
-            )
-        )
+        ingestion_secret = "machine-ingestion-secret"
 
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/api/ingestion/publications/batches":
@@ -274,12 +140,14 @@ class SyncClientTests(unittest.TestCase):
                     request=request,
                 )
             if request.url.path == "/api/ingestion/publications/objects/plan":
+                self.assertEqual(request.headers[INGESTION_SECRET_HEADER], ingestion_secret)
                 plan_requests.append(json.loads(request.content))
                 return httpx.Response(200, json=self._plan_response(request, upload=True), request=request)
             if request.url.path.startswith("/signed/"):
                 upload_requests.append(request)
                 return httpx.Response(200, request=request)
             if request.url.path == "/api/ingestion/publications/objects/complete":
+                self.assertEqual(request.headers[INGESTION_SECRET_HEADER], ingestion_secret)
                 payload = json.loads(request.content)
                 return httpx.Response(
                     200,
@@ -297,10 +165,15 @@ class SyncClientTests(unittest.TestCase):
             root = Path(temp)
             store = self._store(root)
             client = httpx.Client(transport=httpx.MockTransport(handler))
-            oauth = self._oauth(credentials, client)
             try:
                 store.enqueue_article_for_sync(self._article(1))
-                sync = IngestionSyncClient(store.database, store.data_dir, oauth)
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    ingestion_secret,
+                    http_client=client,
+                )
                 summary = sync.sync()
                 self.assertEqual(summary["acked"], 1)
                 self.assertEqual(summary["failed"], 0)
@@ -310,7 +183,10 @@ class SyncClientTests(unittest.TestCase):
                     batch_requests[0].headers["Idempotency-Key"],
                     batch_payload["batchId"],
                 )
-                self.assertEqual(batch_requests[0].headers["Authorization"], "Bearer access-secret")
+                self.assertEqual(
+                    batch_requests[0].headers[INGESTION_SECRET_HEADER],
+                    ingestion_secret,
+                )
                 self.assertEqual(len(plan_requests), 1)
                 self.assertEqual(len(upload_requests), len(plan_requests[0]["objects"]))
                 for request in upload_requests:
@@ -332,19 +208,15 @@ class SyncClientTests(unittest.TestCase):
                             *(row.object_manifest_json for row in outbox),
                         ]
                     )
-                    self.assertNotIn("access-secret", durable)
-                    self.assertNotIn("refresh-secret", durable)
+                    self.assertNotIn(ingestion_secret, durable)
                     self.assertNotIn("uploadUrl", durable)
                     self.assertNotIn("signed/", durable)
             finally:
-                oauth.close()
+                sync.close()
                 store.close()
 
     def test_mixed_result_only_plans_accepted_objects_and_marks_partial(self) -> None:
         plan_requests: list[dict] = []
-        credentials = FakeCredentialStore(
-            OAuthTokenState(access_token="access", expires_at=10_000, scope=OAUTH_SCOPE)
-        )
 
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/api/ingestion/publications/batches":
@@ -373,11 +245,17 @@ class SyncClientTests(unittest.TestCase):
             root = Path(temp)
             store = self._store(root)
             client = httpx.Client(transport=httpx.MockTransport(handler))
-            oauth = self._oauth(credentials, client)
             try:
                 store.enqueue_article_for_sync(self._article(1))
                 store.enqueue_article_for_sync(self._article(2, rejected=True))
-                summary = IngestionSyncClient(store.database, store.data_dir, oauth).sync()
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=client,
+                )
+                summary = sync.sync()
                 self.assertEqual(summary["failed"], 1)
                 self.assertEqual(summary["rejected"], 1)
                 self.assertEqual(len(plan_requests), 1)
@@ -403,14 +281,10 @@ class SyncClientTests(unittest.TestCase):
                     self.assertNotIn("unsafe server detail", batch.response_json or "")
                     self.assertNotIn("secret-token", batch.response_json or "")
             finally:
-                oauth.close()
+                sync.close()
                 store.close()
 
     def test_duplicate_url_revisions_use_triple_result_identity(self) -> None:
-        credentials = FakeCredentialStore(
-            OAuthTokenState(access_token="access", expires_at=10_000, scope=OAUTH_SCOPE)
-        )
-
         def handler(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/api/ingestion/publications/batches":
                 return httpx.Response(200, json=self._batch_response(request), request=request)
@@ -425,7 +299,6 @@ class SyncClientTests(unittest.TestCase):
             root = Path(temp)
             store = self._store(root)
             client = httpx.Client(transport=httpx.MockTransport(handler))
-            oauth = self._oauth(credentials, client)
             try:
                 first = self._article(6)
                 second = self._article(6)
@@ -435,7 +308,14 @@ class SyncClientTests(unittest.TestCase):
                 second.body_markdown = "Revised markdown"
                 store.enqueue_article_for_sync(first)
                 store.enqueue_article_for_sync(second)
-                summary = IngestionSyncClient(store.database, store.data_dir, oauth).sync()
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=client,
+                )
+                summary = sync.sync()
                 self.assertEqual(summary["acked"], 1)
                 with store.database.session_factory() as session:
                     self.assertEqual(
@@ -449,16 +329,13 @@ class SyncClientTests(unittest.TestCase):
                         {"acked"},
                     )
             finally:
-                oauth.close()
+                sync.close()
                 store.close()
 
     def test_lost_batch_response_retries_same_idempotent_request(self) -> None:
         requests: list[httpx.Request] = []
         sleeps: list[float] = []
         first = True
-        credentials = FakeCredentialStore(
-            OAuthTokenState(access_token="access", expires_at=10_000, scope=OAUTH_SCOPE)
-        )
 
         def handler(request: httpx.Request) -> httpx.Response:
             nonlocal first
@@ -479,15 +356,17 @@ class SyncClientTests(unittest.TestCase):
             root = Path(temp)
             store = self._store(root)
             client = httpx.Client(transport=httpx.MockTransport(handler))
-            oauth = self._oauth(credentials, client)
             try:
                 store.enqueue_article_for_sync(self._article(3))
-                summary = IngestionSyncClient(
+                sync = IngestionSyncClient(
                     store.database,
                     store.data_dir,
-                    oauth,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=client,
                     sleep=sleeps.append,
-                ).sync(options=SyncOptions(max_retries=1))
+                )
+                summary = sync.sync(options=SyncOptions(max_retries=1))
                 self.assertEqual(summary["acked"], 1)
                 self.assertEqual(len(requests), 2)
                 self.assertEqual(
@@ -497,14 +376,10 @@ class SyncClientTests(unittest.TestCase):
                 self.assertEqual(requests[0].content, requests[1].content)
                 self.assertEqual(sleeps, [1])
             finally:
-                oauth.close()
+                sync.close()
                 store.close()
 
     def test_nonretryable_response_marks_batch_failed_without_body(self) -> None:
-        credentials = FakeCredentialStore(
-            OAuthTokenState(access_token="access", expires_at=10_000, scope=OAUTH_SCOPE)
-        )
-
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 400,
@@ -516,10 +391,16 @@ class SyncClientTests(unittest.TestCase):
             root = Path(temp)
             store = self._store(root)
             client = httpx.Client(transport=httpx.MockTransport(handler))
-            oauth = self._oauth(credentials, client)
             try:
                 store.enqueue_article_for_sync(self._article(4))
-                summary = IngestionSyncClient(store.database, store.data_dir, oauth).sync()
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=client,
+                )
+                summary = sync.sync()
                 self.assertEqual(summary["failed"], 1)
                 with store.database.session_factory() as session:
                     batch = session.scalar(select(SyncBatch))
@@ -530,14 +411,11 @@ class SyncClientTests(unittest.TestCase):
                     self.assertEqual(row.last_error, "invalid_batch")
                     self.assertNotIn("secret-token", row.payload_json)
             finally:
-                oauth.close()
+                sync.close()
                 store.close()
 
     def test_permanent_failure_stops_before_claiming_remaining_events(self) -> None:
         batch_calls = 0
-        credentials = FakeCredentialStore(
-            OAuthTokenState(access_token="access", expires_at=10_000, scope=OAUTH_SCOPE)
-        )
 
         def handler(request: httpx.Request) -> httpx.Response:
             nonlocal batch_calls
@@ -554,11 +432,17 @@ class SyncClientTests(unittest.TestCase):
             root = Path(temp)
             store = self._store(root)
             client = httpx.Client(transport=httpx.MockTransport(handler))
-            oauth = self._oauth(credentials, client)
             try:
                 store.enqueue_article_for_sync(self._article(7))
                 store.enqueue_article_for_sync(self._article(8))
-                summary = IngestionSyncClient(store.database, store.data_dir, oauth).sync(
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=client,
+                )
+                summary = sync.sync(
                     options=SyncOptions(batch_size=1)
                 )
                 self.assertEqual(batch_calls, 1)
@@ -569,14 +453,11 @@ class SyncClientTests(unittest.TestCase):
                     self.assertEqual({row.status for row in rows}, {"failed", "pending"})
                     self.assertEqual(sum(row.batch_id is not None for row in rows), 1)
             finally:
-                oauth.close()
+                sync.close()
                 store.close()
 
     def test_local_object_mutation_is_rejected_before_put(self) -> None:
         put_count = 0
-        credentials = FakeCredentialStore(
-            OAuthTokenState(access_token="access", expires_at=10_000, scope=OAUTH_SCOPE)
-        )
 
         def handler(request: httpx.Request) -> httpx.Response:
             nonlocal put_count
@@ -593,14 +474,20 @@ class SyncClientTests(unittest.TestCase):
             root = Path(temp)
             store = self._store(root)
             client = httpx.Client(transport=httpx.MockTransport(handler))
-            oauth = self._oauth(credentials, client)
             try:
                 store.enqueue_article_for_sync(self._article(5))
                 with store.database.session_factory() as session:
                     row = session.scalar(select(SyncOutbox))
                     path = Path(json.loads(row.object_manifest_json)[0]["local_path"])
                 path.write_bytes(b"changed after spool")
-                summary = IngestionSyncClient(store.database, store.data_dir, oauth).sync(
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=client,
+                )
+                summary = sync.sync(
                     options=SyncOptions(max_retries=0)
                 )
                 self.assertEqual(summary["failed"], 1)
@@ -609,7 +496,7 @@ class SyncClientTests(unittest.TestCase):
                     batch = session.scalar(select(SyncBatch))
                     self.assertEqual(batch.last_error, "immutable_object_changed")
             finally:
-                oauth.close()
+                sync.close()
                 store.close()
 
     def test_backfill_is_keyset_paginated_and_idempotent_without_network(self) -> None:
@@ -681,15 +568,22 @@ class SyncClientTests(unittest.TestCase):
             finally:
                 store.close()
 
-    def test_cli_exposes_explicit_auth_sync_and_backfill_flags(self) -> None:
+    def test_service_secret_is_read_from_environment_without_exposing_it(self) -> None:
+        secret = ingestion_secret_from_environment(
+            {"USTC_CRAWLER_INGESTION_SECRET": self.ingestion_secret}
+        )
+        self.assertEqual(secret, self.ingestion_secret)
+        with self.assertRaisesRegex(SyncClientError, "missing_ingestion_secret") as raised:
+            ingestion_secret_from_environment({})
+        self.assertNotIn(self.ingestion_secret, str(raised.exception))
+
+    def test_cli_exposes_service_sync_and_backfill_flags_without_auth_or_secret_args(self) -> None:
         parser = build_parser()
         args = parser.parse_args(
             [
                 "sync",
                 "--server",
                 self.server,
-                "--client-id",
-                "client",
                 "--db",
                 "db.sqlite",
                 "--data-dir",
@@ -698,15 +592,8 @@ class SyncClientTests(unittest.TestCase):
         )
         self.assertEqual(args.command, "sync")
         self.assertEqual(args.server, self.server)
-        self.assertEqual(args.client_id, "client")
-        self.assertEqual(
-            parser.parse_args(["sync", "--server", self.server]).client_id,
-            "life-ustc-publication-crawler",
-        )
-        self.assertEqual(
-            parser.parse_args(["auth", "status", "--server", self.server, "--client-id", "client"]).auth_command,
-            "status",
-        )
+        self.assertNotIn("auth", parser.format_help())
+        self.assertIn("USTC_CRAWLER_INGESTION_SECRET", parser.format_help())
         self.assertEqual(
             parser.parse_args(["sync-backfill", "--db", "db.sqlite"]).command,
             "sync-backfill",
