@@ -111,7 +111,7 @@ uv run ustc-crawler sync \
 ```
 
 批次默认最多 50 篇、单次请求上限 100 篇且正文约 2 MiB，断点重跑使用同一批次和幂等键；上传对象先从本地内容寻址 spool 校验 SHA-256/大小，再按服务端返回的请求头上传。未配置服务密钥时命令会以安全错误码退出。
-同一批次内的对象上传和完成确认默认使用最多 8 个受限工作线程，并按计划顺序验证结果；可通过 `--object-concurrency` 或 `SyncOptions.object_concurrency` 调整到 1 至 64。批次默认串行投递；可通过 `--batch-concurrency` 或 `SyncOptions.batch_concurrency` 调整到 1 至 4。批次始终由协调线程串行认领并持久化，只有已认领的不可变批次并行投递；已保存的重试批次全部完成后才会认领新批次。`--max-batches` 仍按本次运行认领的批次数精确限制。
+同一批次内的对象上传和完成确认默认使用最多 8 个受限工作线程，并按计划顺序验证结果；可通过 `--object-concurrency` 或 `SyncOptions.object_concurrency` 调整到 1 至 64。批次默认串行投递；可通过 `--batch-concurrency` 或 `SyncOptions.batch_concurrency` 调整到 1 至 8。批次始终由协调线程串行认领并持久化，只有已认领的不可变批次并行投递；已保存的重试批次全部完成后才会认领新批次。`--max-batches` 仍按本次运行认领的批次数精确限制。
 
 ## 本地数据
 
