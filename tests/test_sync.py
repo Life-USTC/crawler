@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from sqlalchemy import func, select, text
 
 from ustc_crawler.db import ALEMBIC_HEAD
-from ustc_crawler.db.models import SyncBatch, SyncBatchItem, SyncOutbox, SyncRun
+from ustc_crawler.db.models import Article, SyncBatch, SyncBatchItem, SyncOutbox, SyncRun
 from ustc_crawler.models import ArticleDocument, SourceConfig
 from ustc_crawler.store import Store
 from ustc_crawler.sync.models import (
@@ -67,6 +67,11 @@ class IngestionProtocolTests(unittest.TestCase):
             complete.model_dump(by_alias=True),
             {"batchId": "batch-0001", "kind": "body_html", "sha256": "b" * 64},
         )
+        with self.assertRaises(ValidationError):
+            PublicationObjectPlanRequest(
+                batchId="batch-0001",
+                objects=[{"kind": "body_html", "sha256": "b" * 64}] * 101,
+            )
 
     def test_dates_are_normalized_from_both_legacy_forms(self) -> None:
         self.assertEqual(
@@ -151,6 +156,13 @@ class IngestionProtocolTests(unittest.TestCase):
         self.assertEqual(len(publication.extraction_method or ""), 200)
         self.assertEqual(len(publication.objects), 100)
 
+    def test_ingestion_batch_rejects_more_than_one_hundred_items(self) -> None:
+        payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        payload["items"] = payload["items"] * 101
+
+        with self.assertRaises(ValidationError):
+            IngestionBatch.model_validate(payload)
+
 
 class OrmAndOutboxTests(unittest.TestCase):
     def _source(self) -> SourceConfig:
@@ -179,6 +191,77 @@ class OrmAndOutboxTests(unittest.TestCase):
             extraction_method="article",
             source_page_url="https://example.edu/news/1",
         )
+
+    def _insert_oversized_batch(
+        self,
+        store: Store,
+        batch_id: str,
+        *,
+        batch_status: str = "failed",
+        item_status: str = "failed",
+        outbox_status: str = "failed",
+        count: int = 101,
+    ) -> tuple[str, str]:
+        source = store.source_descriptor("source")
+        for number in range(count):
+            article = self._article()
+            article.url = f"https://example.edu/news/{number}"
+            article.title = f"A notice {number}"
+            article.body_html = f"<p>Hello {number}</p>"
+            article.body_text = f"Hello {number}"
+            article.body_markdown = f"Hello {number}"
+            store.save_article_and_enqueue_for_sync(article)
+
+        digest = "a" * 64
+        with store.database.session_factory.begin() as session:
+            rows = session.scalars(
+                select(SyncOutbox).order_by(SyncOutbox.created_at, SyncOutbox.event_id)
+            ).all()
+            session.add(
+                SyncBatch(
+                    id=batch_id,
+                    run_id=None,
+                    client_run_id="old-run",
+                    sources_json=json.dumps(
+                        [source.model_dump(by_alias=True, mode="json")],
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    ),
+                    observed_at="2026-08-20T00:00:00+08:00",
+                    payload_sha256=digest,
+                    protocol_version="1",
+                    producer_version="old-producer",
+                    status=batch_status,
+                    attempts=4,
+                    next_attempt_at="2026-08-20T00:01:00+08:00",
+                    locked_until="2026-08-20T00:02:00+08:00",
+                    response_json="old-response",
+                    last_error="old-error",
+                    created_at="2026-08-20T00:00:00+08:00",
+                    updated_at="2026-08-20T00:00:00+08:00",
+                )
+            )
+            for row in rows:
+                publication = json.loads(row.payload_json)
+                row.batch_id = batch_id
+                row.status = outbox_status
+                row.attempts = 4
+                row.next_attempt_at = "2026-08-20T00:01:00+08:00"
+                row.locked_until = "2026-08-20T00:02:00+08:00"
+                row.response_json = "old-response"
+                row.last_error = "old-error"
+                session.add(
+                    SyncBatchItem(
+                        batch_id=batch_id,
+                        item_key=row.event_id,
+                        source_id=publication["sourceId"],
+                        canonical_url=publication["canonicalUrl"],
+                        revision_hash=publication["revisionHash"],
+                        status=item_status,
+                        error="old-item-error",
+                    )
+                )
+        return digest, source.id
 
     def test_migration_pragmas_and_uow_rollback(self) -> None:
         with TemporaryDirectory() as temp:
@@ -321,6 +404,127 @@ class OrmAndOutboxTests(unittest.TestCase):
                     self.assertEqual(session.scalar(select(func.count()).select_from(SyncOutbox)), 0)
             finally:
                 store.close()
+
+    def test_recover_oversized_batch_preserves_audit_and_releases_outbox(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "crawler.sqlite", root / "data")
+            try:
+                store.add_source(self._source())
+                digest, _ = self._insert_oversized_batch(store, "oversized")
+                outbox = IngestionOutbox(store.database)
+
+                self.assertEqual(outbox.recover_oversized_batch("oversized"), 101)
+                with store.database.session_factory() as session:
+                    batch = session.get(SyncBatch, "oversized")
+                    items = session.scalars(
+                        select(SyncBatchItem).where(SyncBatchItem.batch_id == "oversized")
+                    ).all()
+                    rows = session.scalars(select(SyncOutbox)).all()
+                    self.assertEqual(batch.status, "superseded")
+                    self.assertEqual(batch.last_error, "oversized_batch_superseded")
+                    self.assertEqual(batch.payload_sha256, digest)
+                    self.assertEqual(batch.response_json, "old-response")
+                    self.assertIsNone(batch.next_attempt_at)
+                    self.assertIsNone(batch.locked_until)
+                    self.assertEqual(len(items), 101)
+                    self.assertTrue(all(item.error == "old-item-error" for item in items))
+                    self.assertTrue(all(row.batch_id is None for row in rows))
+                    self.assertTrue(all(row.status == "pending" for row in rows))
+                    self.assertTrue(all(row.next_attempt_at is None for row in rows))
+                    self.assertTrue(all(row.locked_until is None for row in rows))
+                    self.assertTrue(all(row.response_json is None for row in rows))
+                    self.assertTrue(all(row.last_error is None for row in rows))
+                    self.assertEqual(
+                        session.scalar(select(func.count()).select_from(Article)),
+                        101,
+                    )
+
+                with self.assertRaisesRegex(ValueError, "batch status cannot be recovered"):
+                    outbox.recover_oversized_batch("oversized")
+                rebuilt = outbox.build_batch(
+                    run_id="new-run",
+                    batch_id="replacement",
+                    producer_version="new-producer",
+                    observed_at="2026-08-20T00:00:00+08:00",
+                    limit=100,
+                )
+                self.assertIsNotNone(rebuilt)
+                self.assertEqual(len(rebuilt.items), 100)
+            finally:
+                store.close()
+
+    def test_recover_oversized_batch_requires_exact_membership(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "crawler.sqlite", root / "data")
+            try:
+                store.add_source(self._source())
+                self._insert_oversized_batch(store, "mismatch")
+                with store.database.session_factory.begin() as session:
+                    item = session.scalar(select(SyncBatchItem))
+                    item.item_key = "missing-event"
+                outbox = IngestionOutbox(store.database)
+                with self.assertRaisesRegex(ValueError, "membership mismatch"):
+                    outbox.recover_oversized_batch("mismatch")
+                with store.database.session_factory() as session:
+                    batch = session.get(SyncBatch, "mismatch")
+                    row = session.scalar(select(SyncOutbox))
+                    self.assertEqual(batch.status, "failed")
+                    self.assertEqual(row.batch_id, "mismatch")
+                    self.assertEqual(row.status, "failed")
+            finally:
+                store.close()
+
+    def test_recover_oversized_batch_accepts_pending_and_uploading(self) -> None:
+        cases = (
+            ("pending", "pending", "batched"),
+            ("uploading", "uploading", "uploading"),
+        )
+        for batch_status, item_status, outbox_status in cases:
+            with self.subTest(batch_status=batch_status), TemporaryDirectory() as temp:
+                root = Path(temp)
+                store = Store(root / "crawler.sqlite", root / "data")
+                try:
+                    store.add_source(self._source())
+                    self._insert_oversized_batch(
+                        store,
+                        batch_status,
+                        batch_status=batch_status,
+                        item_status=item_status,
+                        outbox_status=outbox_status,
+                    )
+                    released = IngestionOutbox(store.database).recover_oversized_batch(
+                        batch_status
+                    )
+                    self.assertEqual(released, 101)
+                finally:
+                    store.close()
+
+    def test_recover_oversized_batch_refuses_completed_statuses(self) -> None:
+        for status in ("acked", "partial", "success"):
+            with self.subTest(status=status), TemporaryDirectory() as temp:
+                root = Path(temp)
+                store = Store(root / "crawler.sqlite", root / "data")
+                try:
+                    store.add_source(self._source())
+                    self._insert_oversized_batch(
+                        store,
+                        status,
+                        batch_status=status,
+                        item_status="failed",
+                        outbox_status="failed",
+                    )
+                    with self.assertRaisesRegex(ValueError, "batch status cannot be recovered"):
+                        IngestionOutbox(store.database).recover_oversized_batch(status)
+                    with store.database.session_factory() as session:
+                        batch = session.get(SyncBatch, status)
+                        row = session.scalar(select(SyncOutbox))
+                        self.assertEqual(batch.status, status)
+                        self.assertEqual(row.batch_id, status)
+                        self.assertEqual(row.status, "failed")
+                finally:
+                    store.close()
 
 
 if __name__ == "__main__":

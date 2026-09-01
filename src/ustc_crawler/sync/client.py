@@ -23,6 +23,7 @@ from .. import __version__
 from ..db.models import SyncRun
 from .models import (
     MAX_OBJECT_PLAN_OBJECTS,
+    MAX_PUBLICATION_BATCH_ITEMS,
     IngestionBatch,
     IngestionBatchResponse,
     LocalObjectManifest,
@@ -212,8 +213,11 @@ class IngestionSyncClient:
         """Deliver pending batches, replaying persisted batches before claiming new work."""
 
         options = options or SyncOptions()
-        if options.batch_size < 1 or options.batch_size > 500:
-            raise ValueError("batch size must be between 1 and 500")
+        if options.batch_size < 1 or options.batch_size > MAX_PUBLICATION_BATCH_ITEMS:
+            raise ValueError(
+                "batch size must be between 1 and "
+                f"{MAX_PUBLICATION_BATCH_ITEMS}"
+            )
         if options.max_payload_bytes < 1:
             raise ValueError("max payload bytes must be positive")
         if options.max_payload_bytes > DEFAULT_MAX_BATCH_BYTES:

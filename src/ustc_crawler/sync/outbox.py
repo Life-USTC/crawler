@@ -17,6 +17,7 @@ from ..db.uow import transaction
 from ..models import ArticleDocument
 from .models import (
     INGESTION_PROTOCOL_VERSION,
+    MAX_PUBLICATION_BATCH_ITEMS,
     MAX_PUBLICATION_OBJECTS,
     IngestionBatch,
     IngestionPublication,
@@ -583,6 +584,11 @@ class IngestionOutbox:
 
         if limit < 1:
             raise ValueError("batch limit must be positive")
+        if limit > MAX_PUBLICATION_BATCH_ITEMS:
+            raise ValueError(
+                "batch limit must be between 1 and "
+                f"{MAX_PUBLICATION_BATCH_ITEMS}"
+            )
         if max_payload_bytes < 1:
             raise ValueError("max payload bytes must be positive")
         if max_payload_bytes > DEFAULT_MAX_BATCH_BYTES:
@@ -679,6 +685,80 @@ class IngestionOutbox:
                     )
                 )
             return batch
+
+    def recover_oversized_batch(self, batch_id: str) -> int:
+        """Release an oversized in-flight batch back to the pending outbox.
+
+        The original batch and item rows remain as an immutable audit record.
+        Only a pending, uploading, or failed batch whose item rows are all
+        still unfinished can be released.  A superseded batch cannot be
+        released twice, and completed or partially completed batches are
+        never rewritten.
+        """
+
+        recoverable_batch_statuses = {"failed", "uploading", "pending"}
+        recoverable_item_statuses = {"pending", "uploading", "failed"}
+        recoverable_outbox_statuses = {"pending", "batched", "uploading", "failed"}
+        recovery_error = "oversized_batch_superseded"
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        with transaction(self.database) as session:
+            batch = session.get(SyncBatch, batch_id)
+            if batch is None:
+                raise KeyError(batch_id)
+            if batch.status not in recoverable_batch_statuses:
+                raise ValueError(f"batch status cannot be recovered: {batch.status}")
+
+            batch_items = session.scalars(
+                select(SyncBatchItem)
+                .where(SyncBatchItem.batch_id == batch_id)
+                .order_by(SyncBatchItem.item_key)
+            ).all()
+            if len(batch_items) <= MAX_PUBLICATION_BATCH_ITEMS:
+                raise ValueError(
+                    "batch is not oversized: "
+                    f"{len(batch_items)} items (maximum {MAX_PUBLICATION_BATCH_ITEMS})"
+                )
+
+            outbox_rows = session.scalars(
+                select(SyncOutbox)
+                .where(SyncOutbox.batch_id == batch_id)
+                .order_by(SyncOutbox.event_id)
+            ).all()
+            item_keys = {item.item_key for item in batch_items}
+            outbox_keys = {row.event_id for row in outbox_rows}
+            if item_keys != outbox_keys:
+                raise ValueError("batch item and outbox membership mismatch")
+            if any(item.status not in recoverable_item_statuses for item in batch_items):
+                raise ValueError("batch contains completed or rejected items")
+            if any(row.status not in recoverable_outbox_statuses for row in outbox_rows):
+                raise ValueError("batch contains completed outbox events")
+
+            outbox_by_id = {row.event_id: row for row in outbox_rows}
+            for item in batch_items:
+                row = outbox_by_id[item.item_key]
+                publication = self._publication(row)
+                if (
+                    row.revision_hash != item.revision_hash
+                    or publication.source_id != item.source_id
+                    or publication.canonical_url != item.canonical_url
+                    or publication.revision_hash != item.revision_hash
+                ):
+                    raise ValueError("batch item and outbox identity mismatch")
+
+            batch.status = "superseded"
+            batch.next_attempt_at = None
+            batch.locked_until = None
+            batch.last_error = recovery_error
+            batch.updated_at = now
+            for row in outbox_rows:
+                row.batch_id = None
+                row.status = "pending"
+                row.next_attempt_at = None
+                row.locked_until = None
+                row.response_json = None
+                row.last_error = None
+                row.updated_at = now
+            return len(outbox_rows)
 
     def mark_batch(self, batch_id: str, *, status: str, response_json: str = "") -> None:
         now = datetime.now().astimezone().isoformat(timespec="seconds")
