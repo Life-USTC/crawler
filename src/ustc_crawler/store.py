@@ -4,6 +4,7 @@ import hashlib
 import json
 import mimetypes
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,15 @@ def article_bundle_path(data_dir: str | Path, url: str, suffix: str = ".json") -
 
 def utc_now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+@dataclass(slots=True)
+class ArticleSyncSnapshot:
+    """An article and its local objects loaded for one sync-backfill chunk."""
+
+    article: ArticleDocument
+    media_paths: dict[str, tuple[str, str]]
+    asset_paths: dict[str, tuple[str, str]]
 
 
 class Store:
@@ -796,6 +806,23 @@ class Store:
     def sync_article_page(self, after_url: str = "", limit: int = 100) -> list[ArticleDocument]:
         """Read a bounded keyset page of article snapshots for sync backfill."""
 
+        return [
+            snapshot.article
+            for snapshot in self.sync_article_snapshot_page(after_url, limit)
+        ]
+
+    def sync_article_snapshot_page(
+        self, after_url: str = "", limit: int = 100
+    ) -> list[ArticleSyncSnapshot]:
+        """Read articles and linked local objects with bounded bulk queries.
+
+        The article URL is the keyset cursor.  Every relationship query is
+        scoped to this page, so a backfill does not grow its query count with
+        the number of articles in a chunk.  Files are checked only after the
+        read-only database session closes; callers may therefore spool and
+        hash objects without holding a database transaction.
+        """
+
         if limit < 1:
             raise ValueError("sync backfill limit must be positive")
         with self.database.session_factory() as session:
@@ -803,52 +830,183 @@ class Store:
             if after_url:
                 query = query.where(Article.url > after_url)
             rows = session.scalars(query).all()
-            result: list[ArticleDocument] = []
-            for row in rows:
-                image_rows = session.scalars(
-                    select(ArticleMedia)
-                    .where(ArticleMedia.article_url == row.url)
-                    .order_by(ArticleMedia.image_url)
-                ).all()
-                raw_metadata: dict[str, Any] = {}
-                if row.raw_json:
-                    try:
-                        value = json.loads(row.raw_json)
-                        if isinstance(value, dict):
-                            raw_metadata = value
-                    except (TypeError, ValueError):
-                        pass
-                result.append(
-                    ArticleDocument(
-                        url=row.url,
-                        source_id=row.source_id,
-                        title=row.title or "",
-                        author=row.author or "",
-                        published_at=row.published_at or "",
-                        updated_at=row.updated_at or "",
-                        category=row.category or "",
-                        summary=row.summary or "",
-                        body_html=row.body_html or "",
-                        body_text=row.body_text or "",
-                        body_markdown=row.body_markdown or "",
-                        extraction_method=row.extraction_method or "",
-                        source_page_url=row.source_page_url or row.url,
-                        raw_metadata=raw_metadata,
-                        images=[
-                            ImageRef(
-                                url=image.image_url,
-                                alt=image.alt or "",
-                                title=image.title or "",
-                                caption=image.caption or "",
-                                article_url=row.url,
-                            )
-                            for image in image_rows
-                        ],
-                        publication_type=row.publication_type,
-                        classifier_version=row.classifier_version,
+            if not rows:
+                return []
+
+            article_urls = [row.url for row in rows]
+            image_rows = session.scalars(
+                select(ArticleMedia)
+                .where(ArticleMedia.article_url.in_(article_urls))
+                .order_by(ArticleMedia.article_url, ArticleMedia.image_url)
+            ).all()
+            media_rows = session.scalars(
+                select(Media)
+                .outerjoin(ArticleMedia, ArticleMedia.image_url == Media.url)
+                .where(
+                    or_(
+                        Media.article_url.in_(article_urls),
+                        ArticleMedia.article_url.in_(article_urls),
                     )
                 )
-            return result
+                .order_by(Media.url)
+            ).unique().all()
+
+            source_urls = {
+                url
+                for row in rows
+                for url in (row.url, row.source_page_url or row.url)
+                if url
+            }
+            asset_rows = []
+            if source_urls:
+                asset_rows = session.scalars(
+                    select(Asset)
+                    .where(Asset.source_url.in_(source_urls), Asset.status == "ok")
+                    .order_by(Asset.url)
+                ).all()
+
+            # Copy all scalar fields while the session is alive, then close it
+            # before checking local files in the maps below.
+            article_values = [
+                {
+                    "url": row.url,
+                    "source_id": row.source_id,
+                    "title": row.title or "",
+                    "author": row.author or "",
+                    "published_at": row.published_at or "",
+                    "updated_at": row.updated_at or "",
+                    "category": row.category or "",
+                    "summary": row.summary or "",
+                    "body_html": row.body_html or "",
+                    "body_text": row.body_text or "",
+                    "body_markdown": row.body_markdown or "",
+                    "extraction_method": row.extraction_method or "",
+                    "source_page_url": row.source_page_url or row.url,
+                    "raw_json": row.raw_json,
+                    "publication_type": row.publication_type,
+                    "classifier_version": row.classifier_version,
+                }
+                for row in rows
+            ]
+            image_values = [
+                {
+                    "article_url": image.article_url,
+                    "url": image.image_url,
+                    "alt": image.alt or "",
+                    "title": image.title or "",
+                    "caption": image.caption or "",
+                }
+                for image in image_rows
+            ]
+            media_values = [
+                {
+                    "url": media.url,
+                    "article_url": media.article_url,
+                    "local_path": media.local_path,
+                    "mime_type": media.mime_type,
+                }
+                for media in media_rows
+            ]
+            asset_values = [
+                {
+                    "url": asset.url,
+                    "source_url": asset.source_url,
+                    "local_path": asset.local_path,
+                    "mime_type": asset.mime_type,
+                }
+                for asset in asset_rows
+            ]
+
+        images_by_article: dict[str, list[ImageRef]] = {}
+        media_urls_by_article: dict[str, set[str]] = {
+            url: set() for url in article_urls
+        }
+        for image in image_values:
+            article_url = str(image["article_url"])
+            images_by_article.setdefault(article_url, []).append(
+                ImageRef(
+                    url=str(image["url"]),
+                    alt=str(image["alt"]),
+                    title=str(image["title"]),
+                    caption=str(image["caption"]),
+                    article_url=article_url,
+                )
+            )
+            media_urls_by_article.setdefault(article_url, set()).add(str(image["url"]))
+
+        media_by_url = {str(media["url"]): media for media in media_values}
+        for media in media_values:
+            article_url = media["article_url"]
+            if article_url in media_urls_by_article:
+                media_urls_by_article[article_url].add(str(media["url"]))
+
+        assets_by_source: dict[str, list[dict[str, Any]]] = {}
+        for asset in asset_values:
+            assets_by_source.setdefault(str(asset["source_url"]), []).append(asset)
+
+        result: list[ArticleSyncSnapshot] = []
+        for values in article_values:
+            article_url = str(values["url"])
+            source_page_url = str(values["source_page_url"])
+            raw_metadata: dict[str, Any] = {}
+            if values["raw_json"]:
+                try:
+                    value = json.loads(values["raw_json"])
+                    if isinstance(value, dict):
+                        raw_metadata = value
+                except (TypeError, ValueError):
+                    pass
+            article = ArticleDocument(
+                url=article_url,
+                source_id=str(values["source_id"]),
+                title=str(values["title"]),
+                author=str(values["author"]),
+                published_at=str(values["published_at"]),
+                updated_at=str(values["updated_at"]),
+                category=str(values["category"]),
+                summary=str(values["summary"]),
+                body_html=str(values["body_html"]),
+                body_text=str(values["body_text"]),
+                body_markdown=str(values["body_markdown"]),
+                extraction_method=str(values["extraction_method"]),
+                source_page_url=source_page_url,
+                raw_metadata=raw_metadata,
+                images=images_by_article.get(article_url, []),
+                publication_type=values["publication_type"],
+                classifier_version=values["classifier_version"],
+            )
+            media_paths: dict[str, tuple[str, str]] = {}
+            for media_url in sorted(media_urls_by_article.get(article_url, ())):
+                media = media_by_url.get(media_url)
+                if not media or not media["local_path"]:
+                    continue
+                path = Path(str(media["local_path"]))
+                if path.is_file():
+                    media_paths[media_url] = (
+                        str(path),
+                        str(media["mime_type"] or "application/octet-stream"),
+                    )
+
+            asset_paths: dict[str, tuple[str, str]] = {}
+            for source_url in (article_url, source_page_url):
+                for asset in assets_by_source.get(source_url, ()):
+                    if not asset["local_path"]:
+                        continue
+                    path = Path(str(asset["local_path"]))
+                    if path.is_file():
+                        asset_paths[str(asset["url"])] = (
+                            str(path),
+                            str(asset["mime_type"] or "application/octet-stream"),
+                        )
+
+            result.append(
+                ArticleSyncSnapshot(
+                    article=article,
+                    media_paths=media_paths,
+                    asset_paths=asset_paths,
+                )
+            )
+        return result
 
     def write_article_bundle(
         self, article: ArticleDocument, content_hash: str | None = None
