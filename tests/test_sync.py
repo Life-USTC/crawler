@@ -305,6 +305,33 @@ class IngestionProtocolTests(unittest.TestCase):
             self.assertTrue(body_bytes)
             self.assertTrue(all(b"\x00" not in value for value in body_bytes))
 
+    def test_publication_removes_byte_order_marks_before_digest(self) -> None:
+        article = ArticleDocument(
+            url="https://news.ustc.edu.cn/info/1049/95606.htm",
+            source_id="news",
+            title="\ufeffTitle with a leading byte-order mark",
+            author="",
+            published_at="2026-07-03",
+            updated_at="",
+            category="",
+            summary="Summary\ufeffwith an embedded byte-order mark",
+            body_html="<p>Body\ufefftext</p>",
+            body_text="Body\ufefftext",
+            body_markdown="Body\ufefftext",
+            extraction_method="generic",
+            source_page_url="https://news.ustc.edu.cn/info/1049/95606.htm",
+            raw_metadata={"\ufefflanguage": "\ufeffzh-CN"},
+        )
+
+        self.assertEqual(article.title, "Title with a leading byte-order mark")
+        self.assertEqual(article.summary, "Summarywith an embedded byte-order mark")
+        self.assertEqual(article.body_text, "Bodytext")
+        self.assertEqual(article.raw_metadata, {"language": "zh-CN"})
+        publication = build_publication(article, publication_type="news")
+        payload = publication.model_dump(by_alias=True, mode="json", exclude_none=True)
+        self.assertNotIn("\ufeff", json.dumps(payload, ensure_ascii=False))
+        self.assertEqual(IngestionPublication.model_validate(payload), publication)
+
     def test_ingestion_batch_rejects_more_than_one_hundred_items(self) -> None:
         payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
         payload["items"] = payload["items"] * 101
