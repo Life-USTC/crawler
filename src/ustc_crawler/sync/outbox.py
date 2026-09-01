@@ -17,6 +17,7 @@ from ..db.uow import transaction
 from ..models import ArticleDocument
 from .models import (
     INGESTION_PROTOCOL_VERSION,
+    MAX_PUBLICATION_OBJECTS,
     IngestionBatch,
     IngestionPublication,
     LocalObjectManifest,
@@ -188,7 +189,7 @@ def spool_article_objects(
         if manifest.sha256 not in seen_assets:
             seen_assets.add(manifest.sha256)
             objects.append(manifest)
-    return tuple(objects)
+    return tuple(objects[:MAX_PUBLICATION_OBJECTS])
 
 
 def _dump_json(value: object) -> str:

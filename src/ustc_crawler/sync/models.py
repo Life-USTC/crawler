@@ -15,6 +15,13 @@ from ..publication import CLASSIFIER_VERSION, PublicationType, classify_publicat
 
 INGESTION_PROTOCOL_VERSION = "1"
 SHANGHAI = ZoneInfo("Asia/Shanghai")
+MAX_PUBLICATION_OBJECTS = 100
+MAX_PUBLICATION_TITLE_LENGTH = 1_000
+MAX_PUBLICATION_AUTHOR_LENGTH = 500
+MAX_PUBLICATION_CATEGORY_LENGTH = 500
+MAX_PUBLICATION_SUMMARY_LENGTH = 20_000
+MAX_PUBLICATION_BODY_TEXT_LENGTH = 5_000_000
+MAX_PUBLICATION_EXTRACTION_METHOD_LENGTH = 200
 
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 SourceId = Annotated[
@@ -116,6 +123,21 @@ def _optional_text(value: str | None) -> str | None:
     if value is None:
         return None
     return value or None
+
+
+def _bounded_required_text(value: str, max_length: int) -> str:
+    return value[:max_length]
+
+
+def _bounded_optional_text(value: str | None, max_length: int) -> str | None:
+    normalized = _optional_text(value)
+    return normalized[:max_length] if normalized is not None else None
+
+
+def _bounded_objects(
+    objects: list[ObjectManifest] | tuple[ObjectManifest, ...],
+) -> list[ObjectManifest]:
+    return list(objects[:MAX_PUBLICATION_OBJECTS])
 
 
 def _validate_urls(values: list[str]) -> list[str]:
@@ -276,18 +298,29 @@ class IngestionPublication(ProtocolModel):
     observed_at: str = Field(alias="observedAt", min_length=1)
     tombstone: Literal[False] = False
     publication_type: PublicationType = Field(alias="publicationType")
-    title: str = Field(min_length=1, max_length=1_000)
-    author: str | None = Field(default=None, max_length=500)
+    title: str = Field(min_length=1, max_length=MAX_PUBLICATION_TITLE_LENGTH)
+    author: str | None = Field(default=None, max_length=MAX_PUBLICATION_AUTHOR_LENGTH)
     published_at: str | None = Field(default=None, alias="publishedAt")
     updated_at_source: str | None = Field(default=None, alias="updatedAtSource")
-    category: str | None = Field(default=None, max_length=500)
-    summary: str | None = Field(default=None, max_length=20_000)
-    body_text: str | None = Field(default=None, alias="bodyText", max_length=5_000_000)
+    category: str | None = Field(default=None, max_length=MAX_PUBLICATION_CATEGORY_LENGTH)
+    summary: str | None = Field(default=None, max_length=MAX_PUBLICATION_SUMMARY_LENGTH)
+    body_text: str | None = Field(
+        default=None,
+        alias="bodyText",
+        max_length=MAX_PUBLICATION_BODY_TEXT_LENGTH,
+    )
     source_page_url: Url | None = Field(default=None, alias="sourcePageUrl")
-    extraction_method: str | None = Field(default=None, alias="extractionMethod", max_length=200)
+    extraction_method: str | None = Field(
+        default=None,
+        alias="extractionMethod",
+        max_length=MAX_PUBLICATION_EXTRACTION_METHOD_LENGTH,
+    )
     classifier_version: str | None = Field(default=None, alias="classifierVersion", max_length=200)
     raw_metadata: dict[str, Any] | None = Field(default=None, alias="rawMetadata")
-    objects: list[ObjectManifest] = Field(default_factory=list, max_length=100)
+    objects: list[ObjectManifest] = Field(
+        default_factory=list,
+        max_length=MAX_PUBLICATION_OBJECTS,
+    )
 
     _validate_canonical_url = field_validator("canonical_url")(_validate_url)
     _validate_source_page_url = field_validator("source_page_url")(_validate_optional_url)
@@ -382,22 +415,25 @@ def revision_hash_for_article(
     payload = {
         "sourceId": article.source_id,
         "canonicalUrl": article.url,
-        "title": article.title,
-        "author": _optional_text(article.author),
+        "title": _bounded_required_text(article.title, MAX_PUBLICATION_TITLE_LENGTH),
+        "author": _bounded_optional_text(article.author, MAX_PUBLICATION_AUTHOR_LENGTH),
         "publishedAt": _wire_timestamp(article.published_at),
         "updatedAtSource": _wire_timestamp(article.updated_at),
-        "category": _optional_text(article.category),
-        "summary": _optional_text(article.summary),
-        "bodyText": _optional_text(article.body_text),
+        "category": _bounded_optional_text(article.category, MAX_PUBLICATION_CATEGORY_LENGTH),
+        "summary": _bounded_optional_text(article.summary, MAX_PUBLICATION_SUMMARY_LENGTH),
+        "bodyText": _bounded_optional_text(article.body_text, MAX_PUBLICATION_BODY_TEXT_LENGTH),
         "sourcePageUrl": article.source_page_url or article.url,
-        "extractionMethod": _optional_text(article.extraction_method),
+        "extractionMethod": _bounded_optional_text(
+            article.extraction_method,
+            MAX_PUBLICATION_EXTRACTION_METHOD_LENGTH,
+        ),
         "classifierVersion": classifier_version,
         "publicationType": kind,
         "rawMetadata": _json_value(article.raw_metadata),
         "objects": [
             manifest.model_dump(by_alias=True, mode="json", exclude_none=True)
             for manifest in sorted(
-                objects,
+                _bounded_objects(objects),
                 key=lambda item: (
                     item.kind,
                     item.sort_order if item.sort_order is not None else -1,
@@ -443,18 +479,21 @@ def build_publication(
         revisionHash=revision_hash,
         observedAt=normalize_publication_timestamp(observation),
         publicationType=kind,
-        title=article.title,
-        author=_optional_text(article.author),
+        title=_bounded_required_text(article.title, MAX_PUBLICATION_TITLE_LENGTH),
+        author=_bounded_optional_text(article.author, MAX_PUBLICATION_AUTHOR_LENGTH),
         publishedAt=_wire_timestamp(article.published_at),
         updatedAtSource=_wire_timestamp(article.updated_at),
-        category=_optional_text(article.category),
-        summary=_optional_text(article.summary),
-        bodyText=_optional_text(article.body_text),
+        category=_bounded_optional_text(article.category, MAX_PUBLICATION_CATEGORY_LENGTH),
+        summary=_bounded_optional_text(article.summary, MAX_PUBLICATION_SUMMARY_LENGTH),
+        bodyText=_bounded_optional_text(article.body_text, MAX_PUBLICATION_BODY_TEXT_LENGTH),
         sourcePageUrl=article.source_page_url or article.url,
-        extractionMethod=_optional_text(article.extraction_method),
+        extractionMethod=_bounded_optional_text(
+            article.extraction_method,
+            MAX_PUBLICATION_EXTRACTION_METHOD_LENGTH,
+        ),
         classifierVersion=classifier_version,
         rawMetadata=_json_value(article.raw_metadata) or None,
-        objects=list(objects),
+        objects=_bounded_objects(objects),
     )
 
 
