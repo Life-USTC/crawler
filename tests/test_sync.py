@@ -10,9 +10,10 @@ from sqlalchemy import func, select, text
 from ustc_crawler.db import ALEMBIC_HEAD
 from ustc_crawler.db.models import Article, SyncBatch, SyncBatchItem, SyncOutbox, SyncRun
 from ustc_crawler.models import ArticleDocument, SourceConfig
-from ustc_crawler.store import Store
+from ustc_crawler.store import Store, article_bundle_path
 from ustc_crawler.sync.models import (
     IngestionBatch,
+    IngestionPublication,
     ObjectManifest,
     PublicationObjectCompleteRequest,
     PublicationObjectPlanRequest,
@@ -21,6 +22,7 @@ from ustc_crawler.sync.models import (
     build_ingestion_batch,
     build_publication,
     normalize_publication_timestamp,
+    revision_hash_for_article,
 )
 from ustc_crawler.sync.outbox import IngestionOutbox, spool_article_objects, wire_manifest
 
@@ -157,6 +159,152 @@ class IngestionProtocolTests(unittest.TestCase):
         self.assertEqual(len(publication.extraction_method or ""), 200)
         self.assertEqual(len(publication.objects), 100)
 
+    def test_publication_wire_normalization_is_idempotent_for_server_trim(self) -> None:
+        title = "T" * 999 + " " + "truncated after the protocol bound"
+        article = ArticleDocument(
+            url=" https://example.edu/news/whitespace ",
+            source_id=" source ",
+            title=title,
+            author="\t Author \n",
+            published_at=" 2026-08-20 ",
+            updated_at=" 2026-08-20T09:30:00 ",
+            category=" Category ",
+            summary=" Summary ",
+            body_html="",
+            body_text=" body whitespace is significant ",
+            body_markdown="",
+            extraction_method=" extractor ",
+            source_page_url=" https://example.edu/news/whitespace ",
+        )
+        manifest = ObjectManifest(
+            kind="media",
+            sha256="a" * 64,
+            size=1,
+            contentType=" image/png ",
+            altText=" image description ",
+        )
+        publication = build_publication(
+            article,
+            objects=[manifest],
+            publication_type="notice",
+            classifier_version=" classifier/v1 ",
+            observed_at="2026-08-20",
+        )
+        source = PublicationSourceDescriptor(
+            id=" source ",
+            name=" Source name ",
+            organizationLevel=" department ",
+            allowedHosts=[" example.edu "],
+            blockedHosts=[" blocked.example.edu "],
+            seedUrls=[" https://example.edu/ "],
+            aliases=[" alias "],
+        )
+        batch = build_ingestion_batch(
+            [publication],
+            sources=[source],
+            client_run_id=" client-run ",
+            batch_id=" batch-id ",
+            observed_at="2026-08-20",
+            producer_version=" crawler/v1 ",
+        )
+
+        payload = batch.payload_dict()
+        self.assertEqual(payload["producerVersion"], "crawler/v1")
+        self.assertEqual(payload["clientRunId"], "client-run")
+        self.assertEqual(payload["batchId"], "batch-id")
+        self.assertEqual(payload["sources"][0]["name"], "Source name")
+        self.assertEqual(payload["sources"][0]["allowedHosts"], ["example.edu"])
+        item = payload["items"][0]
+        self.assertEqual(item["sourceId"], "source")
+        self.assertEqual(item["canonicalUrl"], "https://example.edu/news/whitespace")
+        self.assertEqual(item["title"], "T" * 999)
+        self.assertEqual(item["author"], "Author")
+        self.assertEqual(item["bodyText"], " body whitespace is significant ")
+        self.assertEqual(item["objects"][0]["contentType"], "image/png")
+        self.assertEqual(item["objects"][0]["altText"], "image description")
+
+        # Applying the same string transforms a second time must not alter
+        # the bytes whose SHA-256 is sent as the batch payload digest.
+        reparsed = IngestionBatch.model_validate(payload)
+        self.assertEqual(reparsed.payload_dict(), payload)
+        self.assertEqual(reparsed.payload_bytes(), batch.payload_bytes())
+        self.assertEqual(
+            publication.revision_hash,
+            revision_hash_for_article(
+                article,
+                publication_type="notice",
+                classifier_version=" classifier/v1 ",
+                objects=[manifest],
+            ),
+        )
+
+    def test_publication_builder_rejects_blank_title_after_trim(self) -> None:
+        article = ArticleDocument(
+            url="https://example.edu/news/blank",
+            source_id="source",
+            title=" \t\n ",
+            author="",
+            published_at="",
+            updated_at="",
+            category="",
+            summary="",
+            body_html="",
+            body_text="",
+            body_markdown="",
+            extraction_method="",
+            source_page_url="https://example.edu/news/blank",
+        )
+        with self.assertRaisesRegex(ValueError, "must not be blank"):
+            build_publication(article)
+
+        with self.assertRaises(ValidationError):
+            IngestionPublication.model_validate(
+                {
+                    "sourceId": "source",
+                    "canonicalUrl": "https://example.edu/news/blank",
+                    "revisionHash": "a" * 64,
+                    "observedAt": "2026-08-20",
+                    "publicationType": "notice",
+                    "title": " \t\n ",
+                }
+            )
+
+    def test_publication_removes_control_characters_without_losing_layout(self) -> None:
+        article = ArticleDocument(
+            url="http://scc.ustc.edu.cn/2021/1215/c398a539154/page.htm",
+            source_id="source",
+            title="Supercomputing title\x00",
+            author="Author\x01 entry",
+            published_at="2026-08-20",
+            updated_at="",
+            category="Category\x02",
+            summary="Summary\x03",
+            body_html="<p>Body\x00</p>",
+            body_text="Body\x00\n\twith layout",
+            body_markdown="Body\x00\n\twith layout",
+            extraction_method="extractor\x04",
+            source_page_url="http://scc.ustc.edu.cn/2021/1215/c398a539154/page.htm",
+            raw_metadata={"language": "zh\x05-CN", "authors": ["A\x06"]},
+        )
+
+        self.assertEqual(article.title, "Supercomputing title")
+        self.assertEqual(article.body_text, "Body\n\twith layout")
+        self.assertEqual(article.raw_metadata, {"language": "zh-CN", "authors": ["A"]})
+        publication = build_publication(article, publication_type="news")
+        payload = publication.model_dump(by_alias=True, mode="json", exclude_none=True)
+        self.assertNotIn("\x00", json.dumps(payload, ensure_ascii=False))
+        self.assertEqual(payload["bodyText"], "Body\n\twith layout")
+
+        with TemporaryDirectory() as temp:
+            objects = spool_article_objects(article, Path(temp) / "data")
+            body_bytes = [
+                Path(manifest.local_path).read_bytes()
+                for manifest in objects
+                if manifest.kind in {"body_html", "body_markdown"}
+            ]
+            self.assertTrue(body_bytes)
+            self.assertTrue(all(b"\x00" not in value for value in body_bytes))
+
     def test_ingestion_batch_rejects_more_than_one_hundred_items(self) -> None:
         payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
         payload["items"] = payload["items"] * 101
@@ -192,6 +340,38 @@ class OrmAndOutboxTests(unittest.TestCase):
             extraction_method="article",
             source_page_url="https://example.edu/news/1",
         )
+
+    def test_save_article_sanitizes_controls_before_db_and_bundle(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "crawler.sqlite", root / "data")
+            store.add_source(self._source())
+            try:
+                article = self._article()
+                article.url = "http://scc.ustc.edu.cn/2021/1215/c398a539154/page.htm"
+                article.source_page_url = article.url
+                article.title = "Supercomputing title\x00"
+                article.body_html = "<p>Body\x01</p>"
+                article.body_text = "Body\x00\n\twith layout"
+                article.body_markdown = "Body\x02\n\twith layout"
+                article.raw_metadata = {"language": "zh\x03-CN", "authors": ["A\x04"]}
+
+                store.save_article(article)
+                with store.database.session_factory() as session:
+                    row = session.get(Article, article.url)
+                    self.assertIsNotNone(row)
+                    self.assertEqual(row.title, "Supercomputing title")
+                    self.assertEqual(row.body_text, "Body\n\twith layout")
+                    self.assertEqual(row.body_html, "<p>Body</p>")
+                    self.assertNotIn("\x00", row.raw_json or "")
+
+                bundle = json.loads(
+                    article_bundle_path(store.data_dir, article.url).read_text(encoding="utf-8")
+                )
+                self.assertEqual(bundle["body_text"], "Body\n\twith layout")
+                self.assertEqual(bundle["raw_metadata"], {"language": "zh-CN", "authors": ["A"]})
+            finally:
+                store.close()
 
     def _insert_oversized_batch(
         self,

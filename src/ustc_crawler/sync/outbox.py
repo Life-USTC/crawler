@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from ..db.engine import Database
 from ..db.models import SyncBatch, SyncBatchItem, SyncOutbox, SyncRun
 from ..db.uow import transaction
-from ..models import ArticleDocument
+from ..models import ArticleDocument, sanitize_text
 from .models import (
     INGESTION_PROTOCOL_VERSION,
     MAX_PUBLICATION_BATCH_ITEMS,
@@ -150,7 +150,7 @@ def spool_article_objects(
         objects.append(
             spool_bytes(
                 data_dir,
-                article.body_html.encode("utf-8"),
+                sanitize_text(article.body_html).encode("utf-8"),
                 kind="body_html",
                 content_type="text/html",
             )
@@ -159,7 +159,7 @@ def spool_article_objects(
         objects.append(
             spool_bytes(
                 data_dir,
-                article.body_markdown.encode("utf-8"),
+                sanitize_text(article.body_markdown).encode("utf-8"),
                 kind="body_markdown",
                 content_type="text/markdown",
             )
