@@ -17,6 +17,7 @@ from ustc_crawler.sync.models import (
     PublicationObjectCompleteRequest,
     PublicationObjectPlanRequest,
     PublicationSourceDescriptor,
+    TombstonePublication,
     build_ingestion_batch,
     build_publication,
     normalize_publication_timestamp,
@@ -377,6 +378,59 @@ class OrmAndOutboxTests(unittest.TestCase):
                     self.assertEqual(session.scalar(select(func.count()).select_from(SyncBatch)), 1)
                     item = session.scalar(select(SyncBatchItem))
                     self.assertEqual(item.source_id, "source")
+            finally:
+                store.close()
+
+    def test_tombstone_outbox_event_builds_and_replays_without_objects(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "crawler.sqlite", root / "data")
+            try:
+                store.add_source(self._source())
+                source = store.source_descriptor("source")
+                tombstone = TombstonePublication(
+                    sourceId="source",
+                    canonicalUrl="https://example.edu/news/removed",
+                    revisionHash="b" * 64,
+                    observedAt="2026-08-20",
+                )
+                outbox = IngestionOutbox(store.database)
+                event_id = outbox.enqueue_publication(tombstone, source=source)
+
+                with store.database.session_factory() as session:
+                    row = session.get(SyncOutbox, event_id)
+                    assert row is not None
+                    self.assertEqual(
+                        json.loads(row.payload_json),
+                        {
+                            "canonicalUrl": "https://example.edu/news/removed",
+                            "observedAt": "2026-08-20T00:00:00+08:00",
+                            "revisionHash": "b" * 64,
+                            "sourceId": "source",
+                            "tombstone": True,
+                        },
+                    )
+                    self.assertEqual(json.loads(row.object_manifest_json), [])
+
+                batch = outbox.build_batch(
+                    run_id="run",
+                    batch_id="tombstone-batch",
+                    producer_version="test",
+                    observed_at="2026-08-20",
+                )
+                assert batch is not None
+                self.assertIsInstance(batch.items[0], TombstonePublication)
+                self.assertEqual(batch.payload_dict()["items"], [tombstone.model_dump(by_alias=True, mode="json")])
+
+                replayed = outbox.build_batch(
+                    run_id="different-run",
+                    batch_id="tombstone-batch",
+                    producer_version="different-producer",
+                    observed_at="2030-01-01",
+                )
+                assert replayed is not None
+                self.assertIsInstance(replayed.items[0], TombstonePublication)
+                self.assertEqual(replayed.payload_bytes(), batch.payload_bytes())
             finally:
                 store.close()
 
