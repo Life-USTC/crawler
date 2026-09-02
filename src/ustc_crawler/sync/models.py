@@ -38,6 +38,12 @@ def _strip_text(value: Any) -> Any:
 
     return sanitize_text(value).strip() if isinstance(value, str) else value
 
+
+def _sanitize_optional_text(value: Any) -> Any:
+    """Sanitize optional wire text without coercing or iterating over ``None``."""
+
+    return sanitize_text(value) if isinstance(value, str) else value
+
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 
 
@@ -77,7 +83,7 @@ ContentType = Annotated[
 TrimmedText = Annotated[str, BeforeValidator(_strip_text)]
 TrimmedOptionalText = Annotated[str | None, BeforeValidator(_strip_text)]
 SanitizedText = Annotated[str, BeforeValidator(sanitize_text)]
-SanitizedOptionalText = Annotated[str | None, BeforeValidator(sanitize_text)]
+SanitizedOptionalText = Annotated[str | None, BeforeValidator(_sanitize_optional_text)]
 ObjectKind = Literal["body_html", "body_markdown", "media", "asset", "raw_page"]
 
 
