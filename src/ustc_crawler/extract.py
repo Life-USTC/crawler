@@ -822,7 +822,14 @@ def extract_page(
     title_is_heading = bool(title)
     title = title or _first_meta(soup, "og:title", "twitter:title")
     if not title:
-        heading = soup.find("h1")
+        heading = next(
+            (
+                node
+                for node in soup.find_all("h1")
+                if _text(node.get_text(" ", strip=True))
+            ),
+            None,
+        )
         if not heading:
             h2s = [
                 node

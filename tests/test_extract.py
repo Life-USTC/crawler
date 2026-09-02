@@ -227,6 +227,18 @@ class ExtractTests(unittest.TestCase):
         assert page.article is not None
         self.assertEqual(page.article.title, "中国科大2026年本科招生培养亮点发布")
 
+    def test_empty_first_h1_does_not_hide_short_detail_heading(self) -> None:
+        html = """
+        <html><head><title>校名-中国科学技术大学党建与思政网</title></head><body>
+        <h1></h1><section><h1>校名</h1>
+        <div class='wp_articlecontent'><p>这是足够长的学校标识介绍正文，用于验证空标题节点不会隐藏后面的真实短标题。</p></div></section>
+        </body></html>
+        """
+        page = extract_page("https://djyszw.ustc.edu.cn/info/1070/6836.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "校名")
+
     def test_image_only_article_container_does_not_fall_back_to_page_shell(self) -> None:
         html = """
         <html><head><title>校园班车运行时刻表-中国科学技术大学</title></head>
