@@ -203,6 +203,17 @@ class ExtractTests(unittest.TestCase):
         assert page.article is not None
         self.assertEqual(page.article.title, "中国科学技术大学-美国天普大学联合培养项目通知")
 
+    def test_document_title_preserves_legitimate_hyphenated_title(self) -> None:
+        html = """
+        <html><head><title>中国科学技术大学-美国天普大学联合培养项目通知</title></head><body>
+        <div class='wp_articlecontent'><p>这是足够长的项目通知正文，文档标题中的连字符属于真实标题内容，不能被站名清理规则删除。</p></div>
+        </body></html>
+        """
+        page = extract_page("https://teach.ustc.edu.cn/notice/3132.html", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "中国科学技术大学-美国天普大学联合培养项目通知")
+
     def test_image_only_article_container_does_not_fall_back_to_page_shell(self) -> None:
         html = """
         <html><head><title>校园班车运行时刻表-中国科学技术大学</title></head>

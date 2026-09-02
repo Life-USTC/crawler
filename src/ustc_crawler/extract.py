@@ -568,8 +568,9 @@ def _title_from_document(
         document_title,
     )
     if compact_suffix and re.search(
-        r"大学|学院|研究院|研究所|实验室|新闻(?:中心|网)|信息网|专题网|"
-        r"共享中心|办公室|委员会|主题教育|学习教育|中国科学技术大学.*网",
+        r"(?:大学|学院|研究院|研究所|实验室|新闻中心|新闻网|信息网|专题网|"
+        r"共享中心|办公室|委员会|主题教育|学习教育|"
+        r"中国科学技术大学.{0,30}网|中国科大.{0,30}网)$",
         compact_suffix.group(2),
     ):
         prefix = _text(compact_suffix.group(1))
@@ -585,10 +586,6 @@ def _title_from_document(
                 value = _text(document_title.split(separator, 1)[0])
                 if value and not _is_generic_heading(value):
                     return value
-        if "中国科学技术大学" in document_title:
-            prefix = re.split(r"[-－—]", document_title, maxsplit=1)[0].strip()
-            if len(prefix) >= 4 and not _is_generic_heading(prefix):
-                return prefix
         if current and not _is_generic_heading(current):
             return current
         # When the document title matches a concrete heading candidate (e.g. an
