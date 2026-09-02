@@ -257,6 +257,32 @@ class ExtractTests(unittest.TestCase):
             ["https://www.ustc.edu.cn/__local/platform.jpg"],
         )
 
+    def test_compact_legacy_footer_nested_in_article_is_removed(self) -> None:
+        html = """
+        <html><head><title>关于学校统一短信平台开通的通知-中国科学技术大学</title></head><body>
+        <div class='wp_articlecontent'>
+          <p>为更好向各部门提供信息化支撑服务，学校开通统一校园短信平台，以下为平台开通和使用说明。</p>
+          <p><img src='/article-interface.jpg'>平台登录界面和短信发送界面。</p>
+          <div class='x1'>Copyright 中国科学技术大学 All Rights Reserved
+            <a>联系我们</a><a>皖ICP备05002528号</a>
+            <img src='/police-icon.jpg'><span>皖公网安备 34011102001530号</span>
+          </div>
+        </div></body></html>
+        """
+        page = extract_page(
+            "https://www.ustc.edu.cn/tzggcontent.jsp?urltype=news.NewsContentUrl&wbnewsid=2562",
+            html,
+        )
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertNotIn("Copyright", page.article.body_text)
+        self.assertNotIn("皖ICP备", page.article.body_text)
+        self.assertNotIn("皖公网安备", page.article.body_text)
+        self.assertEqual(
+            [image.url for image in page.article.images],
+            ["https://www.ustc.edu.cn/article-interface.jpg"],
+        )
+
     def test_short_authoritative_content_beats_larger_footer_wrapper(self) -> None:
         html = """
         <html><head><title>刘佳月</title></head><body>
