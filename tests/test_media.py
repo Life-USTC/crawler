@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from ustc_crawler.cli import build_parser
-from ustc_crawler.media import _image_jobs
+from ustc_crawler.media import _image_jobs, _job_priority
 from ustc_crawler.store import article_bundle_path
 
 
@@ -34,6 +34,21 @@ class _Store:
 
 
 class MediaJobTests(unittest.TestCase):
+    def test_unseen_media_is_prioritized_before_retries_and_local_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            local_path = Path(directory) / "image.jpg"
+            local_path.write_bytes(b"image")
+
+            self.assertEqual(_job_priority(None), 0)
+            self.assertEqual(
+                _job_priority({"status": "error", "local_path": ""}),
+                1,
+            )
+            self.assertEqual(
+                _job_priority({"status": "ok", "local_path": str(local_path)}),
+                2,
+            )
+
     def test_partial_article_media_is_completed_from_bundle(self) -> None:
         article_url = "https://example.ustc.edu.cn/info/1/2.htm"
         with tempfile.TemporaryDirectory() as directory:
