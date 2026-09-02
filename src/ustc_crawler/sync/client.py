@@ -612,18 +612,19 @@ class IngestionSyncClient:
         manifest: LocalObjectManifest,
         options: SyncOptions,
     ) -> None:
-        if item.status == "upload_required":
-            if item.upload_url is None:
-                raise SyncProtocolError("object_upload_url_missing")
-            body = self._object_bytes(manifest)
-            upload = self._request(
-                "PUT",
-                item.upload_url,
-                options=options,
-                headers=item.required_headers.model_dump(by_alias=True, mode="json"),
-                content=body,
-            )
-            self._require_success(upload)
+        if item.status == "already_present":
+            return
+        if item.upload_url is None:
+            raise SyncProtocolError("object_upload_url_missing")
+        body = self._object_bytes(manifest)
+        upload = self._request(
+            "PUT",
+            item.upload_url,
+            options=options,
+            headers=item.required_headers.model_dump(by_alias=True, mode="json"),
+            content=body,
+        )
+        self._require_success(upload)
         complete_request = PublicationObjectCompleteRequest(
             batchId=batch_id,
             kind=item.kind,

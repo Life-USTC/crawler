@@ -329,6 +329,40 @@ class SyncClientTests(unittest.TestCase):
                 sync.close()
                 store.close()
 
+    def test_sync_does_not_complete_objects_linked_during_planning(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/ingestion/publications/batches":
+                return httpx.Response(200, json=self._batch_response(request), request=request)
+            if request.url.path == "/api/ingestion/publications/objects/plan":
+                return httpx.Response(
+                    200,
+                    json=self._plan_response(request, upload=False),
+                    request=request,
+                )
+            raise AssertionError(f"unexpected sync request: {request.url}")
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            try:
+                store.enqueue_article_for_sync(self._article(2))
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=client,
+                )
+
+                summary = sync.sync()
+
+                self.assertEqual(summary["acked"], 1)
+                self.assertEqual(summary["failed"], 0)
+            finally:
+                sync.close()
+                store.close()
+
     def test_shared_media_deduplicates_plan_when_link_metadata_differs(self) -> None:
         plan_requests: list[dict] = []
 
@@ -898,9 +932,11 @@ class SyncClientTests(unittest.TestCase):
             if request.url.path == "/api/ingestion/publications/objects/plan":
                 return httpx.Response(
                     200,
-                    json=self._plan_response(request, upload=False),
+                    json=self._plan_response(request, upload=True),
                     request=request,
                 )
+            if request.url.path.startswith("/signed/"):
+                return httpx.Response(200, request=request)
             if request.url.path == "/api/ingestion/publications/objects/complete":
                 payload = json.loads(request.content)
                 if payload["kind"] == "body_markdown":
