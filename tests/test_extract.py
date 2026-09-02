@@ -186,6 +186,88 @@ class ExtractTests(unittest.TestCase):
             ["https://www.ustc.edu.cn/__local/platform.jpg"],
         )
 
+    def test_short_authoritative_content_beats_larger_footer_wrapper(self) -> None:
+        html = """
+        <html><head><title>刘佳月</title></head><body>
+        <div class='wp_articlecontent'>负责艺术教学中心和通识教育中心教务工作</div>
+        <footer><div class='articlecontent'><div class='content'>网站首页 中心简介 新闻动态
+        通知公告 师资队伍 教育教学 演出报告 艺术社团 地址：中国科学技术大学
+        Copyright © 2022 中国科学技术大学艺术教学中心 皖ICP备05002528号</div></div></footer>
+        </body></html>
+        """
+        page = extract_page("https://arts.ustc.edu.cn/2022/0617/c31165a559854/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.body_text, "负责艺术教学中心和通识教育中心教务工作")
+
+    def test_nested_footer_class_is_removed_from_article_container(self) -> None:
+        html = """
+        <html><head><title>研究生会活动报道</title></head><body>
+        <div class='wp_articlecontent'><p>这是足够长的活动报道正文，包含活动时间、地点、参与人员和后续安排。</p>
+        <p>第二段介绍活动结果和同学们的反馈意见，属于需要保留的真实正文。</p>
+        <div class='footer'><div class='footer_link'>友情链接 中国科学技术大学</div>
+        <div class='copyright'>Copyright © 2024 皖ICP备05003562号</div></div></div>
+        </body></html>
+        """
+        page = extract_page("https://gradunion.ustc.edu.cn/2026/0901/c1a2/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertIn("活动结果", page.article.body_text)
+        self.assertNotIn("友情链接", page.article.body_text)
+        self.assertNotIn("皖ICP备", page.article.body_text)
+
+    def test_detail_title_selector_wins_over_related_article_metadata(self) -> None:
+        html = """
+        <html><head><meta property='og:title' content='“我曾是那个坐在课堂里的少年。”'></head>
+        <body><h2 class='detail_title'>82少班友纪念基金</h2>
+        <div class='detail_content fr-view'><div class='wp_articlecontent'>
+        1982级校友集体捐资设立，用于支持学院发展。</div></div></body></html>
+        """
+        page = extract_page("https://sgy.ustc.edu.cn/2026/0713/c42697a747449/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "82少班友纪念基金")
+        self.assertEqual(page.article.body_text, "1982级校友集体捐资设立，用于支持学院发展。")
+
+    def test_footer_content_candidate_is_ignored(self) -> None:
+        html = """
+        <html><head><title>中国科学技术大学就业信息网</title></head><body>
+        <header><nav>校园招聘 专场招聘会 通知公告 岗位信息 实习信息</nav></header>
+        <article class='news-details'>发布时间： 阅读次数： 上一条： 下一条：</article>
+        <footer><div class='articlecontent'>办公地址：中国科学技术大学
+        Copyright © 2022 中国科学技术大学就业信息网 皖ICP备05002528号</div></footer>
+        </body></html>
+        """
+        page = extract_page(
+            "https://www.job.ustc.edu.cn/Announcement/info.aspx?itemid=8062", html
+        )
+        self.assertIsNone(page.article)
+
+    def test_body_fallback_keeps_article_with_substantive_paragraphs(self) -> None:
+        html = """
+        <html><head><title>旧版页面正文</title></head><body>
+        <p>这是没有专用正文类名的旧版文章第一段，包含足够完整的公开信息和事项说明。</p>
+        <p>这是第二段正文，继续说明办理流程、联系办法和后续安排，不能被误判为空页面。</p>
+        </body></html>
+        """
+        page = extract_page("https://legacy.ustc.edu.cn/info/1/2.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertIn("办理流程", page.article.body_text)
+
+    def test_embedded_pdf_is_article_content_and_a_discovered_link(self) -> None:
+        html = """
+        <html><head><title>研究生学术论坛获奖名单</title></head><body>
+        <div class='wl-con wl-detail'><h1 class='wl-detail-title'>研究生学术论坛获奖名单</h1>
+        <span>发布时间：2026-06-02</span><div pdfsrc='/files/winners.pdf'></div></div>
+        <footer>Copyright 中国科学技术大学 皖ICP备05002528号</footer></body></html>
+        """
+        page = extract_page("https://see.ustc.edu.cn/2026/0602/c1a2/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertNotIn("Copyright", page.article.body_text)
+        self.assertIn("https://see.ustc.edu.cn/files/winners.pdf", page.links)
+
     def test_blank_legacy_heading_uses_bold_lead_as_title(self) -> None:
         html = """
         <html><head><title>　</title></head><body>
