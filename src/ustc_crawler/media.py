@@ -17,9 +17,10 @@ class MediaOptions:
     concurrency: int = 16
     delay: float = 0.5
     max_image_bytes: int = 20 * 1024 * 1024
+    source_ids: tuple[str, ...] = ()
 
 
-def _image_jobs(store: Store) -> dict[str, list[ImageRef]]:
+def _image_jobs(store: Store, source_ids: set[str] | None = None) -> dict[str, list[ImageRef]]:
     """Build image jobs from structured relationships and article bundles.
 
     Bundles retain every extracted image even before it has been downloaded.
@@ -29,7 +30,7 @@ def _image_jobs(store: Store) -> dict[str, list[ImageRef]]:
     """
     jobs: dict[str, list[ImageRef]] = {}
     seen: set[tuple[str, str]] = set()
-    for row in store.article_media_records():
+    for row in store.article_media_records(source_ids):
         seen.add((row["image_url"], row["article_url"]))
         jobs.setdefault(row["image_url"], []).append(
             ImageRef(
@@ -41,7 +42,7 @@ def _image_jobs(store: Store) -> dict[str, list[ImageRef]]:
             )
         )
 
-    rows = store.article_records_for_media()
+    rows = store.article_records_for_media(source_ids)
     for row in rows:
         bundle = article_bundle_path(store.data_dir, str(row["url"]))
         if not bundle.exists():
@@ -72,7 +73,7 @@ def _image_jobs(store: Store) -> dict[str, list[ImageRef]]:
 async def _run(options: MediaOptions) -> dict[str, int]:
     store = Store(options.db_path, options.data_dir)
     fetcher = Fetcher(delay=options.delay)
-    jobs = _image_jobs(store)
+    jobs = _image_jobs(store, set(options.source_ids) or None)
     semaphore = asyncio.Semaphore(max(1, options.concurrency))
     fetched = 0
     skipped = 0

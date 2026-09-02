@@ -207,6 +207,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--delay", type=float, default=0.5, help="minimum seconds between requests to one host"
     )
     media.add_argument("--max-image-bytes", type=int, default=20 * 1024 * 1024)
+    media.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        help="limit media downloads to one or more source IDs (repeatable)",
+    )
 
     serve = sub.add_parser("serve", help="serve a read-only local crawl dashboard")
     serve.add_argument("--db", default="data/crawler.sqlite", type=_path)
@@ -449,6 +455,7 @@ def main(argv: list[str] | None = None) -> int:
                 concurrency=args.concurrency,
                 delay=args.delay,
                 max_image_bytes=args.max_image_bytes,
+                source_ids=tuple(args.source),
             )
         )
         print(json.dumps(result, ensure_ascii=False, indent=2))
