@@ -159,6 +159,27 @@ class IngestionProtocolTests(unittest.TestCase):
         self.assertEqual(len(publication.extraction_method or ""), 200)
         self.assertEqual(len(publication.objects), 100)
 
+    def test_publication_builder_accepts_an_image_only_article_body(self) -> None:
+        article = ArticleDocument(
+            url="https://www.ustc.edu.cn/info/1029/25470.htm",
+            source_id="university",
+            title="校园班车运行时刻表（2026年8月30日试运行）",
+            author="",
+            published_at="",
+            updated_at="",
+            category="",
+            summary="",
+            body_html="<div><img src='/timetable.jpg'></div>",
+            body_text="",
+            body_markdown="",
+            extraction_method="html",
+            source_page_url="https://www.ustc.edu.cn/info/1029/25470.htm",
+        )
+
+        publication = build_publication(article)
+
+        self.assertIsNone(publication.body_text)
+
     def test_publication_wire_normalization_is_idempotent_for_server_trim(self) -> None:
         title = "T" * 999 + " " + "truncated after the protocol bound"
         article = ArticleDocument(
