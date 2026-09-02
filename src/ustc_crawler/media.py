@@ -4,6 +4,7 @@ import asyncio
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from .http import Fetcher
 from .models import ImageRef
@@ -18,6 +19,20 @@ class MediaOptions:
     delay: float = 0.5
     max_image_bytes: int = 20 * 1024 * 1024
     source_ids: tuple[str, ...] = ()
+
+
+def _job_priority(existing: Any) -> int:
+    """Fetch unseen media before retries, then relink files already on disk."""
+
+    if existing is None:
+        return 0
+    if (
+        existing["status"] == "ok"
+        and existing["local_path"]
+        and Path(existing["local_path"]).is_file()
+    ):
+        return 2
+    return 1
 
 
 def _image_jobs(store: Store, source_ids: set[str] | None = None) -> dict[str, list[ImageRef]]:
@@ -79,15 +94,9 @@ async def _run(options: MediaOptions) -> dict[str, int]:
     skipped = 0
     errors = 0
 
-    async def one(url: str, refs: list[ImageRef]) -> None:
+    async def one(url: str, refs: list[ImageRef], existing: Any) -> None:
         nonlocal fetched, skipped, errors
-        existing = store.media_snapshot(url)
-        if (
-            existing
-            and existing["status"] == "ok"
-            and existing["local_path"]
-            and Path(existing["local_path"]).exists()
-        ):
+        if _job_priority(existing) == 2:
             for ref in refs:
                 store.link_media(ref, ref.article_url, existing["source_page_url"] or "")
             skipped += 1
@@ -119,7 +128,15 @@ async def _run(options: MediaOptions) -> dict[str, int]:
         errors += 1
 
     try:
-        await asyncio.gather(*(one(url, refs) for url, refs in jobs.items()))
+        planned = [
+            (_job_priority(existing), url, refs, existing)
+            for url, refs in jobs.items()
+            for existing in (store.media_snapshot(url),)
+        ]
+        planned.sort(key=lambda item: item[0])
+        await asyncio.gather(
+            *(one(url, refs, existing) for _, url, refs, existing in planned)
+        )
     finally:
         await fetcher.close()
         store.close()
