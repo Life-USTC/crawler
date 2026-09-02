@@ -198,17 +198,22 @@ class Store:
                 "access_mode": row.access_mode,
             }
 
-    def article_media_records(self) -> list[dict[str, Any]]:
+    def article_media_records(self, source_ids: set[str] | None = None) -> list[dict[str, Any]]:
         with self.database.session_factory() as session:
-            rows = session.execute(
+            query = (
                 select(
                     ArticleMedia.article_url,
                     ArticleMedia.image_url,
                     ArticleMedia.alt,
                     ArticleMedia.title,
                     ArticleMedia.caption,
-                ).order_by(ArticleMedia.article_url, ArticleMedia.image_url)
-            ).all()
+                )
+                .join(Article, Article.url == ArticleMedia.article_url)
+                .order_by(ArticleMedia.article_url, ArticleMedia.image_url)
+            )
+            if source_ids:
+                query = query.where(Article.source_id.in_(source_ids))
+            rows = session.execute(query).all()
             return [
                 {
                     "article_url": row.article_url,
@@ -220,11 +225,12 @@ class Store:
                 for row in rows
             ]
 
-    def article_records_for_media(self) -> list[dict[str, Any]]:
+    def article_records_for_media(self, source_ids: set[str] | None = None) -> list[dict[str, Any]]:
         with self.database.session_factory() as session:
-            rows = session.execute(
-                select(Article.url, Article.content_hash).order_by(Article.url)
-            ).all()
+            query = select(Article.url, Article.content_hash).order_by(Article.url)
+            if source_ids:
+                query = query.where(Article.source_id.in_(source_ids))
+            rows = session.execute(query).all()
             return [{"url": row.url, "content_hash": row.content_hash or ""} for row in rows]
 
     def media_snapshot(self, url: str) -> dict[str, Any] | None:

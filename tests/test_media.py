@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from ustc_crawler.cli import build_parser
 from ustc_crawler.media import _image_jobs
 from ustc_crawler.store import article_bundle_path
 
@@ -11,8 +12,10 @@ class _Store:
     def __init__(self, data_dir: Path, article_url: str) -> None:
         self.data_dir = data_dir
         self.article_url = article_url
+        self.requested_source_ids: list[set[str] | None] = []
 
-    def article_media_records(self) -> list[dict[str, str]]:
+    def article_media_records(self, source_ids: set[str] | None = None) -> list[dict[str, str]]:
+        self.requested_source_ids.append(source_ids)
         return [
             {
                 "article_url": self.article_url,
@@ -23,7 +26,10 @@ class _Store:
             }
         ]
 
-    def article_records_for_media(self) -> list[dict[str, str]]:
+    def article_records_for_media(
+        self, source_ids: set[str] | None = None
+    ) -> list[dict[str, str]]:
+        self.requested_source_ids.append(source_ids)
         return [{"url": self.article_url, "content_hash": "digest"}]
 
 
@@ -46,7 +52,8 @@ class MediaJobTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            jobs = _image_jobs(_Store(data_dir, article_url))  # type: ignore[arg-type]
+            store = _Store(data_dir, article_url)
+            jobs = _image_jobs(store, {"unit-example"})  # type: ignore[arg-type]
 
         self.assertEqual(set(jobs), {
             "https://example.ustc.edu.cn/first.jpg",
@@ -54,3 +61,10 @@ class MediaJobTests(unittest.TestCase):
         })
         self.assertEqual(len(jobs["https://example.ustc.edu.cn/first.jpg"]), 1)
         self.assertEqual(jobs["https://example.ustc.edu.cn/second.jpg"][0].article_url, article_url)
+        self.assertEqual(store.requested_source_ids, [{"unit-example"}, {"unit-example"}])
+
+    def test_cli_accepts_repeated_source_filters(self) -> None:
+        args = build_parser().parse_args(
+            ["download-images", "--source", "university", "--source", "unit-soe"]
+        )
+        self.assertEqual(args.source, ["university", "unit-soe"])
