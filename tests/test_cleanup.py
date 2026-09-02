@@ -1,3 +1,4 @@
+import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -347,6 +348,12 @@ class CleanupExcessImagesTests(unittest.TestCase):
         self.assertEqual(repaired["value_tier"], "not_indexed")
         self.assertTrue(repaired["raw_path"])
         self.assertIsNone(article)
+        tombstone = store_core(self.store).execute(
+            "SELECT payload_json FROM sync_outbox ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        self.assertIsNotNone(tombstone)
+        self.assertEqual(json.loads(tombstone["payload_json"])["canonicalUrl"], url)
+        self.assertTrue(json.loads(tombstone["payload_json"])["tombstone"])
 
 
 class CleanupCliTests(unittest.TestCase):

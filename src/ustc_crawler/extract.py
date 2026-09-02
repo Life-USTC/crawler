@@ -29,6 +29,16 @@ CONTENT_SELECTORS = (
     ".media-foucs",
     ".detail-content",
     ".wp_articlecontent",
+    "#wp_articlecontent",
+    "#SubPage",
+    "#con_main",
+    ".con_main",
+    ".wl-detail",
+    ".newsdetail_main",
+    ".newscont",
+    ".inner-news-detail",
+    ".wl-xueshu",
+    ".SubPage",
     ".news-detail-notes",
     ".articel-show-text",
     ".newscontent",
@@ -65,9 +75,19 @@ CONTENT_SELECTORS = (
 CONTENT_BOOSTS = {
     "#Content": 2200,
     "#divContent": 2200,
-    ".media-foucs": 100,
+    ".media-foucs": 1800,
     ".detail-content": 1800,
     ".wp_articlecontent": 1800,
+    "#wp_articlecontent": 1800,
+    "#SubPage": 1500,
+    "#con_main": 1600,
+    ".con_main": 1600,
+    ".wl-detail": 1800,
+    ".newsdetail_main": 1800,
+    ".newscont": 1800,
+    ".inner-news-detail": 1800,
+    ".wl-xueshu": 1900,
+    ".SubPage": 1500,
     ".v_news_content": 2200,
     "#vsb_content": 2200,
     ".article-content": 850,
@@ -612,6 +632,20 @@ def _is_hidden(node: Tag) -> bool:
     return "tz-selector" in marker or "timezone-selector" in marker
 
 
+def _is_shell_container(node: Tag) -> bool:
+    if node.name in {"header", "footer", "nav", "aside"}:
+        return True
+    markers = [str(node.get("id", "")), *(str(value) for value in node.get("class", []))]
+    return any(
+        re.search(
+            r"(?:^|[-_])(?:foot(?:er)?|bottom|copyright|friendlinks?|friendlylinks?)(?:$|[-_])",
+            marker,
+            re.IGNORECASE,
+        )
+        for marker in markers
+    )
+
+
 def _content_root(soup: BeautifulSoup) -> Tag:
     candidates: list[tuple[int, Tag]] = []
     for selector in CONTENT_SELECTORS:
@@ -624,13 +658,16 @@ def _content_root(soup: BeautifulSoup) -> Tag:
                 _is_hidden(parent) for parent in node.parents
             ):
                 continue
+            if _is_shell_container(node) or any(
+                _is_shell_container(parent) for parent in node.parents if isinstance(parent, Tag)
+            ):
+                continue
             clone_text = node.get_text(" ", strip=True)
-            # Timetables, posters, and similar notices can legitimately be an
-            # image with no accompanying text.  A named, strongly weighted
-            # article-body container is still authoritative in that case; if
-            # it is discarded, the fallback to <body> imports navigation,
-            # footer text, and decorative site images as article content.
-            image_only_content = CONTENT_BOOSTS.get(selector, 0) >= 1500 and any(
+            # Timetables, profiles, and similar pages can legitimately have a
+            # short or image-only body. A strongly named article container is
+            # still authoritative; discarding it makes the <body> fallback
+            # import navigation, footer text, and decorative site images.
+            has_image = any(
                 image.get("data-src")
                 or image.get("data-original")
                 or image.get("data-lazy-src")
@@ -638,7 +675,15 @@ def _content_root(soup: BeautifulSoup) -> Tag:
                 or image.get("srcset")
                 for image in node.find_all("img")
             )
-            if len(clone_text) < 40 and not image_only_content:
+            authoritative_content = (
+                CONTENT_BOOSTS.get(selector, 0) >= 1500
+                or node.name == "article"
+                or (selector in CONTENT_BOOSTS and has_image)
+            ) and (
+                len(clone_text) >= 2
+                or has_image
+            )
+            if len(clone_text) < 40 and not authoritative_content:
                 continue
             links = len(node.select("a"))
             score = len(clone_text) - min(links * 20, len(clone_text) // 2)
@@ -675,6 +720,9 @@ def _clean_root(root: Tag) -> None:
         node.decompose()
     for node in root.find_all(["header", "footer", "nav", "aside"]):
         node.decompose()
+    for node in reversed(root.find_all(True)):
+        if _is_shell_container(node):
+            node.decompose()
 
 
 def _image_refs(root: Tag, page_url: str) -> list[ImageRef]:
@@ -728,7 +776,8 @@ def extract_page(
         ".arti_title, .zkd-title, .articel-show-title, #articel-show-title .n-f-10, "
         ".c-f-30.c-lh-36.n-text-center.n-f-bold, "
         ".News-detail-title, "
-        ".article-title, .post-title, .entry-title, .page_title, #Title, "
+        ".article-title, .post-title, .entry-title, .page_title, .detail_title, "
+        ".newstitle, .wl-detail-title, .content_title, #Title, "
         ".person-title, .titles, .page-header h1, .bt01"
     )
     title = _text(detail_heading.get_text(" ", strip=True)) if detail_heading else ""
@@ -828,6 +877,7 @@ def extract_page(
         or parse_date(_label_value(date_text, r"更新时间|修改时间"))
     )
     root = _content_root(soup)
+    root_is_fallback = root is soup.body or root is soup
     category = (
         _text(article_ld.get("articleSection"))
         or _first_meta(soup, "article:section", "category")
@@ -850,6 +900,9 @@ def extract_page(
                 break
     body_html = str(root)
     body_text = re.sub(r"\n{3,}", "\n\n", root.get_text("\n", strip=True)).strip()
+    fallback_has_substantive_paragraph = any(
+        len(_text(node.get_text(" ", strip=True))) >= 20 for node in root.find_all("p")
+    )
     author = (
         _clean_signature_value(_author(article_ld.get("author")))
         or _clean_signature_value(_first_meta(soup, "author", "article:author"))
@@ -897,17 +950,39 @@ def extract_page(
                     break
             if hint:
                 link_dates[target] = hint
+    embedded_documents: list[str] = []
+    for node in soup.select("[pdfsrc], [swsrc]"):
+        for attribute in ("pdfsrc", "swsrc"):
+            target = normalize_url(str(node.get(attribute) or ""), url)
+            if not target:
+                continue
+            if target not in seen_links:
+                seen_links.add(target)
+                links.append(target)
+            if target not in embedded_documents:
+                embedded_documents.append(target)
     attachment_shell = "attachment_id=" in urlsplit(url).query.lower() or "/attachment/" in urlsplit(url).path.lower()
     indico_detail = bool(re.search(r"/event/\d+/(?:page|contributions)/", url, re.I))
     is_article = bool(article_ld or explicit_published or detail_url or indico_detail) and not attachment_shell
     if not is_article:
         article_tags = soup.find_all("article")
         is_article = len(article_tags) == 1 and len(body_text) > 180 and not attachment_shell
+    metadata_only = body_text.replace(title, "", 1) if title else body_text
+    metadata_only = re.sub(
+        r"(?:发布时间|阅读次数|浏览次数|上一篇|下一篇|上一条|下一条|来源|作者)\s*[:：]?",
+        "",
+        metadata_only,
+    )
+    metadata_only = re.sub(r"[\s\d|:/：.\-\ue000-\uf8ff]+", "", metadata_only)
+    if is_article and not images and not embedded_documents and body_text and not metadata_only:
+        is_article = False
+    if is_article and root_is_fallback and not fallback_has_substantive_paragraph:
+        is_article = False
     # Some legacy CMS detail URLs return a titled but completely empty HTML
     # shell (the actual page is gone or rendered only by an unavailable
     # client-side request). Keep the raw page and its links, but do not emit a
     # misleading article record with no text or images.
-    if is_article and not body_text and not images:
+    if is_article and not body_text and not images and not embedded_documents:
         is_article = False
     if is_article and not published:
         # Do not mistake an event/deadline date in a title or the first
