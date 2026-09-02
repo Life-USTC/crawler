@@ -160,6 +160,32 @@ class ExtractTests(unittest.TestCase):
             ["https://www.ustc.edu.cn/__local/timetable.jpg"],
         )
 
+    def test_legacy_content_in_row_after_empty_placeholder(self) -> None:
+        html = """
+        <html><head><title>关于学校统一短信平台开通的通知-中国科学技术大学</title></head>
+        <body><nav>首页 | 科大新闻 | 学校概况 | 院系介绍</nav>
+        <table><tr><td class='title'>关于学校统一短信平台开通的通知</td></tr>
+        <tr><td class='content'><div id='vsb_content'><div class='v_news_content'>
+        <div class='wp_articlecontent'></div></div></div></td></tr>
+        <tr><td><div><p>学校开通统一校园短信平台，为各部门提供信息化支撑服务，并提供发送和管理界面。</p>
+        <p>各单位可以联系网络信息中心开通服务，并按要求管理本单位的通讯录和短信配额。</p>
+        <img src='/__local/platform.jpg'></div></td></tr></table>
+        <footer>Copyright 中国科学技术大学 皖ICP备05002528号</footer></body></html>
+        """
+        page = extract_page(
+            "https://www.ustc.edu.cn/tzggcontent.jsp?urltype=news.NewsContentUrl&wbnewsid=2562",
+            html,
+        )
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertIn("学校开通统一校园短信平台", page.article.body_text)
+        self.assertNotIn("科大新闻", page.article.body_text)
+        self.assertNotIn("Copyright", page.article.body_text)
+        self.assertEqual(
+            [image.url for image in page.article.images],
+            ["https://www.ustc.edu.cn/__local/platform.jpg"],
+        )
+
     def test_blank_legacy_heading_uses_bold_lead_as_title(self) -> None:
         html = """
         <html><head><title>　</title></head><body>

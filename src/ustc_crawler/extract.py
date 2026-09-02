@@ -648,6 +648,20 @@ def _content_root(soup: BeautifulSoup) -> Tag:
             if node.name == "main":
                 score += 100
             candidates.append((score, node))
+    # A malformed legacy VisualSiteBuilder template closes its nominal
+    # ``td.content`` before emitting the real article in the following table
+    # row.  Recognize that exact empty-placeholder shape so the generic body
+    # fallback does not absorb the site's navigation and footer.
+    for placeholder in soup.select("td.content"):
+        if placeholder.get_text(" ", strip=True) or not placeholder.select_one(
+            "#vsb_content, .v_news_content, .wp_articlecontent"
+        ):
+            continue
+        row = placeholder.find_parent("tr")
+        sibling = row.find_next_sibling("tr") if row else None
+        content_cell = sibling.find("td") if sibling else None
+        if content_cell and len(content_cell.get_text(" ", strip=True)) >= 40:
+            candidates.append((2100 + len(content_cell.get_text(" ", strip=True)), content_cell))
     if candidates:
         return max(candidates, key=lambda pair: pair[0])[1]
     return soup.body or soup
