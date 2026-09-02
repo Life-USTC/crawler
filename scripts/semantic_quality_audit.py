@@ -29,7 +29,7 @@ def _archive_path(data_dir: Path, value: str) -> Path:
 
 def _shell_contaminated(body: str) -> bool:
     tail = body[-1000:]
-    copyright_footer = "皖ICP备" in tail or (
+    copyright_footer = "皖ICP备" in tail or "皖公网安备" in tail or (
         "Copyright 中国科学技术大学" in tail and "All Rights Reserved" in tail
     )
     navigation = all(marker in body for marker in ("科大新闻", "学校概况", "院系介绍"))

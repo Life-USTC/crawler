@@ -737,6 +737,20 @@ def _clean_root(root: Tag) -> None:
         node.decompose()
     for node in root.find_all(["header", "footer", "nav", "aside"]):
         node.decompose()
+    # Broken legacy table markup can make BeautifulSoup nest the site's footer
+    # inside an otherwise authoritative article container. Remove a compact
+    # block carrying the filing/copyright signature before extracting text and
+    # images; class names on these old footers are not consistent.
+    for node in reversed(root.find_all(["div", "td", "section"])):
+        value = _text(node.get_text(" ", strip=True))
+        if len(value) <= 600 and (
+            "皖ICP备" in value
+            or (
+                "Copyright 中国科学技术大学" in value
+                and "All Rights Reserved" in value
+            )
+        ):
+            node.decompose()
     for node in reversed(root.find_all(True)):
         if _is_shell_container(node):
             node.decompose()
