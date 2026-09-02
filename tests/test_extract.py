@@ -238,6 +238,38 @@ class ExtractTests(unittest.TestCase):
         assert page.article is not None
         self.assertEqual(page.article.title, "中国科大2026年本科招生培养亮点发布")
 
+    def test_document_title_wins_over_rich_text_h2_paragraph(self) -> None:
+        html = """
+        <html><head><title>劳动淬炼成长，实践书写青春——2026年春季学期“美食与生活”劳动实践课结课</title></head>
+        <body><div class='biaoti_top'><h3>劳动淬炼成长，实践书写青春——2026年春季学期“美食与生活”劳动实践课结课</h3></div>
+        <div class='wp_articlecontent'><p>近日，劳动实践课完成春季学期全部教学任务，课程覆盖五个校区。</p>
+        <h2><p>全域覆盖，五校区联动共育。本学期课程继续打破空间限制与校区隔阂，这一整段正文不能成为文章标题。</p></h2></div>
+        </body></html>
+        """
+        page = extract_page(
+            "https://zsb.ustc.edu.cn/2026/0710/c35498a747019/page.htm",
+            html,
+        )
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(
+            page.article.title,
+            "劳动淬炼成长，实践书写青春——2026年春季学期“美食与生活”劳动实践课结课",
+        )
+
+    def test_concrete_document_title_wins_over_unscoped_body_heading(self) -> None:
+        html = """
+        <html><head><title>中国科大在等离子体湍流研究领域取得突破</title></head>
+        <body><div class='wp_articlecontent'><h2><p>日前，研究团队在磁约束聚变等离子体湍流输运研究中取得突破性进展，这是一整段正文。</p></h2></div></body></html>
+        """
+        page = extract_page(
+            "https://physics.ustc.edu.cn/2024/0223/c3586a630461/page.htm",
+            html,
+        )
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "中国科大在等离子体湍流研究领域取得突破")
+
     def test_empty_first_h1_does_not_hide_short_detail_heading(self) -> None:
         html = """
         <html><head><title>校名-中国科学技术大学党建与思政网</title></head><body>
@@ -423,6 +455,19 @@ class ExtractTests(unittest.TestCase):
         self.assertIsNotNone(page.article)
         assert page.article is not None
         self.assertTrue(page.article.title.startswith("The Dushu Forum"))
+
+    def test_indico_event_keeps_event_heading_without_document_metadata(self) -> None:
+        html = """
+        <html><head><title>Quark model with hidden local symmetry (5 January 2024) · Indico</title>
+        <meta property='og:title' content='Quark model with hidden local symmetry'></head>
+        <body><main><h2>Quark model with hidden local symmetry</h2>
+        <article><h2>by Speaker Name</h2><p>This is a sufficiently long public event description for extraction, including the complete programme, venue, schedule, and attendance details for interested participants.</p></article>
+        </main></body></html>
+        """
+        page = extract_page("https://indico.pnp.ustc.edu.cn/event/1311/", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "Quark model with hidden local symmetry")
 
     def test_indico_subpage_ignores_hidden_timezone_widget(self) -> None:
         html = """
