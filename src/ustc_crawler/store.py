@@ -200,8 +200,14 @@ class Store:
 
     def article_media_records(self) -> list[dict[str, Any]]:
         with self.database.session_factory() as session:
-            rows = session.scalars(
-                select(ArticleMedia).order_by(ArticleMedia.article_url, ArticleMedia.image_url)
+            rows = session.execute(
+                select(
+                    ArticleMedia.article_url,
+                    ArticleMedia.image_url,
+                    ArticleMedia.alt,
+                    ArticleMedia.title,
+                    ArticleMedia.caption,
+                ).order_by(ArticleMedia.article_url, ArticleMedia.image_url)
             ).all()
             return [
                 {
@@ -214,13 +220,10 @@ class Store:
                 for row in rows
             ]
 
-    def articles_without_media(self) -> list[dict[str, Any]]:
+    def article_records_for_media(self) -> list[dict[str, Any]]:
         with self.database.session_factory() as session:
-            rows = session.scalars(
-                select(Article)
-                .outerjoin(ArticleMedia, ArticleMedia.article_url == Article.url)
-                .where(ArticleMedia.article_url.is_(None))
-                .order_by(Article.url)
+            rows = session.execute(
+                select(Article.url, Article.content_hash).order_by(Article.url)
             ).all()
             return [{"url": row.url, "content_hash": row.content_hash or ""} for row in rows]
 

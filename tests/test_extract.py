@@ -132,6 +132,34 @@ class ExtractTests(unittest.TestCase):
         assert page.article is not None
         self.assertEqual(page.article.title, "我校与合作伙伴举行线上会谈")
 
+    def test_university_meta_title_drops_site_suffix(self) -> None:
+        html = """
+        <html><head><title>校园班车运行时刻表（2026年8月30日试运行）-中国科学技术大学</title>
+        <meta property='og:title' content='校园班车运行时刻表（2026年8月30日试运行）-中国科学技术大学'></head>
+        <body><div class='v_news_content'><p>这是足够长的班车时刻表正文内容，用于验证标题中的站点名称不会进入文章标题。</p></div></body></html>
+        """
+        page = extract_page("https://www.ustc.edu.cn/info/1029/25470.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "校园班车运行时刻表（2026年8月30日试运行）")
+
+    def test_image_only_article_container_does_not_fall_back_to_page_shell(self) -> None:
+        html = """
+        <html><head><title>校园班车运行时刻表-中国科学技术大学</title></head>
+        <body><nav>首页 | 科大新闻 | 学校概况 | 院系介绍</nav>
+        <div class='v_news_content'><p><img src='/__local/timetable.jpg'></p></div>
+        <footer>Copyright 中国科学技术大学 皖ICP备05002528号
+        <img src='/template/line.jpg'></footer></body></html>
+        """
+        page = extract_page("https://www.ustc.edu.cn/info/1029/25470.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.body_text, "")
+        self.assertEqual(
+            [image.url for image in page.article.images],
+            ["https://www.ustc.edu.cn/__local/timetable.jpg"],
+        )
+
     def test_blank_legacy_heading_uses_bold_lead_as_title(self) -> None:
         html = """
         <html><head><title>　</title></head><body>

@@ -22,16 +22,15 @@ class MediaOptions:
 def _image_jobs(store: Store) -> dict[str, list[ImageRef]]:
     """Build image jobs from structured relationships and article bundles.
 
-    The crawler already records every extracted image in ``article_media``.
-    Re-parsing every raw page here made a media-only pass needlessly scan
-    hundreds of thousands of HTML files, so only articles without a stored
-    relationship are inspected as a fallback.  This keeps retries fast while
-    retaining the exact per-article metadata captured during crawling.
+    Bundles retain every extracted image even before it has been downloaded.
+    Read them for every article so a partially downloaded article can acquire
+    its remaining media; restricting the fallback to articles with zero
+    relationships permanently skipped those missing images.
     """
     jobs: dict[str, list[ImageRef]] = {}
-    covered: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     for row in store.article_media_records():
-        covered.add(row["article_url"])
+        seen.add((row["image_url"], row["article_url"]))
         jobs.setdefault(row["image_url"], []).append(
             ImageRef(
                 url=row["image_url"],
@@ -42,7 +41,7 @@ def _image_jobs(store: Store) -> dict[str, list[ImageRef]]:
             )
         )
 
-    rows = store.articles_without_media()
+    rows = store.article_records_for_media()
     for row in rows:
         bundle = article_bundle_path(store.data_dir, str(row["url"]))
         if not bundle.exists():
@@ -62,6 +61,10 @@ def _image_jobs(store: Store) -> dict[str, list[ImageRef]]:
                 caption=str(value.get("caption") or ""),
                 article_url=row["url"],
             )
+            key = (image.url, image.article_url)
+            if key in seen:
+                continue
+            seen.add(key)
             jobs.setdefault(image.url, []).append(image)
     return jobs
 
