@@ -507,14 +507,10 @@ class IngestionSyncClient:
             group = manifest_groups.setdefault(key, [])
             if group:
                 previous = group[0]
-                # sortOrder and altText describe the link from a publication
-                # to an object, so they may differ when several publications
-                # share one content-addressed object.  Size and content type
-                # are immutable object properties and must agree.
-                if (
-                    previous.size != manifest.size
-                    or previous.content_type != manifest.content_type
-                ):
+                # Link metadata and MIME aliases may differ between pages.
+                # The digest and size identify the immutable bytes; the
+                # server's first stored MIME remains authoritative.
+                if previous.size != manifest.size:
                     raise SyncProtocolError("duplicate_object_manifest")
             group.append(manifest)
         manifests = {key: group[0] for key, group in manifest_groups.items()}

@@ -363,7 +363,9 @@ class SyncClientTests(unittest.TestCase):
                 sync.close()
                 store.close()
 
-    def test_shared_media_deduplicates_plan_when_link_metadata_differs(self) -> None:
+    def test_shared_media_deduplicates_plan_when_link_metadata_and_mime_differ(
+        self,
+    ) -> None:
         plan_requests: list[dict] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -406,7 +408,7 @@ class SyncClientTests(unittest.TestCase):
                     root / "data",
                     b"shared media bytes",
                     kind="media",
-                    content_type="image/png",
+                    content_type="image/jpeg",
                     sort_order=1,
                     alt_text="second article",
                 )
