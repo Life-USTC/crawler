@@ -39,8 +39,13 @@ class Fetcher:
         max_body_bytes: int = 30 * 1024 * 1024,
         user_agent: str = USER_AGENT,
         ignore_robots: bool = False,
+        max_connections: int = 64,
     ) -> None:
-        limits = httpx.Limits(max_connections=64, max_keepalive_connections=32)
+        connection_limit = max(1, max_connections)
+        limits = httpx.Limits(
+            max_connections=connection_limit,
+            max_keepalive_connections=min(connection_limit, 64),
+        )
         self.client = httpx.AsyncClient(
             follow_redirects=True,
             timeout=httpx.Timeout(timeout, connect=min(timeout, 15.0)),
