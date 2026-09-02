@@ -520,7 +520,13 @@ def _trailing_publication_signature(body_text: str) -> str:
     return ""
 
 
-def _title_from_document(soup: BeautifulSoup, current: str, url: str = "") -> str:
+def _title_from_document(
+    soup: BeautifulSoup,
+    current: str,
+    url: str = "",
+    *,
+    current_is_heading: bool = False,
+) -> str:
     """Prefer a detail heading over a generic section heading.
 
     Several USTC WordPress templates put the section name in the first h1 and
@@ -544,7 +550,7 @@ def _title_from_document(soup: BeautifulSoup, current: str, url: str = "") -> st
     # ``文章标题-中国科学技术大学``.  That metadata is otherwise concrete, so it
     # used to return before the document-title cleanup below and leak the site
     # name into every saved article title.
-    site_suffix = re.compile(r"\s*[-－|｜]\s*中国科学技术大学\s*$")
+    site_suffix = re.compile(r"\s*[-－|｜]+\s*中国科学技术大学\s*$")
     current = site_suffix.sub("", current).strip()
     document_title = site_suffix.sub("", document_title).strip()
     if re.search(r"/event/\d+/(?:page|contributions)/", url, re.I):
@@ -553,10 +559,22 @@ def _title_from_document(soup: BeautifulSoup, current: str, url: str = "") -> st
             detail = _text(indico_title.rsplit(":", 1)[1])
             if detail and detail.casefold() != "overview":
                 return detail
-    if current and not _is_generic_heading(current):
+    if current_is_heading and current and not _is_generic_heading(current):
         # A detail heading is already more precise than a document title,
         # which often appends the institution name after a colon or dash.
         return current
+    compact_suffix = re.fullmatch(
+        r"(.{4,})\s*[-－|｜]+\s*(.{2,60})",
+        document_title,
+    )
+    if compact_suffix and re.search(
+        r"大学|学院|研究院|研究所|实验室|新闻(?:中心|网)|信息网|专题网|"
+        r"共享中心|办公室|委员会|主题教育|学习教育|中国科学技术大学.*网",
+        compact_suffix.group(2),
+    ):
+        prefix = _text(compact_suffix.group(1))
+        if prefix and not _is_generic_heading(prefix):
+            return prefix
     for value in reversed(candidates):
         if not _is_generic_heading(value) and len(value) >= 4:
             return value
@@ -571,6 +589,8 @@ def _title_from_document(soup: BeautifulSoup, current: str, url: str = "") -> st
             prefix = re.split(r"[-－—]", document_title, maxsplit=1)[0].strip()
             if len(prefix) >= 4 and not _is_generic_heading(prefix):
                 return prefix
+        if current and not _is_generic_heading(current):
+            return current
         # When the document title matches a concrete heading candidate (e.g. an
         # <h3 class="title"> inside the article), it is the real post title even
         # if it contains site/department words such as ``学院``.
@@ -781,6 +801,7 @@ def extract_page(
         ".person-title, .titles, .page-header h1, .bt01"
     )
     title = _text(detail_heading.get_text(" ", strip=True)) if detail_heading else ""
+    title_is_heading = bool(title)
     title = title or _first_meta(soup, "og:title", "twitter:title")
     if not title:
         heading = soup.find("h1")
@@ -792,9 +813,10 @@ def extract_page(
             ]
             heading = max(h2s, key=lambda node: len(node.get_text(" ", strip=True)), default=None)
         title = _text(heading.get_text(" ", strip=True) if heading else "")
+        title_is_heading = bool(title)
     if not title and soup.title:
         title = _text(soup.title.get_text(" ", strip=True))
-    title = _title_from_document(soup, title, url)
+    title = _title_from_document(soup, title, url, current_is_heading=title_is_heading)
     metadata = _jsonld_values(soup)
     article_ld = next(
         (
