@@ -214,6 +214,19 @@ class ExtractTests(unittest.TestCase):
         assert page.article is not None
         self.assertEqual(page.article.title, "中国科学技术大学-美国天普大学联合培养项目通知")
 
+    def test_detail_heading_drops_labeled_publication_date(self) -> None:
+        html = """
+        <html><head><title>中国科大迎新管理</title></head><body>
+        <div class='newstitle'><h2>中国科大2026年本科招生培养亮点发布</h2>
+        <p>发表日期：2026年06月15日</p></div>
+        <div class='newscont'><p>这是足够长的招生新闻正文，用于验证标题容器中的发表日期不会粘到文章标题里。</p></div>
+        </body></html>
+        """
+        page = extract_page("https://welcome.ustc.edu.cn/web/news/182", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "中国科大2026年本科招生培养亮点发布")
+
     def test_image_only_article_container_does_not_fall_back_to_page_shell(self) -> None:
         html = """
         <html><head><title>校园班车运行时刻表-中国科学技术大学</title></head>

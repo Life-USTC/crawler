@@ -553,6 +553,13 @@ def _title_from_document(
     site_suffix = re.compile(r"\s*[-－|｜]+\s*中国科学技术大学\s*$")
     current = site_suffix.sub("", current).strip()
     document_title = site_suffix.sub("", document_title).strip()
+    labeled_date_suffix = re.compile(
+        r"\s*(?:发表日期|发布日期|发布时间|更新日期|更新时间)[：:]?\s*"
+        r"20\d{2}[年./-]\d{1,2}[月./-]\d{1,2}日?"
+        r"(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?\s*$"
+    )
+    current = labeled_date_suffix.sub("", current).strip()
+    document_title = labeled_date_suffix.sub("", document_title).strip()
     if re.search(r"/event/\d+/(?:page|contributions)/", url, re.I):
         indico_title = document_title.split("·", 1)[0].strip()
         if ":" in indico_title:
