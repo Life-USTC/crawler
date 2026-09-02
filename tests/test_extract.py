@@ -143,6 +143,66 @@ class ExtractTests(unittest.TestCase):
         assert page.article is not None
         self.assertEqual(page.article.title, "校园班车运行时刻表（2026年8月30日试运行）")
 
+    def test_document_title_drops_compact_department_site_suffix(self) -> None:
+        html = """
+        <html><head><title>党委宣传部党支部集体观看高校党组织示范微党课-党委宣传部 新闻中心</title></head>
+        <body><div class='wp_articlecontent'><p>这是足够长的新闻正文，用于验证无空格连字符后的单位站名不会进入文章标题。</p></div></body></html>
+        """
+        page = extract_page("https://xcb.ustc.edu.cn/info/1003/27066.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "党委宣传部党支部集体观看高校党组织示范微党课")
+
+    def test_article_heading_wins_over_document_theme_suffix(self) -> None:
+        html = """
+        <html><head><title>新闻正文标题-学习贯彻主题教育</title></head><body>
+        <main><h3>中央精神</h3><h3>新闻正文标题</h3>
+        <div class='wp_articlecontent'><p>这是足够长的正文内容，用来验证专题网站的栏目名称不会进入文章标题。</p></div></main>
+        </body></html>
+        """
+        page = extract_page("https://www.ustc.edu.cn/theme/info/1002/1726.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "新闻正文标题")
+
+    def test_theme_suffix_does_not_replace_title_with_navigation_heading(self) -> None:
+        html = """
+        <html><head><title>党建评：要谦虚，不要凌空蹈虚-树立和践行正确政绩观学习教育</title></head><body>
+        <main><h3>党建评</h3>
+        <div class='wp_articlecontent'><p>这是足够长的新闻正文，用来确认页面内的导航标题不会覆盖完整的文档标题。</p></div></main>
+        </body></html>
+        """
+        page = extract_page("https://news.ustc.edu.cn/zqzjg/info/1002/1407.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "党建评：要谦虚，不要凌空蹈虚")
+
+    def test_theme_suffix_preserves_separators_inside_article_title(self) -> None:
+        html = """
+        <html><head><title>中国科大实现基于无腔冷原子系综的长距离原子-光子纠缠分发-学习贯彻主题教育</title></head><body>
+        <div class='wp_articlecontent'><p>这是足够长的新闻正文，用来确认真实标题内部的连字符不会被站点后缀规则截断。</p></div>
+        </body></html>
+        """
+        page = extract_page("https://www.ustc.edu.cn/theme/info/1005/2129.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(
+            page.article.title,
+            "中国科大实现基于无腔冷原子系综的长距离原子-光子纠缠分发",
+        )
+
+    def test_detail_heading_preserves_legitimate_hyphenated_title(self) -> None:
+        html = """
+        <html><head><title>站点标题</title></head><body>
+        <h1 class='article-title'>中国科学技术大学-美国天普大学联合培养项目通知</h1>
+        <div class='wp_articlecontent'><p>这是足够长的项目通知正文，连字符属于真实标题内容，不能被站名清理规则删除。</p></div>
+        </body></html>
+        """
+        page = extract_page("https://teach.ustc.edu.cn/notice/3132.html", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "中国科学技术大学-美国天普大学联合培养项目通知")
+
     def test_image_only_article_container_does_not_fall_back_to_page_shell(self) -> None:
         html = """
         <html><head><title>校园班车运行时刻表-中国科学技术大学</title></head>
