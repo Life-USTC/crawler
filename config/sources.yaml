@@ -11,10 +11,6 @@ sources:
     organization_level: university
     seed_urls: [https://www.ustc.edu.cn/]
     allowed_hosts: [www.ustc.edu.cn]
-    # Theme/aggregation pages on the university homepage (e.g. the education
-    # campaign subsite) embed many inline CMS images. Keep the article but cap
-    # the number of images downloaded per page.
-    max_images_per_page: 5
   - id: library
     name: 中国科大图书馆
     organization_level: service
