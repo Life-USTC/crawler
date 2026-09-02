@@ -520,6 +520,13 @@ def _title_from_document(soup: BeautifulSoup, current: str, url: str = "") -> st
         if value and value not in candidates:
             candidates.append(value)
     document_title = _text(soup.title.get_text(" ", strip=True) if soup.title else "")
+    # The university homepage publishes its OpenGraph title as
+    # ``文章标题-中国科学技术大学``.  That metadata is otherwise concrete, so it
+    # used to return before the document-title cleanup below and leak the site
+    # name into every saved article title.
+    site_suffix = re.compile(r"\s*[-－|｜]\s*中国科学技术大学\s*$")
+    current = site_suffix.sub("", current).strip()
+    document_title = site_suffix.sub("", document_title).strip()
     if re.search(r"/event/\d+/(?:page|contributions)/", url, re.I):
         indico_title = document_title.split("·", 1)[0].strip()
         if ":" in indico_title:
@@ -618,7 +625,20 @@ def _content_root(soup: BeautifulSoup) -> Tag:
             ):
                 continue
             clone_text = node.get_text(" ", strip=True)
-            if len(clone_text) < 40:
+            # Timetables, posters, and similar notices can legitimately be an
+            # image with no accompanying text.  A named, strongly weighted
+            # article-body container is still authoritative in that case; if
+            # it is discarded, the fallback to <body> imports navigation,
+            # footer text, and decorative site images as article content.
+            image_only_content = CONTENT_BOOSTS.get(selector, 0) >= 1500 and any(
+                image.get("data-src")
+                or image.get("data-original")
+                or image.get("data-lazy-src")
+                or image.get("src")
+                or image.get("srcset")
+                for image in node.find_all("img")
+            )
+            if len(clone_text) < 40 and not image_only_content:
                 continue
             links = len(node.select("a"))
             score = len(clone_text) - min(links * 20, len(clone_text) // 2)
