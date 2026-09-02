@@ -297,18 +297,21 @@ def _layout(title: str, content: str, active: str = "/") -> str:
   <style>
     :root {{
       color-scheme: light;
-      --ink: #14213d;
-      --muted: #65748b;
-      --line: #dce3ed;
-      --wash: #f6f8fb;
-      --blue: #2364d2;
-      --blue-soft: #eaf1ff;
+      --ink: #27272a;
+      --muted: #71717a;
+      --line: #d4d4d8;
+      --wash: #f4f4f5;
+      --blue: rgb(0 195 208);
+      --blue-soft: #d8f5f7;
+      --link: #0f6f78;
+      --primary-ink: #07353a;
       --green: #198754;
-      --shadow: 0 14px 34px rgba(20, 33, 61, .07);
+      --radius: 8px;
+      --shadow: 0 1px 2px rgba(24, 24, 27, .05);
     }}
     * {{ box-sizing: border-box; }}
     body {{ margin: 0; color: var(--ink); background: white; font: 15px/1.55 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }}
-    a {{ color: var(--blue); text-decoration: none; }}
+    a {{ color: var(--link); text-decoration: none; }}
     a:hover {{ text-decoration: underline; }}
     .shell {{ max-width: 1440px; margin: 0 auto; padding: 28px 34px 64px; }}
     header {{ display: flex; justify-content: space-between; align-items: end; gap: 24px; padding-bottom: 22px; border-bottom: 1px solid var(--line); }}
@@ -319,10 +322,10 @@ def _layout(title: str, content: str, active: str = "/") -> str:
     .subtitle {{ margin: 9px 0 0; color: var(--muted); max-width: 720px; }}
     nav {{ display: flex; flex-wrap: wrap; gap: 16px; font-size: 14px; white-space: nowrap; }}
     nav a {{ color: var(--ink); }}
-    nav a.active {{ color: var(--blue); font-weight: 700; }}
+    nav a.active {{ color: var(--link); font-weight: 700; }}
     main {{ padding-top: 26px; }}
     .metrics {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 28px; }}
-    .metric {{ padding: 18px 20px; background: var(--wash); border: 1px solid var(--line); box-shadow: var(--shadow); }}
+    .metric {{ padding: 18px 20px; background: var(--wash); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }}
     .metric .label {{ color: var(--muted); font-size: 13px; }}
     .metric .value {{ margin-top: 4px; font-size: 30px; line-height: 1.1; font-weight: 750; }}
     .metric .hint {{ margin-top: 6px; color: var(--muted); font-size: 12px; }}
@@ -330,31 +333,43 @@ def _layout(title: str, content: str, active: str = "/") -> str:
     .section {{ margin-top: 32px; }}
     .section-head {{ display: flex; justify-content: space-between; align-items: baseline; gap: 14px; margin-bottom: 12px; }}
     .section-head p {{ margin: 0; color: var(--muted); font-size: 13px; }}
-    .table-wrap {{ overflow-x: auto; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }}
-    table {{ width: 100%; border-collapse: collapse; min-width: 620px; }}
-    th, td {{ padding: 11px 10px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }}
-    th {{ color: var(--muted); font-size: 12px; font-weight: 650; letter-spacing: .02em; text-transform: uppercase; }}
+    .table-wrap {{ overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }}
+    .table-wrap:focus-visible {{ outline: 3px solid color-mix(in srgb, var(--blue) 35%, transparent); outline-offset: 2px; }}
+    table {{ width: 100%; border-collapse: collapse; min-width: 620px; font-size: 14px; }}
+    th, td {{ height: 48px; padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }}
+    th {{ color: var(--ink); font-size: 13px; font-weight: 500; white-space: nowrap; }}
+    tbody tr {{ transition: background-color .12s ease; }}
+    tbody tr:hover {{ background: color-mix(in srgb, var(--wash) 55%, white); }}
     tr:last-child td {{ border-bottom: 0; }}
     td.num, th.num {{ text-align: right; white-space: nowrap; }}
     .muted {{ color: var(--muted); }}
     .small {{ font-size: 13px; }}
-    .tag {{ display: inline-block; padding: 2px 8px; font-size: 12px; font-weight: 700; vertical-align: 1px; }}
-    .tag.news {{ color: #1557b0; background: var(--blue-soft); }}
-    .tag.notice {{ color: #8a4b08; background: #fff0dc; }}
-    .news-list {{ border-top: 1px solid var(--line); }}
-    .news-item {{ padding: 14px 0; border-bottom: 1px solid var(--line); }}
-    .news-item h3 {{ font-size: 16px; line-height: 1.35; }}
-    .news-meta {{ margin-top: 5px; color: var(--muted); font-size: 12px; }}
-    .news-excerpt {{ margin: 7px 0 0; color: #42516a; font-size: 13px; }}
+    .tag {{ display: inline-flex; align-items: center; min-height: 24px; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: 650; white-space: nowrap; }}
+    .tag.news {{ color: var(--primary-ink); background: var(--blue-soft); }}
+    .tag.notice {{ color: #713f12; background: #fef3c7; }}
+    .news-table {{ min-width: 880px; table-layout: fixed; }}
+    .news-table.compact {{ min-width: 560px; }}
+    .news-table .type-column {{ width: 76px; }}
+    .news-table .source-column {{ width: 190px; }}
+    .news-table .date-column {{ width: 112px; white-space: nowrap; }}
+    .news-table .author-column {{ width: 150px; }}
+    .news-title {{ font-weight: 600; line-height: 1.4; }}
+    .news-excerpt {{ display: -webkit-box; overflow: hidden; margin-top: 4px; color: var(--muted); font-size: 12px; font-weight: 400; line-height: 1.45; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }}
+    .cell-secondary {{ display: block; margin-top: 2px; color: var(--muted); font-size: 12px; line-height: 1.4; }}
     .bar {{ display: flex; height: 10px; overflow: hidden; background: var(--line); }}
     .bar span {{ display: block; min-width: 2px; }}
     .bar .full {{ background: var(--blue); }} .bar .metadata {{ background: #6f9be7; }} .bar .audit {{ background: #a9bfe8; }} .bar .none {{ background: #d9e0ea; }}
     .legend {{ display: flex; flex-wrap: wrap; gap: 15px; margin-top: 8px; color: var(--muted); font-size: 12px; }}
     .legend i {{ display: inline-block; width: 9px; height: 9px; margin-right: 5px; vertical-align: -1px; }}
     .search {{ display: flex; flex-wrap: wrap; gap: 9px; margin-bottom: 18px; }}
-    input, select, button {{ min-height: 38px; border: 1px solid var(--line); border-radius: 0; background: white; color: var(--ink); font: inherit; padding: 7px 10px; }}
-    input[type=search] {{ flex: 1 1 300px; }}
-    button {{ background: var(--ink); color: white; border-color: var(--ink); cursor: pointer; }}
+    .search-field {{ display: flex; min-width: 0; }}
+    .search-field select {{ width: 100%; min-width: 0; }}
+    .search-grow {{ flex: 1 1 320px; }}
+    input, select, button {{ min-height: 40px; border: 1px solid var(--line); border-radius: var(--radius); background: white; color: var(--ink); font: inherit; padding: 7px 11px; transition: border-color .12s ease, box-shadow .12s ease, background-color .12s ease; }}
+    input:focus-visible, select:focus-visible, button:focus-visible {{ border-color: var(--blue); outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 25%, transparent); }}
+    input[type=search] {{ width: 100%; }}
+    button {{ background: var(--blue); color: var(--primary-ink); border-color: var(--blue); cursor: pointer; font-weight: 650; }}
+    button:hover {{ background: color-mix(in srgb, var(--blue) 88%, black); }}
     .pager {{ display: flex; justify-content: space-between; gap: 12px; margin-top: 16px; color: var(--muted); font-size: 13px; }}
     .article {{ max-width: 900px; }}
     .article h1 {{ font-size: clamp(27px, 4vw, 40px); }}
@@ -368,11 +383,13 @@ def _layout(title: str, content: str, active: str = "/") -> str:
     .image-grid {{ display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px; margin: 26px 0; }}
     .image-grid figure {{ margin: 0; }} .image-grid img {{ display: block; width: 100%; max-height: 180px; object-fit: cover; background: var(--wash); }}
     figcaption {{ padding-top: 5px; color: var(--muted); font-size: 12px; }}
-    .notice {{ padding: 13px 15px; border-left: 3px solid var(--blue); background: var(--blue-soft); color: #334566; }}
+    .notice-panel {{ padding: 13px 15px; border: 1px solid color-mix(in srgb, var(--blue) 38%, var(--line)); border-radius: var(--radius); background: var(--blue-soft); color: var(--primary-ink); }}
+    .empty-cell {{ height: 96px; text-align: center; }}
+    .sr-only {{ position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }}
     code {{ padding: 1px 4px; background: var(--wash); font-size: .92em; }}
     footer {{ margin-top: 42px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }}
-    @media (max-width: 850px) {{ .shell {{ padding: 22px 18px 48px; }} header {{ align-items: start; flex-direction: column; }} .metrics {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }} .columns {{ grid-template-columns: 1fr; gap: 10px; }} }}
-    @media (max-width: 460px) {{ .metrics {{ grid-template-columns: 1fr; }} nav {{ gap: 10px; white-space: normal; }} }}
+    @media (max-width: 850px) {{ .shell {{ padding: 22px 18px 48px; }} header {{ align-items: start; flex-direction: column; }} .metrics {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }} .columns {{ grid-template-columns: 1fr; gap: 10px; }} .search-field {{ flex: 1 1 calc(50% - 9px); }} .search-grow {{ flex-basis: 100%; }} }}
+    @media (max-width: 460px) {{ .metrics {{ grid-template-columns: 1fr; }} nav {{ gap: 10px; white-space: normal; }} .search-field, .search button {{ flex: 1 1 100%; width: 100%; }} }}
   </style>
 </head>
 <body>
@@ -407,16 +424,77 @@ def _source_rows(rows: list[dict[str, object]]) -> str:
     )
 
 
-def _news_items(rows: list[dict[str, object]]) -> str:
+def _display_date(value: object) -> str:
+    text = "" if value is None else str(value).strip()
+    return text[:10] if len(text) >= 10 else text or "未记录"
+
+
+def _news_table(rows: list[dict[str, object]], *, compact: bool = False) -> str:
+    column_count = 3 if compact else 5
     if not rows:
-        return '<div class="notice">没有找到匹配的文章。</div>'
-    return "".join(
-        f"""<article class="news-item">
-          <h3><span class="tag {_escape(row.get('publication_type') or 'news')}">{'通知' if row.get('publication_type') == 'notice' else '新闻'}</span> <a href="/article?url={quote(str(row['url']), safe='')}">{_escape(row['title'] or '未命名文章')}</a></h3>
-          <div class="news-meta">{_escape(row['published_at'] or '日期未记录')} · {_escape(row['source_name'])}{(' · ' + _escape(row['author'])) if row.get('author') else ''}</div>
-          {f'<p class="news-excerpt">{_escape(_truncate(row.get("excerpt")))}</p>' if row.get('excerpt') else ''}
-        </article>"""
-        for row in rows
+        body = (
+            f'<tr><td colspan="{column_count}" class="empty-cell muted">'
+            "没有找到匹配的文章。</td></tr>"
+        )
+    else:
+        rendered_rows = []
+        for row in rows:
+            publication_type = str(row.get("publication_type") or "news")
+            type_label = "通知" if publication_type == "notice" else "新闻"
+            title = row.get("title") or "未命名文章"
+            article_url = "/article?url=" + quote(str(row["url"]), safe="")
+            excerpt = (
+                f'<span class="news-excerpt">{_escape(_truncate(row.get("excerpt")))}</span>'
+                if row.get("excerpt")
+                else ""
+            )
+            published_at = row.get("published_at") or ""
+            date_cell = (
+                f'<time datetime="{_escape(published_at)}" title="{_escape(published_at)}">'
+                f"{_escape(_display_date(published_at))}</time>"
+            )
+            source = _escape(row.get("source_name"))
+            category = (
+                f'<span class="cell-secondary">{_escape(row.get("category"))}</span>'
+                if row.get("category")
+                else ""
+            )
+            if compact:
+                title_cell = (
+                    f'<a class="news-title" href="{article_url}">{_escape(title)}</a>'
+                    f'<span class="cell-secondary">{source}</span>'
+                )
+                rendered_rows.append(
+                    f'<tr><td><span class="tag {_escape(publication_type)}">{type_label}</span></td>'
+                    f'<td>{title_cell}</td><td class="date-column">{date_cell}</td></tr>'
+                )
+                continue
+            author = _escape(row.get("author")) if row.get("author") else "—"
+            rendered_rows.append(
+                f'<tr><td><span class="tag {_escape(publication_type)}">{type_label}</span></td>'
+                f'<td><a class="news-title" href="{article_url}">{_escape(title)}</a>{excerpt}</td>'
+                f'<td>{source}{category}</td><td class="date-column">{date_cell}</td>'
+                f'<td>{author}</td></tr>'
+            )
+        body = "".join(rendered_rows)
+    if compact:
+        head = (
+            '<tr><th class="type-column">类型</th><th>标题</th>'
+            '<th class="date-column">发布日期</th></tr>'
+        )
+        table_class = "news-table compact"
+        label = "最近新闻与通知"
+    else:
+        head = (
+            '<tr><th class="type-column">类型</th><th>标题与摘要</th>'
+            '<th class="source-column">来源与栏目</th><th class="date-column">发布日期</th>'
+            '<th class="author-column">作者</th></tr>'
+        )
+        table_class = "news-table"
+        label = "新闻与通知结果"
+    return (
+        f'<div class="table-wrap" role="region" aria-label="{label}" tabindex="0">'
+        f'<table class="{table_class}"><thead>{head}</thead><tbody>{body}</tbody></table></div>'
     )
 
 
@@ -444,11 +522,11 @@ def render_home(store: DashboardStore) -> str:
       <div class="columns">
         <section>
           <div class="section-head"><h2>来源排行</h2><p><a href="/sources">查看全部来源 →</a></p></div>
-          <div class="table-wrap"><table><thead><tr><th>来源</th><th class="num">新闻页</th><th class="num">近一年</th><th class="num">文章</th><th class="num">待处理</th></tr></thead><tbody>{_source_rows(source_rows)}</tbody></table></div>
+          <div class="table-wrap" role="region" aria-label="来源排行" tabindex="0"><table><thead><tr><th>来源</th><th class="num">新闻页</th><th class="num">近一年</th><th class="num">文章</th><th class="num">待处理</th></tr></thead><tbody>{_source_rows(source_rows)}</tbody></table></div>
         </section>
         <section>
           <div class="section-head"><h2>最近文章</h2><p><a href="/news">检索全部 →</a></p></div>
-          <div class="news-list">{_news_items(news_rows)}</div>
+          {_news_table(news_rows, compact=True)}
         </section>
       </div>
       <section class="section">
@@ -457,7 +535,7 @@ def render_home(store: DashboardStore) -> str:
       </section>
       <section class="section">
         <div class="section-head"><h2>抓取说明</h2><p>更新时间 {_escape(summary.get('last_fetched') or '未知')}</p></div>
-        <div class="notice">文章正文、标题、作者、发布时间、图片关联和公开文档均来自本地结构化数据；页面不会自动重新抓取网络。</div>
+        <div class="notice-panel">文章正文、标题、作者、发布时间、图片关联和公开文档均来自本地结构化数据；页面不会自动重新抓取网络。</div>
       </section>
     """
     return _layout("概览", content)
@@ -491,12 +569,12 @@ def render_news(store: DashboardStore, params: dict[str, list[str]]) -> str:
       <section class="section" style="margin-top:0">
         <div class="section-head"><div><h2>新闻与通知</h2><p>共 {_number(total)} 条匹配记录 · 当前来源：{_escape(source_name)}</p></div></div>
         <form class="search" method="get" action="/news">
-          <input type="search" name="q" value="{_escape(query_text)}" placeholder="搜索标题、摘要或正文">
-          <select name="source"><option value="">全部来源</option>{''.join(f'<option value="{_escape(row["id"])}"{" selected" if row["id"] == source_id else ""}>{_escape(row["name"])}</option>' for row in sources)}</select>
-          <select name="type"><option value="">新闻与通知</option><option value="news"{" selected" if publication_type == "news" else ""}>仅新闻</option><option value="notice"{" selected" if publication_type == "notice" else ""}>仅通知</option></select>
+          <label class="search-field search-grow"><span class="sr-only">关键词</span><input type="search" name="q" value="{_escape(query_text)}" placeholder="搜索标题、摘要或正文"></label>
+          <label class="search-field"><span class="sr-only">来源</span><select name="source"><option value="">全部来源</option>{''.join(f'<option value="{_escape(row["id"])}"{" selected" if row["id"] == source_id else ""}>{_escape(row["name"])}</option>' for row in sources)}</select></label>
+          <label class="search-field"><span class="sr-only">类型</span><select name="type"><option value="">新闻与通知</option><option value="news"{" selected" if publication_type == "news" else ""}>仅新闻</option><option value="notice"{" selected" if publication_type == "notice" else ""}>仅通知</option></select></label>
           <button type="submit">搜索</button>
         </form>
-        <div class="news-list">{_news_items(rows)}</div>
+        {_news_table(rows)}
         <div class="pager"><span>第 {page} / {max_page} 页</span><span>{f'<a href="{page_link(page - 1)}">← 上一页</a>' if page > 1 else ''}{'　' if page > 1 and page < max_page else ''}{f'<a href="{page_link(page + 1)}">下一页 →</a>' if page < max_page else ''}</span></div>
       </section>
     """
@@ -508,7 +586,7 @@ def render_sources(store: DashboardStore) -> str:
     content = f"""
       <section class="section" style="margin-top:0">
         <div class="section-head"><div><h2>来源统计</h2><p>按可索引新闻页、近一年新闻页和抓取队列排序。</p></div><p>{_number(len(rows))} 个来源</p></div>
-        <div class="table-wrap"><table><thead><tr><th>来源</th><th class="num">页面</th><th class="num">可索引新闻</th><th class="num">近一年新闻</th><th class="num">文章</th><th class="num">待处理</th></tr></thead><tbody>{''.join(f'<tr><td><a href="/news?source={quote(str(row["id"]))}">{_escape(row["name"])}</a><div class="muted small">{_escape(row["organization_level"])}</div></td><td class="num">{_number(row["pages"])}</td><td class="num">{_number(row["news_pages"])}</td><td class="num">{_number(row["recent_news"])}</td><td class="num">{_number(row["articles"])}</td><td class="num">{_number(row["pending"])}</td></tr>' for row in rows)}</tbody></table></div>
+        <div class="table-wrap" role="region" aria-label="来源统计" tabindex="0"><table><thead><tr><th>来源</th><th class="num">页面</th><th class="num">可索引新闻</th><th class="num">近一年新闻</th><th class="num">文章</th><th class="num">待处理</th></tr></thead><tbody>{''.join(f'<tr><td><a href="/news?source={quote(str(row["id"]))}">{_escape(row["name"])}</a><div class="muted small">{_escape(row["organization_level"])}</div></td><td class="num">{_number(row["pages"])}</td><td class="num">{_number(row["news_pages"])}</td><td class="num">{_number(row["recent_news"])}</td><td class="num">{_number(row["articles"])}</td><td class="num">{_number(row["pending"])}</td></tr>' for row in rows)}</tbody></table></div>
       </section>
     """
     return _layout("来源", content, "/sources")

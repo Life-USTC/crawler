@@ -340,6 +340,11 @@ class DashboardTests(unittest.TestCase):
                 rendered = response.read().decode("utf-8")
                 self.assertIn("仅通知", rendered)
                 self.assertIn('<span class="tag notice">通知</span>', rendered)
+                self.assertIn('<table class="news-table">', rendered)
+                self.assertIn("<th>标题与摘要</th>", rendered)
+                self.assertIn("<th class=\"source-column\">来源与栏目</th>", rendered)
+                self.assertIn('role="region" aria-label="新闻与通知结果" tabindex="0"', rendered)
+                self.assertNotIn('class="news-list"', rendered)
             with urlopen(f"{base}/api/news?type=notice") as response:
                 payload = json.load(response)
                 self.assertEqual(payload["total"], 1)
