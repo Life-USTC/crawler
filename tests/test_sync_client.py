@@ -516,7 +516,7 @@ class SyncClientTests(unittest.TestCase):
                 sync.close()
                 store.close()
 
-    def test_large_batch_plans_only_objects_that_can_start_immediately(self) -> None:
+    def test_large_batch_checks_existing_objects_at_protocol_limit(self) -> None:
         plan_requests: list[dict] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -575,10 +575,7 @@ class SyncClientTests(unittest.TestCase):
                 self.assertEqual(summary["acked"], 1)
                 self.assertEqual(summary["failed"], 0)
                 plan_sizes = [len(request["objects"]) for request in plan_requests]
-                self.assertEqual(plan_sizes, [8] * 75)
-                self.assertTrue(
-                    all(size <= MAX_OBJECT_PLAN_OBJECTS for size in plan_sizes)
-                )
+                self.assertEqual(plan_sizes, [MAX_OBJECT_PLAN_OBJECTS] * 6)
                 object_keys = [
                     (item["kind"], item["sha256"])
                     for request in plan_requests
@@ -590,32 +587,38 @@ class SyncClientTests(unittest.TestCase):
                 sync.close()
                 store.close()
 
-    def test_object_plan_windows_finish_before_more_urls_are_signed(self) -> None:
+    def test_missing_object_urls_are_refreshed_in_bounded_windows(self) -> None:
         lock = threading.Lock()
-        outstanding = 0
         plan_count = 0
+        events: list[tuple[str, int]] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
-            nonlocal outstanding, plan_count
+            nonlocal plan_count
             if request.url.path == "/api/ingestion/publications/batches":
                 return httpx.Response(200, json=self._batch_response(request), request=request)
             if request.url.path == "/api/ingestion/publications/objects/plan":
-                payload = json.loads(request.content)
                 with lock:
-                    self.assertEqual(outstanding, 0)
-                    outstanding = len(payload["objects"])
                     plan_count += 1
+                    generation = plan_count
+                    events.append(("plan", generation))
+                response = self._plan_response(request, upload=True)
+                for item in response["objects"]:
+                    item["uploadUrl"] = (
+                        f"{self.server}/signed/{generation}/{item['sha256']}"
+                    )
                 return httpx.Response(
                     200,
-                    json=self._plan_response(request, upload=True),
+                    json=response,
                     request=request,
                 )
             if request.url.path.startswith("/signed/"):
+                with lock:
+                    events.append(("put", int(request.url.path.split("/")[2])))
                 return httpx.Response(200, request=request)
             if request.url.path == "/api/ingestion/publications/objects/complete":
                 payload = json.loads(request.content)
                 with lock:
-                    outstanding -= 1
+                    events.append(("complete", plan_count))
                 return httpx.Response(
                     200,
                     json={**payload, "status": "verified"},
@@ -640,8 +643,16 @@ class SyncClientTests(unittest.TestCase):
                 summary = sync.sync(options=SyncOptions(object_concurrency=2))
                 self.assertEqual(summary["acked"], 1)
                 self.assertEqual(summary["failed"], 0)
-                self.assertGreater(plan_count, 1)
-                self.assertEqual(outstanding, 0)
+                self.assertEqual(plan_count, 2)
+                second_plan = events.index(("plan", 2))
+                self.assertEqual(
+                    sum(kind == "complete" for kind, _ in events[:second_plan]),
+                    2,
+                )
+                self.assertEqual(
+                    sorted(generation for kind, generation in events if kind == "put"),
+                    [1, 1, 2, 2],
+                )
             finally:
                 sync.close()
                 store.close()
