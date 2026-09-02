@@ -588,7 +588,7 @@ def _title_from_document(
             return value
     if document_title:
         # Common separators distinguish the post title from the site name.
-        for separator in (" : ", " | ", " - ", "｜", "："):
+        for separator in (" | ", " - ", "｜"):
             if separator in document_title:
                 value = _text(document_title.split(separator, 1)[0])
                 if value and not _is_generic_heading(value):

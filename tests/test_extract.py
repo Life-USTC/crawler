@@ -214,6 +214,17 @@ class ExtractTests(unittest.TestCase):
         assert page.article is not None
         self.assertEqual(page.article.title, "中国科学技术大学-美国天普大学联合培养项目通知")
 
+    def test_document_title_preserves_legitimate_colon(self) -> None:
+        html = """
+        <html><head><title>基金委通知：湖北人形机器人联合基金重大专项-中国科学技术大学</title></head><body>
+        <div class='wp_articlecontent'><p>这是足够长的科研通知正文，用于验证真实标题中的中文冒号及其后内容不会被截断。</p></div>
+        </body></html>
+        """
+        page = extract_page("https://www.ustc.edu.cn/info/1362/25343.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "基金委通知：湖北人形机器人联合基金重大专项")
+
     def test_detail_heading_drops_labeled_publication_date(self) -> None:
         html = """
         <html><head><title>中国科大迎新管理</title></head><body>
