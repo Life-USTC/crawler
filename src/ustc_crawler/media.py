@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from .http import Fetcher
 from .models import ImageRef
@@ -33,6 +35,26 @@ def _job_priority(existing: Any) -> int:
     ):
         return 2
     return 1
+
+
+def _interleave_jobs_by_host(
+    planned: list[tuple[int, str, list[ImageRef], Any]],
+) -> list[tuple[int, str, list[ImageRef], Any]]:
+    """Round-robin hosts within each priority so per-host delays do not serialize a run."""
+
+    positions: dict[tuple[int, str], int] = defaultdict(int)
+    decorated: list[tuple[int, int, str, str, list[ImageRef], Any]] = []
+    for priority, url, refs, existing in planned:
+        host = (urlsplit(url).hostname or "").casefold()
+        key = (priority, host)
+        position = positions[key]
+        positions[key] += 1
+        decorated.append((priority, position, host, url, refs, existing))
+    decorated.sort(key=lambda item: item[:4])
+    return [
+        (priority, url, refs, existing)
+        for priority, _, _, url, refs, existing in decorated
+    ]
 
 
 def _image_jobs(store: Store, source_ids: set[str] | None = None) -> dict[str, list[ImageRef]]:
@@ -133,7 +155,7 @@ async def _run(options: MediaOptions) -> dict[str, int]:
             for url, refs in jobs.items()
             for existing in (store.media_snapshot(url),)
         ]
-        planned.sort(key=lambda item: item[0])
+        planned = _interleave_jobs_by_host(planned)
         await asyncio.gather(
             *(one(url, refs, existing) for _, url, refs, existing in planned)
         )
