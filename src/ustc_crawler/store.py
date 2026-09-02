@@ -27,7 +27,7 @@ from .models import (
 )
 from .publication import CLASSIFIER_VERSION, classify_publication
 from .scoring import url_priority
-from .sync.models import build_publication
+from .sync.models import TombstonePublication, build_publication
 from .sync.outbox import IngestionOutbox, spool_article_objects, wire_manifest
 
 
@@ -1825,7 +1825,31 @@ class Store:
         articles = 0
         removed = 0
         document_articles_removed = 0
+        tombstones: dict[str, tuple[str, str]] = {}
         max_reindex_bytes = 8 * 1024 * 1024
+
+        def remove_article(url: str) -> int:
+            previous = self._core.execute(
+                "SELECT source_id,content_hash,last_seen FROM articles WHERE url=?", (url,)
+            ).fetchone()
+            deleted = self._core.execute("DELETE FROM articles WHERE url=?", (url,)).rowcount
+            if deleted and previous:
+                revision_seed = json.dumps(
+                    {
+                        "canonical_url": url,
+                        "content_hash": previous["content_hash"] or "",
+                        "last_seen": previous["last_seen"] or "",
+                        "tombstone": True,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                tombstones[url] = (
+                    str(previous["source_id"]),
+                    sha256_bytes(revision_seed.encode("utf-8")),
+                )
+            return deleted
         # Avoid one duplicate lookup query per page.  The archive is large
         # enough that the old ``duplicate_page_url`` call turned reindexing
         # into an hours-long sequence of random SQLite reads.  Build a small
@@ -1906,9 +1930,7 @@ class Store:
                         self._core.execute(
                             "UPDATE media SET article_url=NULL WHERE article_url=?", (key,)
                         )
-                        removed += self._core.execute(
-                            "DELETE FROM articles WHERE url=?", (key,)
-                        ).rowcount
+                        removed += remove_article(key)
                     if scanned % 500 == 0:
                         self._core.commit()
                     continue
@@ -1924,9 +1946,7 @@ class Store:
                     for key in filter(None, keys):
                         self._core.execute("DELETE FROM article_media WHERE article_url=?", (key,))
                         self._core.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (key,))
-                        removed += self._core.execute(
-                            "DELETE FROM articles WHERE url=?", (key,)
-                        ).rowcount
+                        removed += remove_article(key)
                     if scanned % 500 == 0:
                         self._core.commit()
                     continue
@@ -2035,7 +2055,7 @@ class Store:
                 for key in filter(None, keys):
                     self._core.execute("DELETE FROM article_media WHERE article_url=?", (key,))
                     self._core.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (key,))
-                    removed += self._core.execute("DELETE FROM articles WHERE url=?", (key,)).rowcount
+                    removed += remove_article(key)
             # Committing once per page turns this pass into millions of
             # synchronous SQLite fsyncs.  Keep the same transactionally
             # consistent result while amortizing the cost over small batches.
@@ -2052,11 +2072,25 @@ class Store:
             url = row["url"]
             self._core.execute("DELETE FROM article_media WHERE article_url=?", (url,))
             self._core.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (url,))
-            document_articles_removed += self._core.execute(
-                "DELETE FROM articles WHERE url=?", (url,)
-            ).rowcount
+            document_articles_removed += remove_article(url)
         if document_articles_removed:
             self._core.commit()
+        if tombstones:
+            self._core.commit()
+            outbox = IngestionOutbox(self.database)
+            for canonical_url, (source_id, revision_hash) in sorted(tombstones.items()):
+                source = self.source_descriptor(source_id)
+                if source.discovery_only:
+                    continue
+                outbox.enqueue_publication(
+                    TombstonePublication(
+                        sourceId=source_id,
+                        canonicalUrl=canonical_url,
+                        revisionHash=revision_hash,
+                        observedAt=utc_now(),
+                    ),
+                    source=source,
+                )
         return {
             "scanned": scanned,
             "articles": articles,
