@@ -109,7 +109,10 @@ def _image_jobs(store: Store, source_ids: set[str] | None = None) -> dict[str, l
 
 async def _run(options: MediaOptions) -> dict[str, int]:
     store = Store(options.db_path, options.data_dir)
-    fetcher = Fetcher(delay=options.delay)
+    fetcher = Fetcher(
+        delay=options.delay,
+        max_connections=max(64, options.concurrency),
+    )
     jobs = _image_jobs(store, set(options.source_ids) or None)
     semaphore = asyncio.Semaphore(max(1, options.concurrency))
     fetched = 0
