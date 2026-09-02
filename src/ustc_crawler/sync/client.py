@@ -524,86 +524,69 @@ class IngestionSyncClient:
             PublicationObjectPlanRequestItem(kind=kind, sha256=sha256)
             for kind, sha256 in sorted(manifests)
         ]
-        planned: dict[tuple[str, str], PublicationObjectPlanItem] = {}
-        for start in range(0, len(object_items), MAX_OBJECT_PLAN_OBJECTS):
-            chunk = object_items[start : start + MAX_OBJECT_PLAN_OBJECTS]
-            request = PublicationObjectPlanRequest(batchId=batch_id, objects=chunk)
-            plan_response = self._api_request(
-                "POST",
-                OBJECT_PLAN_ENDPOINT,
-                options=options,
-                headers={"Content-Type": "application/json"},
-                content=_json_bytes(request.model_dump(by_alias=True, mode="json")),
-            )
-            self._require_success(plan_response)
-            try:
-                plan = PublicationObjectPlanResponse.model_validate(plan_response.json())
-            except (ValueError, TypeError) as exc:
-                raise SyncProtocolError("invalid_object_plan_response") from exc
-            if plan.batch_id != batch_id:
-                raise SyncProtocolError("object_plan_identity_mismatch")
-            chunk_keys = {(item.kind, item.sha256) for item in chunk}
-            chunk_planned: dict[tuple[str, str], PublicationObjectPlanItem] = {}
-            for item in plan.objects:
-                key = (item.kind, item.sha256)
-                if key in chunk_planned or key not in chunk_keys:
-                    raise SyncProtocolError("object_plan_membership_mismatch")
-                chunk_planned[key] = item
-            if set(chunk_planned) != chunk_keys:
-                raise SyncProtocolError("object_plan_membership_mismatch")
-            planned.update(chunk_planned)
-        if set(planned) != set(manifests):
-            raise SyncProtocolError("object_plan_membership_mismatch")
-        ordered = sorted(planned.items())
-        # Validate every local object before any network PUT.  This preserves
-        # the sequential client's all-or-nothing preflight for immutable
-        # spool files while still allowing the network phase to overlap.
-        for key, item in ordered:
-            if item.status == "upload_required":
-                if item.upload_url is None:
-                    raise SyncProtocolError("object_upload_url_missing")
-                # Validate every local occurrence before the first PUT.  A
-                # shared digest can have different link metadata or spool
-                # paths, but each persisted file must still match the digest.
-                for manifest in manifest_groups[key]:
-                    self._object_bytes(manifest)
+        plan_window = min(MAX_OBJECT_PLAN_OBJECTS, options.object_concurrency)
         with ThreadPoolExecutor(
             max_workers=options.object_concurrency,
             thread_name_prefix="ustc-sync-object",
         ) as executor:
-            # Keep only a bounded, ordered window of futures.  Results are
-            # observed in plan order so the first propagated failure remains
-            # deterministic even when a later object finishes first.
-            pending: dict[tuple[str, str], Future[None]] = {}
-            iterator = iter(ordered)
-
-            def submit_next() -> bool:
-                try:
-                    key, item = next(iterator)
-                except StopIteration:
-                    return False
-                pending[key] = executor.submit(
-                    self._upload_object,
-                    batch_id,
-                    item,
-                    manifests[key],
-                    options,
+            # A signed upload URL must be consumed immediately. Plan no more
+            # objects than can start concurrently, then finish that window
+            # before asking the server for another set of signed URLs.
+            for start in range(0, len(object_items), plan_window):
+                chunk = object_items[start : start + plan_window]
+                request = PublicationObjectPlanRequest(batchId=batch_id, objects=chunk)
+                plan_response = self._api_request(
+                    "POST",
+                    OBJECT_PLAN_ENDPOINT,
+                    options=options,
+                    headers={"Content-Type": "application/json"},
+                    content=_json_bytes(request.model_dump(by_alias=True, mode="json")),
                 )
-                return True
-
-            for _ in range(options.object_concurrency):
-                if not submit_next():
-                    break
-            while pending:
-                key = next(iter(pending))
-                future = pending.pop(key)
+                self._require_success(plan_response)
                 try:
-                    future.result()
-                except BaseException:
-                    for remaining in pending.values():
-                        remaining.cancel()
-                    raise
-                submit_next()
+                    plan = PublicationObjectPlanResponse.model_validate(
+                        plan_response.json()
+                    )
+                except (ValueError, TypeError) as exc:
+                    raise SyncProtocolError("invalid_object_plan_response") from exc
+                if plan.batch_id != batch_id:
+                    raise SyncProtocolError("object_plan_identity_mismatch")
+                chunk_keys = {(item.kind, item.sha256) for item in chunk}
+                planned: dict[tuple[str, str], PublicationObjectPlanItem] = {}
+                for item in plan.objects:
+                    key = (item.kind, item.sha256)
+                    if key in planned or key not in chunk_keys:
+                        raise SyncProtocolError("object_plan_membership_mismatch")
+                    planned[key] = item
+                if set(planned) != chunk_keys:
+                    raise SyncProtocolError("object_plan_membership_mismatch")
+
+                ordered = sorted(planned.items())
+                for key, item in ordered:
+                    if item.status != "upload_required":
+                        continue
+                    if item.upload_url is None:
+                        raise SyncProtocolError("object_upload_url_missing")
+                    for manifest in manifest_groups[key]:
+                        self._object_bytes(manifest)
+
+                pending: dict[tuple[str, str], Future[None]] = {
+                    key: executor.submit(
+                        self._upload_object,
+                        batch_id,
+                        item,
+                        manifests[key],
+                        options,
+                    )
+                    for key, item in ordered
+                }
+                for key, _item in ordered:
+                    try:
+                        pending[key].result()
+                    except BaseException:
+                        for remaining in pending.values():
+                            remaining.cancel()
+                        raise
 
     def _upload_object(
         self,
@@ -612,18 +595,19 @@ class IngestionSyncClient:
         manifest: LocalObjectManifest,
         options: SyncOptions,
     ) -> None:
-        if item.status == "upload_required":
-            if item.upload_url is None:
-                raise SyncProtocolError("object_upload_url_missing")
-            body = self._object_bytes(manifest)
-            upload = self._request(
-                "PUT",
-                item.upload_url,
-                options=options,
-                headers=item.required_headers.model_dump(by_alias=True, mode="json"),
-                content=body,
-            )
-            self._require_success(upload)
+        if item.status == "already_present":
+            return
+        if item.upload_url is None:
+            raise SyncProtocolError("object_upload_url_missing")
+        body = self._object_bytes(manifest)
+        upload = self._request(
+            "PUT",
+            item.upload_url,
+            options=options,
+            headers=item.required_headers.model_dump(by_alias=True, mode="json"),
+            content=body,
+        )
+        self._require_success(upload)
         complete_request = PublicationObjectCompleteRequest(
             batchId=batch_id,
             kind=item.kind,

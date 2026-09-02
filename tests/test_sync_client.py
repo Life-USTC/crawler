@@ -329,6 +329,40 @@ class SyncClientTests(unittest.TestCase):
                 sync.close()
                 store.close()
 
+    def test_sync_does_not_complete_objects_linked_during_planning(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/ingestion/publications/batches":
+                return httpx.Response(200, json=self._batch_response(request), request=request)
+            if request.url.path == "/api/ingestion/publications/objects/plan":
+                return httpx.Response(
+                    200,
+                    json=self._plan_response(request, upload=False),
+                    request=request,
+                )
+            raise AssertionError(f"unexpected sync request: {request.url}")
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            try:
+                store.enqueue_article_for_sync(self._article(2))
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=client,
+                )
+
+                summary = sync.sync()
+
+                self.assertEqual(summary["acked"], 1)
+                self.assertEqual(summary["failed"], 0)
+            finally:
+                sync.close()
+                store.close()
+
     def test_shared_media_deduplicates_plan_when_link_metadata_differs(self) -> None:
         plan_requests: list[dict] = []
 
@@ -482,7 +516,7 @@ class SyncClientTests(unittest.TestCase):
                 sync.close()
                 store.close()
 
-    def test_large_batch_splits_object_plans_at_protocol_limit(self) -> None:
+    def test_large_batch_plans_only_objects_that_can_start_immediately(self) -> None:
         plan_requests: list[dict] = []
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -540,9 +574,10 @@ class SyncClientTests(unittest.TestCase):
                 summary = sync.sync(options=SyncOptions(batch_size=100))
                 self.assertEqual(summary["acked"], 1)
                 self.assertEqual(summary["failed"], 0)
-                self.assertEqual(
-                    [len(request["objects"]) for request in plan_requests],
-                    [MAX_OBJECT_PLAN_OBJECTS] * 6,
+                plan_sizes = [len(request["objects"]) for request in plan_requests]
+                self.assertEqual(plan_sizes, [8] * 75)
+                self.assertTrue(
+                    all(size <= MAX_OBJECT_PLAN_OBJECTS for size in plan_sizes)
                 )
                 object_keys = [
                     (item["kind"], item["sha256"])
@@ -551,6 +586,62 @@ class SyncClientTests(unittest.TestCase):
                 ]
                 self.assertEqual(object_keys, sorted(object_keys))
                 self.assertEqual(len(object_keys), len(set(object_keys)))
+            finally:
+                sync.close()
+                store.close()
+
+    def test_object_plan_windows_finish_before_more_urls_are_signed(self) -> None:
+        lock = threading.Lock()
+        outstanding = 0
+        plan_count = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal outstanding, plan_count
+            if request.url.path == "/api/ingestion/publications/batches":
+                return httpx.Response(200, json=self._batch_response(request), request=request)
+            if request.url.path == "/api/ingestion/publications/objects/plan":
+                payload = json.loads(request.content)
+                with lock:
+                    self.assertEqual(outstanding, 0)
+                    outstanding = len(payload["objects"])
+                    plan_count += 1
+                return httpx.Response(
+                    200,
+                    json=self._plan_response(request, upload=True),
+                    request=request,
+                )
+            if request.url.path.startswith("/signed/"):
+                return httpx.Response(200, request=request)
+            if request.url.path == "/api/ingestion/publications/objects/complete":
+                payload = json.loads(request.content)
+                with lock:
+                    outstanding -= 1
+                return httpx.Response(
+                    200,
+                    json={**payload, "status": "verified"},
+                    request=request,
+                )
+            raise AssertionError(f"unexpected sync request: {request.url}")
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            try:
+                store.enqueue_article_for_sync(self._article(1))
+                store.enqueue_article_for_sync(self._article(2))
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=client,
+                )
+                summary = sync.sync(options=SyncOptions(object_concurrency=2))
+                self.assertEqual(summary["acked"], 1)
+                self.assertEqual(summary["failed"], 0)
+                self.assertGreater(plan_count, 1)
+                self.assertEqual(outstanding, 0)
             finally:
                 sync.close()
                 store.close()
@@ -898,9 +989,11 @@ class SyncClientTests(unittest.TestCase):
             if request.url.path == "/api/ingestion/publications/objects/plan":
                 return httpx.Response(
                     200,
-                    json=self._plan_response(request, upload=False),
+                    json=self._plan_response(request, upload=True),
                     request=request,
                 )
+            if request.url.path.startswith("/signed/"):
+                return httpx.Response(200, request=request)
             if request.url.path == "/api/ingestion/publications/objects/complete":
                 payload = json.loads(request.content)
                 if payload["kind"] == "body_markdown":
