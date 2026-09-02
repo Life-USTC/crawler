@@ -64,11 +64,15 @@ def audit(args: argparse.Namespace) -> dict[str, Any]:
     media_by_article: dict[str, set[str]] = defaultdict(set)
     for row in connection.execute("SELECT article_url,image_url FROM article_media"):
         media_by_article[str(row["article_url"])].add(str(row["image_url"]))
+    publication_hints = {
+        str(row["url"]): str(row["published_at"] or "")
+        for row in connection.execute("SELECT url,published_at FROM article_hints")
+    }
 
     query = """
         SELECT a.url,a.source_id,a.source_page_url,a.title,a.author,a.published_at,
                a.updated_at,a.category,a.summary,a.body_text,
-               p.url AS page_url,p.final_url,p.content_type,p.raw_path
+               p.url AS page_url,p.final_url,p.canonical_url,p.content_type,p.raw_path
         FROM articles a JOIN pages p ON p.url=a.source_page_url
     """
     parameters: list[object] = []
@@ -125,7 +129,6 @@ def audit(args: argparse.Namespace) -> dict[str, Any]:
                 for field in (
                     "title",
                     "author",
-                    "published_at",
                     "updated_at",
                     "category",
                     "summary",
@@ -133,6 +136,22 @@ def audit(args: argparse.Namespace) -> dict[str, Any]:
                 )
                 if getattr(parsed, field) != str(row[field] or "")
             ]
+            stored_published_at = str(row["published_at"] or "")
+            hinted_dates = {
+                publication_hints.get(str(value), "")
+                for value in (
+                    row["url"],
+                    row["source_page_url"],
+                    row["page_url"],
+                    row["final_url"],
+                    row["canonical_url"],
+                )
+                if value
+            }
+            if parsed.published_at != stored_published_at and not (
+                not parsed.published_at and stored_published_at in hinted_dates
+            ):
+                changed.append("published_at")
             if changed:
                 counts["stale_extraction"] += 1
                 for field in changed:
