@@ -138,6 +138,7 @@ GENERIC_HEADINGS = {
     "最新内容",
     "首页置顶",
     "最新消息",
+    "位置栏目",
 }
 
 GENERIC_CATEGORIES = {
@@ -180,6 +181,33 @@ def _is_generic_heading(value: str) -> bool:
     """Return whether a heading is a section label rather than a post title."""
     normalized = re.sub(r"\s+", " ", value).strip().casefold()
     return normalized in {item.casefold() for item in GENERIC_HEADINGS}
+
+
+def _is_site_only_title(value: str) -> bool:
+    """Return whether a document title names only the publishing site.
+
+    A concrete ``<title>`` is normally safer than an arbitrary heading found
+    inside the article body.  Keep the heading fallback for the small set of
+    templates whose document title is only an institution or laboratory name.
+    """
+
+    normalized = re.sub(r"\s+", " ", value).strip(" -|｜").strip()
+    if not normalized or _is_generic_heading(normalized):
+        return True
+    if len(normalized) <= 60 and re.fullmatch(
+        r"(?:中国科学技术大学)?[^，。！？：:]{0,40}"
+        r"(?:大学|学院|研究院|研究所|实验室|中心|新闻网|信息网|专题网|网站|官网)",
+        normalized,
+    ):
+        return True
+    return bool(
+        len(normalized) <= 80
+        and re.match(
+            r"^(?:lab(?:oratory)?|school|college|department|institute|center|centre)\b",
+            normalized,
+            re.I,
+        )
+    )
 
 
 def _is_generic_category(value: str) -> bool:
@@ -566,6 +594,10 @@ def _title_from_document(
             detail = _text(indico_title.rsplit(":", 1)[1])
             if detail and detail.casefold() != "overview":
                 return detail
+    if re.search(r"/event/\d+", url, re.I) and current and not _is_generic_heading(current):
+        # Indico exposes the clean event name in OpenGraph metadata while its
+        # document title appends dates, subpage labels, and product branding.
+        return current
     if current_is_heading and current and not _is_generic_heading(current):
         # A detail heading is already more precise than a document title,
         # which often appends the institution name after a colon or dash.
@@ -584,6 +616,18 @@ def _title_from_document(
         if prefix and not _is_generic_heading(prefix):
             return prefix
     for value in reversed(candidates):
+        if (
+            not _is_generic_heading(value)
+            and document_title.startswith(value)
+            and document_title[len(value) :].lstrip().startswith((":", "：", "-", "－", "|", "｜"))
+        ):
+            return value
+    if document_title and not _is_site_only_title(document_title):
+        # Do this before considering generic ``article/main h2`` candidates.
+        # Rich-text editors frequently put paragraphs inside h2 elements; the
+        # old reverse-candidate search then promoted body prose to the title.
+        return document_title
+    for value in reversed(candidates):
         if not _is_generic_heading(value) and len(value) >= 4:
             return value
     if document_title:
@@ -593,7 +637,7 @@ def _title_from_document(
                 value = _text(document_title.split(separator, 1)[0])
                 if value and not _is_generic_heading(value):
                     return value
-        if current and not _is_generic_heading(current):
+        if current and not _is_generic_heading(current) and not _is_site_only_title(current):
             return current
         # When the document title matches a concrete heading candidate (e.g. an
         # <h3 class="title"> inside the article), it is the real post title even
@@ -816,7 +860,8 @@ def extract_page(
         ".News-detail-title, "
         ".article-title, .post-title, .entry-title, .page_title, .detail_title, "
         ".newstitle, .wl-detail-title, .content_title, #Title, "
-        ".person-title, .titles, .page-header h1, .bt01"
+        ".person-title, .titles, .page-header h1, .biaoti_top h1, "
+        ".biaoti_top h2, .biaoti_top h3, .bt01"
     )
     title = _text(detail_heading.get_text(" ", strip=True)) if detail_heading else ""
     title_is_heading = bool(title)
@@ -830,17 +875,19 @@ def extract_page(
             ),
             None,
         )
-        if not heading:
-            h2s = [
-                node
-                for node in soup.find_all("h2")
-                if len(_text(node.get_text(" ", strip=True))) >= 4
-            ]
-            heading = max(h2s, key=lambda node: len(node.get_text(" ", strip=True)), default=None)
         title = _text(heading.get_text(" ", strip=True) if heading else "")
         title_is_heading = bool(title)
     if not title and soup.title:
         title = _text(soup.title.get_text(" ", strip=True))
+    if not title:
+        h2s = [
+            node
+            for node in soup.find_all("h2")
+            if len(_text(node.get_text(" ", strip=True))) >= 4
+        ]
+        heading = max(h2s, key=lambda node: len(node.get_text(" ", strip=True)), default=None)
+        title = _text(heading.get_text(" ", strip=True) if heading else "")
+        title_is_heading = bool(title)
     title = _title_from_document(soup, title, url, current_is_heading=title_is_heading)
     metadata = _jsonld_values(soup)
     article_ld = next(
