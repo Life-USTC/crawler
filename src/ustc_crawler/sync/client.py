@@ -15,7 +15,7 @@ from datetime import datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 import httpx
 
@@ -27,12 +27,11 @@ from .models import (
     IngestionBatch,
     IngestionBatchResponse,
     LocalObjectManifest,
-    PublicationObjectCompleteRequest,
-    PublicationObjectCompleteResponse,
     PublicationObjectPlanItem,
     PublicationObjectPlanRequest,
     PublicationObjectPlanRequestItem,
     PublicationObjectPlanResponse,
+    PublicationObjectUploadResponse,
 )
 from .outbox import (
     DEFAULT_MAX_BATCH_BYTES,
@@ -45,7 +44,7 @@ if TYPE_CHECKING:
 
 BATCH_ENDPOINT = "/api/ingestion/publications/batches"
 OBJECT_PLAN_ENDPOINT = "/api/ingestion/publications/objects/plan"
-OBJECT_COMPLETE_ENDPOINT = "/api/ingestion/publications/objects/complete"
+OBJECT_UPLOAD_PREFIX = "/api/ingestion/publications/objects"
 INGESTION_SECRET_ENV = "USTC_CRAWLER_INGESTION_SECRET"
 INGESTION_SECRET_HEADER = "X-Publication-Ingestion-Secret"
 RETRY_STATUS_CODES = frozenset({408, 429})
@@ -77,9 +76,17 @@ SAFE_SERVER_ERROR_CODES = frozenset(
 def _server_base(server: str) -> str:
     value = server.strip().rstrip("/")
     parsed = urlsplit(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ValueError("server must be an absolute HTTP(S) URL")
-    return value
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("server must be an HTTP(S) origin")
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 class SyncClientError(RuntimeError):
@@ -217,10 +224,7 @@ class IngestionSyncClient:
 
         options = options or SyncOptions()
         if options.batch_size < 1 or options.batch_size > MAX_PUBLICATION_BATCH_ITEMS:
-            raise ValueError(
-                "batch size must be between 1 and "
-                f"{MAX_PUBLICATION_BATCH_ITEMS}"
-            )
+            raise ValueError(f"batch size must be between 1 and {MAX_PUBLICATION_BATCH_ITEMS}")
         if options.max_payload_bytes < 1:
             raise ValueError("max payload bytes must be positive")
         if options.max_payload_bytes > DEFAULT_MAX_BATCH_BYTES:
@@ -232,15 +236,9 @@ class IngestionSyncClient:
         if options.max_backoff < 0:
             raise ValueError("max backoff cannot be negative")
         if not 1 <= options.object_concurrency <= MAX_OBJECT_CONCURRENCY:
-            raise ValueError(
-                "object concurrency must be between "
-                f"1 and {MAX_OBJECT_CONCURRENCY}"
-            )
+            raise ValueError(f"object concurrency must be between 1 and {MAX_OBJECT_CONCURRENCY}")
         if not 1 <= options.batch_concurrency <= MAX_BATCH_CONCURRENCY:
-            raise ValueError(
-                "batch concurrency must be between "
-                f"1 and {MAX_BATCH_CONCURRENCY}"
-            )
+            raise ValueError(f"batch concurrency must be between 1 and {MAX_BATCH_CONCURRENCY}")
         client_run_id = run_id or uuid.uuid4().hex
         self._start_run(client_run_id)
         summary: dict[str, int | str] = {
@@ -308,8 +306,10 @@ class IngestionSyncClient:
                 # Replay every persisted batch before claiming any new work.
                 # Claims happen only in this coordinator thread; each worker
                 # receives an immutable batch and opens its own DB sessions.
-                while not interrupted and can_claim() and (
-                    replay_index < len(pending_replays) or in_flight
+                while (
+                    not interrupted
+                    and can_claim()
+                    and (replay_index < len(pending_replays) or in_flight)
                 ):
                     while (
                         not interrupted
@@ -347,7 +347,9 @@ class IngestionSyncClient:
                                 run_id=client_run_id,
                                 batch_id=uuid.uuid4().hex,
                                 producer_version=options.producer_version,
-                                observed_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+                                observed_at=datetime.now()
+                                .astimezone()
+                                .isoformat(timespec="seconds"),
                                 limit=options.batch_size,
                                 max_payload_bytes=options.max_payload_bytes,
                             )
@@ -422,6 +424,7 @@ class IngestionSyncClient:
         except SyncTransientError as exc:
             self.outbox.mark_batch_error(batch.batch_id, exc.code)
             raise
+
     @staticmethod
     def _result_identities(
         batch: IngestionBatch,
@@ -431,8 +434,7 @@ class IngestionSyncClient:
             (item.source_id, item.canonical_url, item.revision_hash) for item in batch.items
         )
         returned = Counter(
-            (item.source_id, item.canonical_url, item.revision_hash)
-            for item in response.results
+            (item.source_id, item.canonical_url, item.revision_hash) for item in response.results
         )
         if returned != expected:
             raise SyncProtocolError("batch_result_membership_mismatch")
@@ -532,9 +534,7 @@ class IngestionSyncClient:
                 chunk = object_items[start : start + MAX_OBJECT_PLAN_OBJECTS]
                 initial_plan = self._plan_objects(batch_id, chunk, options)
                 missing = sorted(
-                    key
-                    for key, item in initial_plan.items()
-                    if item.status == "upload_required"
+                    key for key, item in initial_plan.items() if item.status == "upload_required"
                 )
                 for window_start in range(0, len(missing), plan_window):
                     window_keys = missing[window_start : window_start + plan_window]
@@ -623,38 +623,36 @@ class IngestionSyncClient:
             return
         if item.upload_url is None:
             raise SyncProtocolError("object_upload_url_missing")
+        upload_path = "/".join(
+            [
+                OBJECT_UPLOAD_PREFIX,
+                quote(batch_id, safe="-_.!~*'()"),
+                quote(item.kind, safe="-_.!~*'()"),
+                quote(item.sha256, safe="-_.!~*'()"),
+            ]
+        )
+        expected_upload_url = f"{self.server}{upload_path}"
+        if item.upload_url != expected_upload_url:
+            raise SyncProtocolError("object_upload_url_mismatch")
         body = self._object_bytes(manifest)
-        upload = self._request(
+        upload = self._api_request(
             "PUT",
-            item.upload_url,
+            upload_path,
             options=options,
             headers=item.required_headers.model_dump(by_alias=True, mode="json"),
             content=body,
         )
         self._require_success(upload)
-        complete_request = PublicationObjectCompleteRequest(
-            batchId=batch_id,
-            kind=item.kind,
-            sha256=item.sha256,
-        )
-        complete = self._api_request(
-            "POST",
-            OBJECT_COMPLETE_ENDPOINT,
-            options=options,
-            headers={"Content-Type": "application/json"},
-            content=_json_bytes(complete_request.model_dump(by_alias=True, mode="json")),
-        )
-        self._require_success(complete)
         try:
-            complete_response = PublicationObjectCompleteResponse.model_validate(complete.json())
+            upload_response = PublicationObjectUploadResponse.model_validate(upload.json())
         except (ValueError, TypeError) as exc:
-            raise SyncProtocolError("invalid_object_complete_response") from exc
+            raise SyncProtocolError("invalid_object_upload_response") from exc
         if (
-            complete_response.batch_id != batch_id
-            or complete_response.kind != item.kind
-            or complete_response.sha256 != item.sha256
+            upload_response.batch_id != batch_id
+            or upload_response.kind != item.kind
+            or upload_response.sha256 != item.sha256
         ):
-            raise SyncProtocolError("object_complete_identity_mismatch")
+            raise SyncProtocolError("object_upload_identity_mismatch")
 
     @staticmethod
     def _object_bytes(manifest: LocalObjectManifest) -> bytes:
@@ -802,7 +800,7 @@ __all__ = [
     "DEFAULT_HTTP_TIMEOUT",
     "MAX_BATCH_CONCURRENCY",
     "MAX_OBJECT_CONCURRENCY",
-    "OBJECT_COMPLETE_ENDPOINT",
+    "OBJECT_UPLOAD_PREFIX",
     "OBJECT_PLAN_ENDPOINT",
     "INGESTION_SECRET_ENV",
     "INGESTION_SECRET_HEADER",

@@ -44,6 +44,7 @@ def _sanitize_optional_text(value: Any) -> Any:
 
     return sanitize_text(value) if isinstance(value, str) else value
 
+
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 
 
@@ -274,14 +275,6 @@ class PublicationObjectPlanRequest(ProtocolModel):
     )
 
 
-class PublicationObjectCompleteRequest(ProtocolModel):
-    """Request body for ``/publication-objects/complete``."""
-
-    batch_id: TrimmedText = Field(alias="batchId", min_length=1, max_length=200)
-    kind: ObjectKind
-    sha256: Sha256
-
-
 class IngestionItemResult(ProtocolModel):
     """One result returned by the batch ingestion endpoint."""
 
@@ -309,11 +302,9 @@ class IngestionBatchResponse(ProtocolModel):
 
 
 class RequiredUploadHeaders(ProtocolModel):
-    """Headers the server signed into an object upload request."""
+    """Headers required by the authenticated Worker upload request."""
 
     content_type: str = Field(alias="Content-Type", min_length=1)
-    metadata_kind: str = Field(alias="x-amz-meta-kind", min_length=1)
-    metadata_sha256: str = Field(alias="x-amz-meta-sha256", min_length=1)
 
 
 class PublicationObjectPlanItem(ProtocolModel):
@@ -324,7 +315,6 @@ class PublicationObjectPlanItem(ProtocolModel):
     r2_key: str = Field(alias="r2Key", min_length=1)
     status: Literal["already_present", "upload_required"]
     upload_url: str | None = Field(alias="uploadUrl")
-    expires_at: str | None = Field(alias="expiresAt")
     required_headers: RequiredUploadHeaders = Field(alias="requiredHeaders")
 
     _validate_upload_url = field_validator("upload_url")(_validate_optional_url)
@@ -340,13 +330,14 @@ class PublicationObjectPlanResponse(ProtocolModel):
     )
 
 
-class PublicationObjectCompleteResponse(ProtocolModel):
-    """Strict response returned by ``/publication-objects/complete``."""
+class PublicationObjectUploadResponse(ProtocolModel):
+    """Strict response returned by the authenticated Worker upload."""
 
     batch_id: str = Field(alias="batchId", min_length=1)
     kind: ObjectKind
     sha256: Sha256
-    status: Literal["verified", "linked"]
+    status: Literal["linked"]
+
 
 class IngestionPublication(ProtocolModel):
     """A non-tombstone item in the server ingestion contract."""
@@ -413,7 +404,9 @@ type PublicationItem = IngestionPublication | TombstonePublication
 class IngestionBatch(ProtocolModel):
     """The exact immutable JSON body for the publications batch endpoint."""
 
-    protocol_version: Literal["1"] = Field(default=INGESTION_PROTOCOL_VERSION, alias="protocolVersion")
+    protocol_version: Literal["1"] = Field(
+        default=INGESTION_PROTOCOL_VERSION, alias="protocolVersion"
+    )
     producer_version: TrimmedText = Field(alias="producerVersion", min_length=1, max_length=200)
     client_run_id: TrimmedText = Field(alias="clientRunId", min_length=1, max_length=200)
     batch_id: TrimmedText = Field(alias="batchId", min_length=1, max_length=200)
@@ -626,12 +619,11 @@ __all__ = [
     "LocalObjectManifest",
     "ObjectKind",
     "ObjectManifest",
-    "PublicationObjectCompleteRequest",
-    "PublicationObjectCompleteResponse",
     "PublicationObjectPlanItem",
     "PublicationObjectPlanRequestItem",
     "PublicationObjectPlanRequest",
     "PublicationObjectPlanResponse",
+    "PublicationObjectUploadResponse",
     "PublicationItem",
     "PublicationSourceDescriptor",
     "RequiredUploadHeaders",
