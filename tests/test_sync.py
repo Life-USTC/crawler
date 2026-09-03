@@ -15,7 +15,6 @@ from ustc_crawler.sync.models import (
     IngestionBatch,
     IngestionPublication,
     ObjectManifest,
-    PublicationObjectCompleteRequest,
     PublicationObjectPlanRequest,
     PublicationSourceDescriptor,
     TombstonePublication,
@@ -41,7 +40,15 @@ class IngestionProtocolTests(unittest.TestCase):
         self.assertEqual(IngestionBatch.model_validate(batch.payload_dict()), batch)
         self.assertEqual(
             set(payload),
-            {"protocolVersion", "producerVersion", "clientRunId", "batchId", "observedAt", "sources", "items"},
+            {
+                "protocolVersion",
+                "producerVersion",
+                "clientRunId",
+                "batchId",
+                "observedAt",
+                "sources",
+                "items",
+            },
         )
         self.assertNotIn("local_path", batch.payload_bytes().decode())
         with self.assertRaises(ValidationError):
@@ -62,13 +69,6 @@ class IngestionProtocolTests(unittest.TestCase):
         self.assertEqual(
             plan.model_dump(by_alias=True),
             {"batchId": "batch-0001", "objects": [{"kind": "body_html", "sha256": "b" * 64}]},
-        )
-        complete = PublicationObjectCompleteRequest(
-            batchId="batch-0001", kind="body_html", sha256="b" * 64
-        )
-        self.assertEqual(
-            complete.model_dump(by_alias=True),
-            {"batchId": "batch-0001", "kind": "body_html", "sha256": "b" * 64},
         )
         with self.assertRaises(ValidationError):
             PublicationObjectPlanRequest(
@@ -106,22 +106,28 @@ class IngestionProtocolTests(unittest.TestCase):
             "tombstone": True,
         }
         batch = build_ingestion_batch(
-            [IngestionBatch.model_validate({
-                "protocolVersion": "1",
-                "producerVersion": "test",
-                "clientRunId": "run",
-                "batchId": "batch",
-                "observedAt": "2026-08-20",
-                "sources": [source.model_dump(by_alias=True)],
-                "items": [item],
-            }).items[0]],
+            [
+                IngestionBatch.model_validate(
+                    {
+                        "protocolVersion": "1",
+                        "producerVersion": "test",
+                        "clientRunId": "run",
+                        "batchId": "batch",
+                        "observedAt": "2026-08-20",
+                        "sources": [source.model_dump(by_alias=True)],
+                        "items": [item],
+                    }
+                ).items[0]
+            ],
             sources=[source],
             client_run_id="run",
             batch_id="batch",
             observed_at="2026-08-20",
             producer_version="test",
         )
-        self.assertEqual(batch.payload_dict()["items"], [item | {"observedAt": "2026-08-20T00:00:00+08:00"}])
+        self.assertEqual(
+            batch.payload_dict()["items"], [item | {"observedAt": "2026-08-20T00:00:00+08:00"}]
+        )
 
     def test_publication_builder_bounds_malformed_parser_fields(self) -> None:
         article = ArticleDocument(
@@ -581,7 +587,9 @@ class OrmAndOutboxTests(unittest.TestCase):
                 )
                 self.assertTrue(Path(local[0].local_path).is_file())
                 with store.database.session_factory() as session:
-                    self.assertEqual(session.scalar(select(func.count()).select_from(SyncOutbox)), 1)
+                    self.assertEqual(
+                        session.scalar(select(func.count()).select_from(SyncOutbox)), 1
+                    )
                 batch = outbox.build_batch(
                     run_id="run",
                     batch_id="batch",
@@ -648,7 +656,10 @@ class OrmAndOutboxTests(unittest.TestCase):
                 )
                 assert batch is not None
                 self.assertIsInstance(batch.items[0], TombstonePublication)
-                self.assertEqual(batch.payload_dict()["items"], [tombstone.model_dump(by_alias=True, mode="json")])
+                self.assertEqual(
+                    batch.payload_dict()["items"],
+                    [tombstone.model_dump(by_alias=True, mode="json")],
+                )
 
                 replayed = outbox.build_batch(
                     run_id="different-run",
@@ -683,7 +694,9 @@ class OrmAndOutboxTests(unittest.TestCase):
                         source=source,
                     )
                 with store.database.session_factory() as session:
-                    self.assertEqual(session.scalar(select(func.count()).select_from(SyncOutbox)), 0)
+                    self.assertEqual(
+                        session.scalar(select(func.count()).select_from(SyncOutbox)), 0
+                    )
             finally:
                 store.close()
 
@@ -776,9 +789,7 @@ class OrmAndOutboxTests(unittest.TestCase):
                         item_status=item_status,
                         outbox_status=outbox_status,
                     )
-                    released = IngestionOutbox(store.database).recover_oversized_batch(
-                        batch_status
-                    )
+                    released = IngestionOutbox(store.database).recover_oversized_batch(batch_status)
                     self.assertEqual(released, 101)
                 finally:
                     store.close()

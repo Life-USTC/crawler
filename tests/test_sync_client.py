@@ -191,6 +191,31 @@ class SyncClientTests(unittest.TestCase):
                 sync.close()
                 store.close()
 
+    def test_server_configuration_must_be_an_origin(self) -> None:
+        invalid_servers = [
+            "https://user@example.test",
+            "https://example.test/api",
+            "https://example.test?query=value",
+            "https://example.test#fragment",
+        ]
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            try:
+                for server in invalid_servers:
+                    with (
+                        self.subTest(server=server),
+                        self.assertRaisesRegex(ValueError, "must be an HTTP\\(S\\) origin"),
+                    ):
+                        IngestionSyncClient(
+                            store.database,
+                            store.data_dir,
+                            server,
+                            self.ingestion_secret,
+                        )
+            finally:
+                store.close()
+
     @staticmethod
     def _batch_response(request: httpx.Request, *, statuses: dict[str, str] | None = None) -> dict:
         payload = json.loads(request.content)
@@ -228,16 +253,30 @@ class SyncClientTests(unittest.TestCase):
                     "sha256": item["sha256"],
                     "r2Key": f"publications/{item['sha256']}",
                     "status": "upload_required" if upload else "already_present",
-                    "uploadUrl": f"{self.server}/signed/{item['sha256']}" if upload else None,
-                    "expiresAt": None,
+                    "uploadUrl": (
+                        f"{self.server}/api/ingestion/publications/objects/"
+                        f"{payload['batchId']}/{item['kind']}/{item['sha256']}"
+                        if upload
+                        else None
+                    ),
                     "requiredHeaders": {
-                        "Content-Type": "text/html" if item["kind"] == "body_html" else "text/markdown",
-                        "x-amz-meta-kind": item["kind"],
-                        "x-amz-meta-sha256": item["sha256"],
+                        "Content-Type": "text/html"
+                        if item["kind"] == "body_html"
+                        else "text/markdown",
                     },
                 }
             )
         return {"batchId": payload["batchId"], "objects": objects}
+
+    @staticmethod
+    def _upload_response(request: httpx.Request) -> dict:
+        batch_id, kind, sha256 = request.url.path.rsplit("/", 3)[-3:]
+        return {
+            "batchId": batch_id,
+            "kind": kind,
+            "sha256": sha256,
+            "status": "linked",
+        }
 
     def test_sync_uploads_plan_objects_with_exact_headers_and_no_secrets(self) -> None:
         batch_requests: list[httpx.Request] = []
@@ -256,21 +295,15 @@ class SyncClientTests(unittest.TestCase):
             if request.url.path == "/api/ingestion/publications/objects/plan":
                 self.assertEqual(request.headers[INGESTION_SECRET_HEADER], ingestion_secret)
                 plan_requests.append(json.loads(request.content))
-                return httpx.Response(200, json=self._plan_response(request, upload=True), request=request)
-            if request.url.path.startswith("/signed/"):
+                return httpx.Response(
+                    200, json=self._plan_response(request, upload=True), request=request
+                )
+            if request.url.path.startswith("/api/ingestion/publications/objects/"):
                 upload_requests.append(request)
-                return httpx.Response(200, request=request)
-            if request.url.path == "/api/ingestion/publications/objects/complete":
                 self.assertEqual(request.headers[INGESTION_SECRET_HEADER], ingestion_secret)
-                payload = json.loads(request.content)
                 return httpx.Response(
                     200,
-                    json={
-                        "batchId": payload["batchId"],
-                        "kind": payload["kind"],
-                        "sha256": payload["sha256"],
-                        "status": "verified",
-                    },
+                    json=self._upload_response(request),
                     request=request,
                 )
             raise AssertionError(f"unexpected sync request: {request.url}")
@@ -305,10 +338,13 @@ class SyncClientTests(unittest.TestCase):
                 self.assertEqual(len(upload_requests), len(plan_requests[0]["objects"]))
                 for request in upload_requests:
                     self.assertNotIn("authorization", request.headers)
-                    self.assertIn(request.headers["x-amz-meta-kind"], {"body_html", "body_markdown"})
                     self.assertEqual(
-                        request.headers["x-amz-meta-sha256"],
-                        request.url.path.rsplit("/", 1)[-1],
+                        request.headers[INGESTION_SECRET_HEADER],
+                        ingestion_secret,
+                    )
+                    self.assertIn(
+                        request.headers["content-type"],
+                        {"text/html", "text/markdown"},
                     )
                 with store.database.session_factory() as session:
                     batch = session.scalar(select(SyncBatch))
@@ -324,7 +360,44 @@ class SyncClientTests(unittest.TestCase):
                     )
                     self.assertNotIn(ingestion_secret, durable)
                     self.assertNotIn("uploadUrl", durable)
-                    self.assertNotIn("signed/", durable)
+            finally:
+                sync.close()
+                store.close()
+
+    def test_sync_never_sends_secret_to_an_unexpected_upload_url(self) -> None:
+        requested_urls: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            requested_urls.append(str(request.url))
+            if request.url.path == "/api/ingestion/publications/batches":
+                return httpx.Response(200, json=self._batch_response(request), request=request)
+            if request.url.path == "/api/ingestion/publications/objects/plan":
+                response = self._plan_response(request, upload=True)
+                response["objects"][0]["uploadUrl"] = "https://attacker.example/upload"
+                return httpx.Response(200, json=response, request=request)
+            raise AssertionError(f"unexpected request: {request.url}")
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            try:
+                store.enqueue_article_for_sync(self._article(20))
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=client,
+                )
+                summary = sync.sync()
+                self.assertEqual(summary["failed"], 1)
+                self.assertFalse(
+                    any(url.startswith("https://attacker.example") for url in requested_urls)
+                )
+                with store.database.session_factory() as session:
+                    batch = session.scalar(select(SyncBatch))
+                    self.assertEqual(batch.last_error, "object_upload_url_mismatch")
             finally:
                 sync.close()
                 store.close()
@@ -378,13 +451,10 @@ class SyncClientTests(unittest.TestCase):
                     json=self._plan_response(request, upload=True),
                     request=request,
                 )
-            if request.url.path.startswith("/signed/"):
-                return httpx.Response(200, request=request)
-            if request.url.path == "/api/ingestion/publications/objects/complete":
-                payload = json.loads(request.content)
+            if request.url.path.startswith("/api/ingestion/publications/objects/"):
                 return httpx.Response(
                     200,
-                    json={**payload, "status": "verified"},
+                    json=self._upload_response(request),
                     request=request,
                 )
             raise AssertionError(f"unexpected sync request: {request.url}")
@@ -440,9 +510,7 @@ class SyncClientTests(unittest.TestCase):
                 self.assertEqual(summary["failed"], 0)
                 self.assertEqual(len(plan_requests), 1)
                 media_objects = [
-                    item
-                    for item in plan_requests[0]["objects"]
-                    if item["kind"] == "media"
+                    item for item in plan_requests[0]["objects"] if item["kind"] == "media"
                 ]
                 self.assertEqual(len(media_objects), 1)
             finally:
@@ -465,13 +533,8 @@ class SyncClientTests(unittest.TestCase):
                 )
             if request.url.path == "/api/ingestion/publications/objects/plan":
                 plan_requests.append(json.loads(request.content))
-                return httpx.Response(200, json=self._plan_response(request, upload=False), request=request)
-            if request.url.path == "/api/ingestion/publications/objects/complete":
-                payload = json.loads(request.content)
                 return httpx.Response(
-                    200,
-                    json={**payload, "status": "linked"},
-                    request=request,
+                    200, json=self._plan_response(request, upload=False), request=request
                 )
             raise AssertionError(f"rejected item should not cause object request: {request.url}")
 
@@ -499,8 +562,7 @@ class SyncClientTests(unittest.TestCase):
                         select(SyncBatchItem).order_by(SyncBatchItem.canonical_url)
                     ).all()
                     rows = {
-                        row.entity_key: row
-                        for row in session.scalars(select(SyncOutbox)).all()
+                        row.entity_key: row for row in session.scalars(select(SyncOutbox)).all()
                     }
                     self.assertEqual(batch.status, "partial")
                     self.assertEqual(batch.last_error, "server_rejected")
@@ -530,13 +592,6 @@ class SyncClientTests(unittest.TestCase):
                 return httpx.Response(
                     200,
                     json=self._plan_response(request, upload=False),
-                    request=request,
-                )
-            if request.url.path == "/api/ingestion/publications/objects/complete":
-                payload = json.loads(request.content)
-                return httpx.Response(
-                    200,
-                    json={**payload, "status": "linked"},
                     request=request,
                 )
             raise AssertionError(f"unexpected sync request: {request.url}")
@@ -593,6 +648,7 @@ class SyncClientTests(unittest.TestCase):
         lock = threading.Lock()
         plan_count = 0
         events: list[tuple[str, int]] = []
+        generation_by_sha: dict[str, int] = {}
 
         def handler(request: httpx.Request) -> httpx.Response:
             nonlocal plan_count
@@ -605,25 +661,18 @@ class SyncClientTests(unittest.TestCase):
                     events.append(("plan", generation))
                 response = self._plan_response(request, upload=True)
                 for item in response["objects"]:
-                    item["uploadUrl"] = (
-                        f"{self.server}/signed/{generation}/{item['sha256']}"
-                    )
+                    generation_by_sha[item["sha256"]] = generation
                 return httpx.Response(
                     200,
                     json=response,
                     request=request,
                 )
-            if request.url.path.startswith("/signed/"):
+            if request.url.path.startswith("/api/ingestion/publications/objects/"):
                 with lock:
-                    events.append(("put", int(request.url.path.split("/")[2])))
-                return httpx.Response(200, request=request)
-            if request.url.path == "/api/ingestion/publications/objects/complete":
-                payload = json.loads(request.content)
-                with lock:
-                    events.append(("complete", plan_count))
+                    events.append(("put", generation_by_sha[request.url.path.rsplit("/", 1)[-1]]))
                 return httpx.Response(
                     200,
-                    json={**payload, "status": "verified"},
+                    json=self._upload_response(request),
                     request=request,
                 )
             raise AssertionError(f"unexpected sync request: {request.url}")
@@ -648,7 +697,7 @@ class SyncClientTests(unittest.TestCase):
                 self.assertEqual(plan_count, 2)
                 second_plan = events.index(("plan", 2))
                 self.assertEqual(
-                    sum(kind == "complete" for kind, _ in events[:second_plan]),
+                    sum(kind == "put" for kind, _ in events[:second_plan]),
                     2,
                 )
                 self.assertEqual(
@@ -869,7 +918,9 @@ class SyncClientTests(unittest.TestCase):
                 self.assertEqual(summary["status"], "partial")
                 with store.database.session_factory() as session:
                     rows = session.scalars(select(SyncOutbox)).all()
-                    self.assertEqual({row.status for row in rows}, {"uploading", "acked", "pending"})
+                    self.assertEqual(
+                        {row.status for row in rows}, {"uploading", "acked", "pending"}
+                    )
                     replay = session.get(SyncBatch, failed_batch_id)
                     self.assertIsNotNone(replay)
                     self.assertEqual(replay.status, "uploading")
@@ -949,7 +1000,7 @@ class SyncClientTests(unittest.TestCase):
                     json=self._plan_response(request, upload=True),
                     request=request,
                 )
-            if request.url.path.startswith("/signed/"):
+            if request.url.path.startswith("/api/ingestion/publications/objects/"):
                 with lock:
                     put_started += 1
                     barrier_index = put_started
@@ -961,12 +1012,9 @@ class SyncClientTests(unittest.TestCase):
                 finally:
                     with lock:
                         active -= 1
-                return httpx.Response(200, request=request)
-            if request.url.path == "/api/ingestion/publications/objects/complete":
-                payload = json.loads(request.content)
                 return httpx.Response(
                     200,
-                    json={**payload, "status": "verified"},
+                    json=self._upload_response(request),
                     request=request,
                 )
             raise AssertionError(f"unexpected sync request: {request.url}")
@@ -1005,20 +1053,18 @@ class SyncClientTests(unittest.TestCase):
                     json=self._plan_response(request, upload=True),
                     request=request,
                 )
-            if request.url.path.startswith("/signed/"):
-                return httpx.Response(200, request=request)
-            if request.url.path == "/api/ingestion/publications/objects/complete":
-                payload = json.loads(request.content)
-                if payload["kind"] == "body_markdown":
+            if request.url.path.startswith("/api/ingestion/publications/objects/"):
+                kind = request.url.path.rsplit("/", 3)[-2]
+                if kind == "body_markdown":
                     high_failure_finished.set()
                     return httpx.Response(
                         403,
                         json={"error": "forbidden"},
                         request=request,
                     )
-                if payload["kind"] == "body_html":
+                if kind == "body_html":
                     if not high_failure_finished.wait(timeout=5):
-                        raise AssertionError("object completions did not run concurrently")
+                        raise AssertionError("object uploads did not run concurrently")
                     return httpx.Response(
                         400,
                         json={"error": "invalid_request"},
@@ -1053,10 +1099,9 @@ class SyncClientTests(unittest.TestCase):
             if request.url.path == "/api/ingestion/publications/batches":
                 return httpx.Response(200, json=self._batch_response(request), request=request)
             if request.url.path == "/api/ingestion/publications/objects/plan":
-                return httpx.Response(200, json=self._plan_response(request, upload=False), request=request)
-            if request.url.path == "/api/ingestion/publications/objects/complete":
-                payload = json.loads(request.content)
-                return httpx.Response(200, json={**payload, "status": "linked"}, request=request)
+                return httpx.Response(
+                    200, json=self._plan_response(request, upload=False), request=request
+                )
             raise AssertionError(f"unexpected request: {request.url}")
 
         with TemporaryDirectory() as temp:
@@ -1087,9 +1132,7 @@ class SyncClientTests(unittest.TestCase):
                         2,
                     )
                     self.assertEqual(
-                        {
-                            row.status for row in session.scalars(select(SyncOutbox)).all()
-                        },
+                        {row.status for row in session.scalars(select(SyncOutbox)).all()},
                         {"acked"},
                     )
             finally:
@@ -1110,10 +1153,9 @@ class SyncClientTests(unittest.TestCase):
                     raise httpx.ReadError("response lost", request=request)
                 return httpx.Response(200, json=self._batch_response(request), request=request)
             if request.url.path == "/api/ingestion/publications/objects/plan":
-                return httpx.Response(200, json=self._plan_response(request, upload=False), request=request)
-            if request.url.path == "/api/ingestion/publications/objects/complete":
-                payload = json.loads(request.content)
-                return httpx.Response(200, json={**payload, "status": "linked"}, request=request)
+                return httpx.Response(
+                    200, json=self._plan_response(request, upload=False), request=request
+                )
             raise AssertionError(f"unexpected request: {request.url}")
 
         with TemporaryDirectory() as temp:
@@ -1206,9 +1248,7 @@ class SyncClientTests(unittest.TestCase):
                     self.ingestion_secret,
                     http_client=client,
                 )
-                summary = sync.sync(
-                    options=SyncOptions(batch_size=1)
-                )
+                summary = sync.sync(options=SyncOptions(batch_size=1))
                 self.assertEqual(batch_calls, 1)
                 self.assertEqual(summary["batches"], 1)
                 self.assertEqual(summary["status"], "partial")
@@ -1228,10 +1268,12 @@ class SyncClientTests(unittest.TestCase):
             if request.url.path == "/api/ingestion/publications/batches":
                 return httpx.Response(200, json=self._batch_response(request), request=request)
             if request.url.path == "/api/ingestion/publications/objects/plan":
-                return httpx.Response(200, json=self._plan_response(request, upload=True), request=request)
-            if request.url.path.startswith("/signed/"):
+                return httpx.Response(
+                    200, json=self._plan_response(request, upload=True), request=request
+                )
+            if request.url.path.startswith("/api/ingestion/publications/objects/"):
                 put_count += 1
-                return httpx.Response(200, request=request)
+                return httpx.Response(200, json=self._upload_response(request), request=request)
             raise AssertionError(f"unexpected request: {request.url}")
 
         with TemporaryDirectory() as temp:
@@ -1251,9 +1293,7 @@ class SyncClientTests(unittest.TestCase):
                     self.ingestion_secret,
                     http_client=client,
                 )
-                summary = sync.sync(
-                    options=SyncOptions(max_retries=0)
-                )
+                summary = sync.sync(options=SyncOptions(max_retries=0))
                 self.assertEqual(summary["failed"], 1)
                 self.assertEqual(put_count, 0)
                 with store.database.session_factory() as session:
@@ -1408,7 +1448,9 @@ class SyncClientTests(unittest.TestCase):
 
                 statements: list[str] = []
 
-                def count_selects(_connection, _cursor, statement, _parameters, _context, _executemany):
+                def count_selects(
+                    _connection, _cursor, statement, _parameters, _context, _executemany
+                ):
                     if statement.lstrip().upper().startswith("SELECT"):
                         statements.append(statement)
 
@@ -1425,7 +1467,10 @@ class SyncClientTests(unittest.TestCase):
                 )
                 self.assertEqual(len(statements), 4)
                 self.assertEqual(
-                    [snapshot.article.url for snapshot in store.sync_article_snapshot_page(first[-1].article.url)],
+                    [
+                        snapshot.article.url
+                        for snapshot in store.sync_article_snapshot_page(first[-1].article.url)
+                    ],
                     [],
                 )
             finally:
