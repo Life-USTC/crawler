@@ -811,6 +811,8 @@ def _content_root(soup: BeautifulSoup) -> Tag:
                 or has_embedded_document
                 or selector == ".cont .text"
                 or selector == ".InfoBox"
+                or selector == ".infobox"
+                or selector == ".newsNr"
             )
             if len(clone_text) < 40 and not authoritative_content:
                 continue
@@ -1186,10 +1188,20 @@ def extract_page(
             links.append(target)
     attachment_shell = "attachment_id=" in urlsplit(url).query.lower() or "/attachment/" in urlsplit(url).path.lower()
     indico_detail = bool(re.search(r"/event/\d+/(?:page|contributions)/", url, re.I))
-    is_article = bool(article_ld or explicit_published or detail_url or indico_detail) and not attachment_shell
+    listing_url = bool(re.search(r"/(?:list|index)(?:/|\.[^/?]+)?$", urlsplit(url).path, re.I))
+    is_article = (
+        bool(article_ld or explicit_published or detail_url or indico_detail)
+        and not attachment_shell
+        and not listing_url
+    )
     if not is_article:
         article_tags = soup.find_all("article")
-        is_article = len(article_tags) == 1 and len(body_text) > 180 and not attachment_shell
+        is_article = (
+            len(article_tags) == 1
+            and len(body_text) > 180
+            and not attachment_shell
+            and not listing_url
+        )
     metadata_only = body_text.replace(title, "", 1) if title else body_text
     metadata_only = re.sub(
         r"(?:发布时间|阅读次数|浏览次数|上一篇|下一篇|上一条|下一条|来源|作者)\s*[:：]?",
