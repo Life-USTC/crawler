@@ -1860,6 +1860,21 @@ class Store:
                     sha256_bytes(revision_seed.encode("utf-8")),
                 )
             return deleted
+
+        def remove_article_with_media(url: str) -> int:
+            """Delete one article and detach media owned by that article.
+
+            A retained article keeps its ``media.article_url`` owner while its
+            relationships are rebuilt below.  Clearing that owner for every
+            retained article turns the unindexed column into a full-table scan
+            for each page; only deleted articles need the detach operation.
+            """
+
+            self._core.execute("DELETE FROM article_media WHERE article_url=?", (url,))
+            deleted = remove_article(url)
+            if deleted:
+                self._core.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (url,))
+            return deleted
         # Avoid one duplicate lookup query per page.  The archive is large
         # enough that the old ``duplicate_page_url`` call turned reindexing
         # into an hours-long sequence of random SQLite reads.  Build a small
@@ -1936,13 +1951,7 @@ class Store:
                     )
                     keys = {row["url"], row["final_url"], row["canonical_url"]}
                     for key in filter(None, keys):
-                        self._core.execute(
-                            "DELETE FROM article_media WHERE article_url=?", (key,)
-                        )
-                        self._core.execute(
-                            "UPDATE media SET article_url=NULL WHERE article_url=?", (key,)
-                        )
-                        removed += remove_article(key)
+                        removed += remove_article_with_media(key)
                     if scanned % 500 == 0:
                         self._core.commit()
                     continue
@@ -1956,9 +1965,7 @@ class Store:
                     )
                     keys = {row["url"], row["final_url"], row["canonical_url"]}
                     for key in filter(None, keys):
-                        self._core.execute("DELETE FROM article_media WHERE article_url=?", (key,))
-                        self._core.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (key,))
-                        removed += remove_article(key)
+                        removed += remove_article_with_media(key)
                     if scanned % 500 == 0:
                         self._core.commit()
                     continue
@@ -2035,9 +2042,6 @@ class Store:
                 # relationships first so exports do not retain stale images.
                 for key in filter(None, keys):
                     self._core.execute("DELETE FROM article_media WHERE article_url=?", (key,))
-                    self._core.execute(
-                        "UPDATE media SET article_url=NULL WHERE article_url=?", (key,)
-                    )
                 hint = ""
                 for key in filter(None, keys):
                     hint = self.article_hint(key)
@@ -2075,9 +2079,7 @@ class Store:
                 articles += 1
             else:
                 for key in filter(None, keys):
-                    self._core.execute("DELETE FROM article_media WHERE article_url=?", (key,))
-                    self._core.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (key,))
-                    removed += remove_article(key)
+                    removed += remove_article_with_media(key)
             # Committing once per page turns this pass into millions of
             # synchronous SQLite fsyncs.  Keep the same transactionally
             # consistent result while amortizing the cost over small batches.
@@ -2092,9 +2094,7 @@ class Store:
             if not document_asset_url(row["url"]):
                 continue
             url = row["url"]
-            self._core.execute("DELETE FROM article_media WHERE article_url=?", (url,))
-            self._core.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (url,))
-            document_articles_removed += remove_article(url)
+            document_articles_removed += remove_article_with_media(url)
         if document_articles_removed:
             self._core.commit()
         if tombstones:
