@@ -11,6 +11,22 @@ from ustc_crawler.publication import (
 
 
 class PublicationClassifierTests(unittest.TestCase):
+    def test_non_publication_course_video_and_profile_pages_are_other(self) -> None:
+        cases = (
+            {"url": "https://sz.ustc.edu.cn/kecheng/video/detail_87_0.htm"},
+            {"url": "https://math.ustc.edu.cn/2024/1205/c1a2/page.htm", "title": "Faculty"},
+            {"url": "https://emba.ustc.edu.cn/2025/1209/c1a2/page.htm", "category": "视频中心"},
+            {
+                "url": "https://math.ustc.edu.cn/2024/1205/c1a2/page.htm",
+                "source_id": "unit-math-ustc-edu-cn",
+                "title": "Yu Shucheng",
+                "category": "Fundamental Mathematics",
+            },
+        )
+        for values in cases:
+            with self.subTest(values=values):
+                self.assertEqual(classify_publication(**values), "other")
+
     def test_administrative_admissions_titles_are_notices(self) -> None:
         titles = (
             "2026年招生导师及研究方向",
@@ -46,6 +62,7 @@ class PublicationClassifierTests(unittest.TestCase):
             "录取通知书",
             "招生工作新闻报道",
             "复试录取新闻报道",
+            "Faculty",
         )
         expression = publication_type_sql()
         with sqlite3.connect(":memory:") as connection:
@@ -90,7 +107,7 @@ class PublicationClassifierTests(unittest.TestCase):
                 )
 
     def test_classifier_version_is_bumped_for_new_rules(self) -> None:
-        self.assertEqual(CLASSIFIER_VERSION, "publication-v2")
+        self.assertEqual(CLASSIFIER_VERSION, "publication-v3")
 
 
 if __name__ == "__main__":

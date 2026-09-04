@@ -35,9 +35,11 @@ CONTENT_SELECTORS = (
     ".con_main",
     ".wl-detail",
     ".newsdetail_main",
+    ".container_bg",
     ".newscont",
     ".inner-news-detail",
     ".wl-xueshu",
+    ".cont .text",
     ".SubPage",
     ".news-detail-notes",
     ".articel-show-text",
@@ -84,9 +86,11 @@ CONTENT_BOOSTS = {
     ".con_main": 1600,
     ".wl-detail": 1800,
     ".newsdetail_main": 1800,
+    ".container_bg": 1600,
     ".newscont": 1800,
     ".inner-news-detail": 1800,
     ".wl-xueshu": 1900,
+    ".cont .text": 1800,
     ".SubPage": 1500,
     ".v_news_content": 2200,
     "#vsb_content": 2200,
@@ -139,6 +143,9 @@ GENERIC_HEADINGS = {
     "首页置顶",
     "最新消息",
     "位置栏目",
+    "影像",
+    "faculty",
+    "中国科学技术大学-研究生招生在线",
 }
 
 GENERIC_CATEGORIES = {
@@ -171,6 +178,13 @@ BREADCRUMB_SELECTORS = (
     ".crumbs",
     ".navpath",
     ".location",
+    ".n_position",
+    ".breadcrumbs",
+    ".breadCreamBar",
+    ".inner-rposition",
+    ".rpos-con",
+    ".col_path",
+    ".ert",
     "nav[aria-label='breadcrumb']",
     "nav[aria-label='Breadcrumb']",
     "[class*='breadcrumb']",
@@ -743,6 +757,11 @@ def _content_root(soup: BeautifulSoup) -> Tag:
                 or image.get("srcset")
                 for image in node.find_all("img")
             )
+            has_embedded_document = bool(node.select_one("[pdfsrc], [swsrc], [vurl]")) or any(
+                "showVsb" in script.get_text(" ", strip=True)
+                or "vsb_pdf_image_data" in script.get_text(" ", strip=True)
+                for script in node.find_all("script")
+            )
             authoritative_content = (
                 CONTENT_BOOSTS.get(selector, 0) >= 1500
                 or node.name == "article"
@@ -750,6 +769,8 @@ def _content_root(soup: BeautifulSoup) -> Tag:
             ) and (
                 len(clone_text) >= 2
                 or has_image
+                or has_embedded_document
+                or selector == ".cont .text"
             )
             if len(clone_text) < 40 and not authoritative_content:
                 continue
@@ -775,6 +796,12 @@ def _content_root(soup: BeautifulSoup) -> Tag:
         content_cell = sibling.find("td") if sibling else None
         if content_cell and len(content_cell.get_text(" ", strip=True)) >= 40:
             candidates.append((2100 + len(content_cell.get_text(" ", strip=True)), content_cell))
+    # The oldest graduate-admissions template wraps the title and article in
+    # a plain table whose only stable marker is the ``td.bt01`` title cell.
+    for title_cell in soup.select("td.bt01"):
+        table = title_cell.find_parent("table")
+        if table and len(table.get_text(" ", strip=True)) >= 40:
+            candidates.append((2050 + len(table.get_text(" ", strip=True)), table))
     if candidates:
         return max(candidates, key=lambda pair: pair[0])[1]
     return soup.body or soup
@@ -788,6 +815,19 @@ def _clean_root(root: Tag) -> None:
         node.decompose()
     for node in root.find_all(["header", "footer", "nav", "aside"]):
         node.decompose()
+    for node in root.select(", ".join(BREADCRUMB_SELECTORS)):
+        node.decompose()
+    # A few table-era templates put an unclassified breadcrumb table inside
+    # the otherwise correct article container. Restrict this fallback to a
+    # compact, media-free table so real tabular article content is preserved.
+    for node in root.find_all(["table", "tr"]):
+        value = _text(node.get_text(" ", strip=True))
+        if (
+            len(value) <= 120
+            and re.match(r"^(?:您的)?当前位置\s*[:：]", value)
+            and not node.select_one("img, [pdfsrc], [swsrc]")
+        ):
+            node.decompose()
     # Broken legacy table markup can make BeautifulSoup nest the site's footer
     # inside an otherwise authoritative article container. Remove a compact
     # block carrying the filing/copyright signature before extracting text and
@@ -804,6 +844,19 @@ def _clean_root(root: Tag) -> None:
             node.decompose()
     for node in reversed(root.find_all(True)):
         if _is_shell_container(node):
+            node.decompose()
+
+
+def _remove_repeated_title(root: Tag, title: str) -> None:
+    """Remove a title node already rendered separately by the detail page."""
+
+    if not title:
+        return
+    for node in root.select(
+        "h1, h2, h3, h4, h5, .article-title, .arti_title, .post-title, "
+        ".entry-title, .detail_title, .newstitle, .wl-detail-title, td.bt01"
+    ):
+        if node is not root and _text(node.get_text(" ", strip=True)) == title:
             node.decompose()
 
 
@@ -845,6 +898,31 @@ def _image_refs(root: Tag, page_url: str) -> list[ImageRef]:
     return result
 
 
+def _visual_sitebuilder_player_urls(soup: BeautifulSoup, page_url: str) -> tuple[list[str], list[str]]:
+    """Extract media hidden in VisualSiteBuilder video/PDF player scripts."""
+
+    urls: list[str] = []
+    images: list[str] = []
+    seen: set[str] = set()
+    for script in soup.find_all("script"):
+        value = script.get_text(" ", strip=True)
+        if "showVsb" not in value and "vsb_pdf_image_data" not in value:
+            continue
+        for match in re.finditer(
+            r"[\"']([^\"']+\.(?:pdf|mp4|webm|jpe?g|png|gif|webp)(?:\?[^\"']*)?)[\"']",
+            value,
+            re.IGNORECASE,
+        ):
+            target = normalize_url(match.group(1), page_url)
+            if not target or target in seen:
+                continue
+            seen.add(target)
+            urls.append(target)
+            if re.search(r"\.(?:jpe?g|png|gif|webp)$", urlsplit(target).path, re.IGNORECASE):
+                images.append(target)
+    return urls, images
+
+
 def extract_page(
     url: str, html: str, content_type: str = "text/html", source_id: str = ""
 ) -> PageDocument:
@@ -860,7 +938,7 @@ def extract_page(
         ".News-detail-title, "
         ".article-title, .post-title, .entry-title, .page_title, .detail_title, "
         ".newstitle, .wl-detail-title, .content_title, #Title, "
-        ".person-title, .titles, .page-header h1, .biaoti_top h1, "
+        ".person-title, .titles, .show01 h5, .page-header h1, .biaoti_top h1, "
         ".biaoti_top h2, .biaoti_top h3, .bt01"
     )
     title = _text(detail_heading.get_text(" ", strip=True)) if detail_heading else ""
@@ -972,6 +1050,16 @@ def extract_page(
     )
     root = _content_root(soup)
     root_is_fallback = root is soup.body or root is soup
+    embedded_documents: list[str] = []
+    for node in soup.select("[pdfsrc], [swsrc], [vurl]"):
+        for attribute in ("pdfsrc", "swsrc", "vurl"):
+            target = normalize_url(str(node.get(attribute) or ""), url)
+            if target and target not in embedded_documents:
+                embedded_documents.append(target)
+    player_urls, player_images = _visual_sitebuilder_player_urls(soup, url)
+    for target in player_urls:
+        if target not in embedded_documents:
+            embedded_documents.append(target)
     category = (
         _text(article_ld.get("articleSection"))
         or _first_meta(soup, "article:section", "category")
@@ -979,6 +1067,7 @@ def extract_page(
         or _first_non_generic_section_heading(soup, title)
     )
     _clean_root(root)
+    _remove_repeated_title(root, title)
     if not title:
         # Some legacy USTC templates leave the title element and detail h1 as
         # whitespace while placing the real heading in the first bold lead
@@ -1009,6 +1098,11 @@ def extract_page(
         soup, "description", "og:description"
     )
     images = _image_refs(root, url)
+    known_images = {image.url for image in images}
+    for target in player_images:
+        if target not in known_images:
+            known_images.add(target)
+            images.append(ImageRef(url=target))
     for image in images:
         image.article_url = canonical or url
     links = []
@@ -1044,17 +1138,10 @@ def extract_page(
                     break
             if hint:
                 link_dates[target] = hint
-    embedded_documents: list[str] = []
-    for node in soup.select("[pdfsrc], [swsrc]"):
-        for attribute in ("pdfsrc", "swsrc"):
-            target = normalize_url(str(node.get(attribute) or ""), url)
-            if not target:
-                continue
-            if target not in seen_links:
-                seen_links.add(target)
-                links.append(target)
-            if target not in embedded_documents:
-                embedded_documents.append(target)
+    for target in embedded_documents:
+        if target not in seen_links:
+            seen_links.add(target)
+            links.append(target)
     attachment_shell = "attachment_id=" in urlsplit(url).query.lower() or "/attachment/" in urlsplit(url).path.lower()
     indico_detail = bool(re.search(r"/event/\d+/(?:page|contributions)/", url, re.I))
     is_article = bool(article_ld or explicit_published or detail_url or indico_detail) and not attachment_shell
@@ -1071,6 +1158,8 @@ def extract_page(
     if is_article and not images and not embedded_documents and body_text and not metadata_only:
         is_article = False
     if is_article and root_is_fallback and not fallback_has_substantive_paragraph:
+        is_article = False
+    if is_article and root_is_fallback and _is_generic_heading(title):
         is_article = False
     # Some legacy CMS detail URLs return a titled but completely empty HTML
     # shell (the actual page is gone or rendered only by an unavailable

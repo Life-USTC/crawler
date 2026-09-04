@@ -433,6 +433,107 @@ class ExtractTests(unittest.TestCase):
         self.assertNotIn("Copyright", page.article.body_text)
         self.assertIn("https://see.ustc.edu.cn/files/winners.pdf", page.links)
 
+    def test_pdf_only_article_container_beats_page_shell(self) -> None:
+        html = """
+        <html><head><title>新能源会议第二轮通知</title></head><body>
+        <div class='col_path'>当前位置：首页 新闻信息 通知公告</div>
+        <div class='wp_articlecontent'><p>&nbsp;</p><div pdfsrc='/files/notice.pdf'></div></div>
+        <footer>Copyright 中国科学技术大学 皖ICP备05002528号</footer>
+        </body></html>
+        """
+        page = extract_page("https://safetyse.ustc.edu.cn/2026/0509/c4553a1/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertNotIn("当前位置", page.article.body_text)
+        self.assertNotIn("Copyright", page.article.body_text)
+        self.assertIn("https://safetyse.ustc.edu.cn/files/notice.pdf", page.links)
+
+    def test_video_only_article_container_is_kept_as_an_asset_link(self) -> None:
+        html = """
+        <html><head><title>校友访谈-中国科学技术大学教育基金会</title></head><body>
+        <div class='n_position'>当前位置：首页 &gt; 影像 &gt; 正文</div>
+        <section class='show'><div class='show01'><h5>校友访谈</h5></div>
+        <div id='vsb_content'><div class='v_news_content'><p>
+        <script vurl='/__local/interview.mp4?e=.mp4'>showVsbVideo()</script>
+        </p></div></div></section><footer>网站导航和联系地址</footer></body></html>
+        """
+        page = extract_page("https://ef.ustc.edu.cn/info/1073/2317.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "校友访谈")
+        self.assertNotIn("当前位置", page.article.body_text)
+        self.assertIn("https://ef.ustc.edu.cn/__local/interview.mp4?e=.mp4", page.links)
+
+    def test_scripted_pdf_player_exposes_document_and_preview_images(self) -> None:
+        html = """
+        <html><head><title>2025年度审计报告</title></head><body>
+        <div id='vsb_content'><div class='v_news_content'><p><script>
+        var vsb_pdf_image_data = ['/__local/page-1.jpg', '/__local/page-2.jpg'];
+        showVsbpdfIframe('/__local/report.pdf', '100%', '600', vsb_pdf_image_data);
+        </script></p></div></div><footer>网站导航和联系地址</footer></body></html>
+        """
+        page = extract_page("https://ef.ustc.edu.cn/info/1022/2374.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(
+            [image.url for image in page.article.images],
+            [
+                "https://ef.ustc.edu.cn/__local/page-1.jpg",
+                "https://ef.ustc.edu.cn/__local/page-2.jpg",
+            ],
+        )
+        self.assertIn("https://ef.ustc.edu.cn/__local/report.pdf", page.links)
+
+    def test_legacy_table_article_excludes_breadcrumb_and_repeated_title(self) -> None:
+        html = """
+        <html><head><title>中国科学技术大学-研究生招生在线</title></head><body>
+        <table><tr><td>当前位置-首页-通知公告</td></tr><tr><td>
+        <table><tr><td class='bt01'><p>2026年研究生招生录取工作相关通知</p></td></tr>
+        <tr><td><p>现将本年度研究生招生录取工作相关安排通知如下，包含录取材料寄送和报到要求。</p></td></tr>
+        </table></td></tr></table><footer>招生简章 硕士招生 博士招生</footer></body></html>
+        """
+        page = extract_page("https://yz1.ustc.edu.cn/article_1190.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "2026年研究生招生录取工作相关通知")
+        self.assertNotIn("当前位置", page.article.body_text)
+        self.assertNotIn(page.article.title, page.article.body_text)
+        self.assertIn("录取材料寄送", page.article.body_text)
+
+    def test_breadcrumb_inside_article_wrapper_is_removed(self) -> None:
+        html = """
+        <html><head><title>数学学院招生安排</title></head><body>
+        <div class='page-content'><div class='breadcrumbs'>当前位置：首页 招生工作</div>
+        <p>数学学院公布本年度招生安排，正文包含报名条件、时间节点、材料要求和联系方式。</p></div>
+        </body></html>
+        """
+        page = extract_page("https://math.ustc.edu.cn/2026/0901/c1a2/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertNotIn("当前位置", page.article.body_text)
+        self.assertIn("报名条件", page.article.body_text)
+
+    def test_empty_legacy_article_body_does_not_fall_back_to_shell(self) -> None:
+        html = """
+        <html><head><title>2008年安徽省数学年会照片</title></head><body>
+        <nav>首页 新闻资讯 通知</nav><div class='right'><div class='cont'>
+        <span class='t'>2008年安徽省数学年会照片</span>
+        <p class='time'>发布时间：2008-12-16</p><div class='text'></div>
+        </div></div><footer>地址：中国科学技术大学数学系</footer></body></html>
+        """
+        page = extract_page("https://ahmath.ustc.edu.cn/2019/0416/c1a2/page.htm", html)
+        self.assertIsNone(page.article)
+
+    def test_generic_listing_heading_does_not_turn_body_shell_into_article(self) -> None:
+        html = """
+        <html><head><title>影像</title></head><body>
+        <nav>首页 关于我们 新闻通知 新闻 通知 影像 公益捐赠</nav>
+        <main><h1>影像</h1><p>统一身份认证 其他账号登录</p></main>
+        <footer>中国科学技术大学教育基金会</footer></body></html>
+        """
+        page = extract_page("https://ef.ustc.edu.cn/info/1073/2317.htm", html)
+        self.assertIsNone(page.article)
+
     def test_blank_legacy_heading_uses_bold_lead_as_title(self) -> None:
         html = """
         <html><head><title>　</title></head><body>

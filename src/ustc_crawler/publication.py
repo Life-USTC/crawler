@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Literal
 
 PublicationType = Literal["news", "notice", "other"]
-CLASSIFIER_VERSION = "publication-v2"
+CLASSIFIER_VERSION = "publication-v3"
 
 
 def _news_reportage_title(title: str) -> bool:
@@ -51,6 +51,23 @@ def classify_publication(
     ).lower()
     title_value = title or ""
     category_value = category or ""
+    if (
+        "/kecheng/video/" in combined_url
+        or title_value.strip().casefold() == "faculty"
+        or category_value.strip().casefold() in {"视频中心", "视频专访"}
+        or (
+            source_id == "unit-math-ustc-edu-cn"
+            and category_value.strip().casefold()
+            in {
+                "fundamental mathematics",
+                "computational mathematics",
+                "probability theory and mathematical statistics",
+                "applied mathematics",
+                "mathematical physics",
+            }
+        )
+    ):
+        return "other"
     if _notice_signal(
         combined_url,
         # University CMS section ids are notices, while the article title may
@@ -112,7 +129,17 @@ def publication_type_sql(article_alias: str = "a", page_alias: str = "p") -> str
     )
     title = f"COALESCE({article_alias}.title, '')"
     category = f"COALESCE({article_alias}.category, '')"
-    fallback = f"""CASE WHEN
+    fallback = f"""CASE
+      WHEN {url} LIKE '%/kecheng/video/%'
+        OR LOWER(TRIM({title})) = 'faculty'
+        OR LOWER(TRIM({category})) IN ('视频中心', '视频专访')
+        OR ({article_alias}.source_id = 'unit-math-ustc-edu-cn' AND LOWER(TRIM({category})) IN (
+          'fundamental mathematics', 'computational mathematics',
+          'probability theory and mathematical statistics', 'applied mathematics',
+          'mathematical physics'
+        ))
+      THEN 'other'
+      WHEN
         {url} LIKE '%/notice/%' OR {url} LIKE '%/announcement/%'
         OR {url} LIKE '%tzgg%' OR {url} LIKE '%xxgg%'
         OR {url} LIKE '%gonggao%' OR {url} LIKE '%tongzhi%'
