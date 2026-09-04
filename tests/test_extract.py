@@ -768,6 +768,17 @@ class ExtractTests(unittest.TestCase):
         page = extract_page("https://biomed.ustc.edu.cn/xrld/list.htm", html)
         self.assertIsNone(page.article)
 
+    def test_paginated_listing_url_is_not_an_article(self) -> None:
+        html = """
+        <html><head><title>通知公告</title></head><body>
+        <article><h1>通知公告</h1>
+        <p>通知公告列表包含多条历史通知和分页链接，页面本身不是一条通知。</p>
+        <p>请从列表中选择具体的通知详情查看完整内容。</p></article>
+        </body></html>
+        """
+        page = extract_page("https://sts.ustc.edu.cn/tzgg/list10.htm", html)
+        self.assertIsNone(page.article)
+
     def test_wordpress_attachment_shell_is_not_an_article(self) -> None:
         page = extract_page(
             "https://teach.ustc.edu.cn/?attachment_id=20483",

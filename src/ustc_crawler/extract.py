@@ -1188,7 +1188,9 @@ def extract_page(
             links.append(target)
     attachment_shell = "attachment_id=" in urlsplit(url).query.lower() or "/attachment/" in urlsplit(url).path.lower()
     indico_detail = bool(re.search(r"/event/\d+/(?:page|contributions)/", url, re.I))
-    listing_url = bool(re.search(r"/(?:list|index)(?:/|\.[^/?]+)?$", urlsplit(url).path, re.I))
+    listing_url = bool(
+        re.search(r"/(?:list|index)(?:[-_]?\d+)?(?:/|\.[^/?]+)?$", urlsplit(url).path, re.I)
+    )
     is_article = (
         bool(article_ld or explicit_published or detail_url or indico_detail)
         and not attachment_shell
