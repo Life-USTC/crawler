@@ -742,6 +742,32 @@ class ExtractTests(unittest.TestCase):
         self.assertNotIn("网站首页", page.article.body_text)
         self.assertIn("后续计划", page.article.body_text)
 
+    def test_empty_news_nr_detail_shell_is_not_an_article(self) -> None:
+        html = """
+        <html><head><title>深空技术研究院</title></head><body>
+        <div class='content'><header>Institute of Deep Space Science and Technology</header>
+        <nav>About us News &amp; Events Graduate Programme</nav>
+        <div class='newsDe'><div class='mbx'>Home / News /</div>
+        <div class='titles'></div><div class='time'>Date:</div><div class='newsNr'></div></div>
+        <footer>深空科学技术研究院 Copyright</footer></div>
+        </body></html>
+        """
+        page = extract_page(
+            "https://planet.ustc.edu.cn/main/news_detail-19.html", html
+        )
+        self.assertIsNone(page.article)
+
+    def test_listing_url_is_not_an_article_with_single_article_tag(self) -> None:
+        html = """
+        <html><head><title>生命科学与医学部</title></head><body>
+        <article><h1>生命科学与医学部</h1>
+        <p>行政办公 联系人 负责事务和电话信息，请查看列表内容。</p>
+        <p>更多详细资料和办公安排说明。</p></article>
+        </body></html>
+        """
+        page = extract_page("https://biomed.ustc.edu.cn/xrld/list.htm", html)
+        self.assertIsNone(page.article)
+
     def test_wordpress_attachment_shell_is_not_an_article(self) -> None:
         page = extract_page(
             "https://teach.ustc.edu.cn/?attachment_id=20483",
