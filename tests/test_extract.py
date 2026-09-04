@@ -225,6 +225,36 @@ class ExtractTests(unittest.TestCase):
         assert page.article is not None
         self.assertEqual(page.article.title, "基金委通知：湖北人形机器人联合基金重大专项")
 
+    def test_site_heading_does_not_override_concrete_document_title(self) -> None:
+        html = """
+        <html><head><title>中国科大男子排球队挺进省运会排球赛（高校部）决赛</title></head>
+        <body><div class='page-header'><h1>体育教学中心</h1></div>
+        <div class='wp_articlecontent'><p>在省运会排球赛中，中国科大男子排球队发挥出色并进入决赛，正文长度足以识别为公开文章。</p></div>
+        </body></html>
+        """
+        page = extract_page("https://www.tj.ustc.edu.cn/2010/0816/c1459a6956/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "中国科大男子排球队挺进省运会排球赛（高校部）决赛")
+
+    def test_central_text_content_container_strips_site_shell_and_repeated_title(self) -> None:
+        html = """
+        <html><head><title>中国科学技术大学心理健康教育与咨询中心</title></head>
+        <body><nav>网站首页 中心概况 资讯动态</nav>
+        <div class='central_text'>
+          <span class='center_titlea'>心理中心举办心理委员户外素质拓展活动</span>
+          <span>您现在的位置：首页 &gt; 微笑报道</span>
+          <p>为完善我校心理健康教育工作体系，心理健康教育与咨询中心组织开展了心理委员户外素质拓展活动，正文内容足够长。</p>
+        </div></body></html>
+        """
+        page = extract_page("http://smile.ustc.edu.cn/index/info/4914", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "心理中心举办心理委员户外素质拓展活动")
+        self.assertNotIn("网站首页", page.article.body_text)
+        self.assertNotIn("您现在的位置", page.article.body_text)
+        self.assertNotIn(page.article.title, page.article.body_text)
+
     def test_detail_heading_drops_labeled_publication_date(self) -> None:
         html = """
         <html><head><title>中国科大迎新管理</title></head><body>
