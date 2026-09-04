@@ -686,6 +686,40 @@ class ExtractTests(unittest.TestCase):
         )
         self.assertIsNone(page.article)
 
+    def test_empty_infobox_detail_shell_is_not_an_article(self) -> None:
+        html = """
+        <html><head><title>张文真</title></head><body>
+        <div class='Header'><div class='MainNav'>网站首页 学院概况 新闻动态</div></div>
+        <div class='Main'><div class='MainLeft'><div class='SubMenu'>学院简介 师资队伍</div></div>
+        <div class='MainRight'><div class='nTit'>首页 - 党总支组成</div>
+        <div class='NewsInfo'><div class='InfoTit'><h1>张文真</h1><p>发布时间：2024-09-04</p></div>
+        <div class='InfoBox'></div><div class='NewsBtn'>上一篇： 下一篇：</div></div></div></div>
+        </body></html>
+        """
+        page = extract_page(
+            "https://soe.ustc.edu.cn/2024/0904/c36782a652493/page.htm", html
+        )
+        self.assertIsNone(page.article)
+
+    def test_infobox_content_survives_template_shell_cleanup(self) -> None:
+        html = """
+        <html><head><title>单位网站</title></head><body>
+        <div class='Header'><div class='MainNav'>网站首页 新闻动态</div></div>
+        <div class='MainRight'><div class='InfoTit'><h1>环境学院召开工作会议</h1>
+        <p>发布时间：2026-09-04</p></div><div class='InfoBox'>
+        <p>环境学院召开工作会议，介绍本学期重点工作安排和后续推进计划。</p>
+        </div><div class='NewsBtn'>上一篇： 下一篇：</div></div>
+        </body></html>
+        """
+        page = extract_page(
+            "https://soe.ustc.edu.cn/2026/0904/c1a2/page.htm", html
+        )
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "环境学院召开工作会议")
+        self.assertIn("重点工作安排", page.article.body_text)
+        self.assertNotIn("网站首页", page.article.body_text)
+
     def test_wordpress_attachment_shell_is_not_an_article(self) -> None:
         page = extract_page(
             "https://teach.ustc.edu.cn/?attachment_id=20483",
