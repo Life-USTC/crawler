@@ -291,6 +291,36 @@ class CleanupExcessImagesTests(unittest.TestCase):
             2,
         )
 
+    def test_reindex_drops_article_after_redirect_to_unowned_host(self) -> None:
+        requested_url = "https://www.ustc.edu.cn/info/1/3.htm"
+        final_url = "https://outside.example.invalid/article/3.htm"
+        html = """<html><body><article><h1>重定向页面</h1>
+        <time>发布时间：2026-08-01</time>
+        <p>这是足够长的正文内容，用于验证离线重新提取不会把外部重定向页面归档为本来源文章。</p>
+        <p>第二段正文确保页面满足文章识别阈值，但来源主机不在允许列表中。</p>
+        </article></body></html>"""
+        page = extract_page(final_url, html, source_id="university")
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        page.requested_url = requested_url
+        page.raw_body = html.encode()
+        self.store.save_page(page, "university", 1)
+        self.store.save_article(page.article)
+
+        result = self.store.reindex_extractions(page_urls={requested_url})
+
+        self.assertEqual(result["removed"], 1)
+        self.assertIsNone(
+            store_core(self.store).execute(
+                "SELECT url FROM articles WHERE url=?", (final_url,)
+            ).fetchone()
+        )
+        tombstone = store_core(self.store).execute(
+            "SELECT payload_json FROM sync_outbox ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        self.assertIsNotNone(tombstone)
+        self.assertTrue(json.loads(tombstone["payload_json"])["tombstone"])
+
     def test_reindex_repairs_binary_document_mislabeled_as_html(self) -> None:
         url = "https://www.ustc.edu.cn/files/slides.pptx"
         page = PageDocument(

@@ -26,6 +26,7 @@ from .models import (
     sanitize_json_value,
 )
 from .publication import CLASSIFIER_VERSION, classify_publication
+from .routing import source_id_for_url
 from .scoring import url_priority
 from .sync.models import TombstonePublication, build_publication
 from .sync.outbox import IngestionOutbox, spool_article_objects, wire_manifest
@@ -1827,6 +1828,15 @@ class Store:
         document_articles_removed = 0
         tombstones: dict[str, tuple[str, str]] = {}
         max_reindex_bytes = 8 * 1024 * 1024
+        source_hosts = {
+            str(row["id"]): (
+                json.loads(row["allowed_hosts"] or "[]"),
+                json.loads(row["blocked_hosts"] or "[]"),
+            )
+            for row in self._core.execute(
+                "SELECT id,allowed_hosts,blocked_hosts FROM sources"
+            )
+        }
 
         def remove_article(url: str) -> int:
             previous = self._core.execute(
@@ -2005,8 +2015,18 @@ class Store:
                 self.save_article_hint(target, published_at, row["url"])
             keys = {row["url"], row["final_url"], row["canonical_url"]}
             article = page.article
+            if article:
+                # A redirect can make the extracted canonical URL leave the
+                # source that fetched the page.  Reindexing must apply the
+                # same host ownership rule as network crawling instead of
+                # persisting a publication under the wrong source.
+                owner_id = source_id_for_url(article.url, source_hosts)
+                if not owner_id:
+                    article = None
+                else:
+                    article.source_id = owner_id
             if article and result.value_score >= 16 and not duplicate_of:
-                cap = (source_caps or {}).get(str(row["source_id"]))
+                cap = (source_caps or {}).get(article.source_id)
                 if cap and cap > 0:
                     article.images = article.images[:cap]
                 # Reindexing can change the article's image list. Remove old
