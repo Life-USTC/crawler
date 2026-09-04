@@ -720,6 +720,28 @@ class ExtractTests(unittest.TestCase):
         self.assertIn("重点工作安排", page.article.body_text)
         self.assertNotIn("网站首页", page.article.body_text)
 
+    def test_lowercase_infobox_removes_legacy_metadata_shell(self) -> None:
+        html = """
+        <html><head><title>站点</title></head><body>
+        <div class='header'><nav>网站首页 新闻</nav></div>
+        <div class='infobox'><div class='article'>
+        <h1 class='arti_title'>真实标题</h1>
+        <p class='arti_metas'><span class='arti_publisher'>发布者：张三</span>
+        <span class='arti_update'>发布时间：2026-09-04</span></p>
+        <div class='entry'><p>这是足够长的真实文章正文，包含会议安排、事项说明和后续计划，应该保留在正文中。</p></div>
+        </div></div></body></html>
+        """
+        page = extract_page(
+            "https://example.ustc.edu.cn/2026/0904/c1a2/page.htm", html
+        )
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "真实标题")
+        self.assertEqual(page.article.author, "张三")
+        self.assertNotIn("发布者", page.article.body_text)
+        self.assertNotIn("网站首页", page.article.body_text)
+        self.assertIn("后续计划", page.article.body_text)
+
     def test_wordpress_attachment_shell_is_not_an_article(self) -> None:
         page = extract_page(
             "https://teach.ustc.edu.cn/?attachment_id=20483",
