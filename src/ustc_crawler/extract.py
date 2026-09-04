@@ -1217,6 +1217,13 @@ def extract_page(
         is_article = False
     if is_article and root_is_fallback and _is_generic_heading(title):
         is_article = False
+    if (
+        is_article
+        and not body_text
+        and not embedded_documents
+        and title.casefold() in {"banner", "banner3", "banner信息"}
+    ):
+        is_article = False
     # Some legacy CMS detail URLs return a titled but completely empty HTML
     # shell (the actual page is gone or rendered only by an unavailable
     # client-side request). Keep the raw page and its links, but do not emit a
