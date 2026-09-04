@@ -36,6 +36,7 @@ CONTENT_SELECTORS = (
     ".wl-detail",
     ".newsdetail_main",
     ".container_bg",
+    ".central_text",
     ".newscont",
     ".inner-news-detail",
     ".wl-xueshu",
@@ -87,6 +88,7 @@ CONTENT_BOOSTS = {
     ".wl-detail": 1800,
     ".newsdetail_main": 1800,
     ".container_bg": 1600,
+    ".central_text": 1900,
     ".newscont": 1800,
     ".inner-news-detail": 1800,
     ".wl-xueshu": 1900,
@@ -210,7 +212,7 @@ def _is_site_only_title(value: str) -> bool:
         return True
     if len(normalized) <= 60 and re.fullmatch(
         r"(?:中国科学技术大学)?[^，。！？：:]{0,40}"
-        r"(?:大学|学院|研究院|研究所|实验室|中心|新闻网|信息网|专题网|网站|官网)",
+        r"(?:大学|学院|研究院|研究所|研究组|实验室|中心|新闻网|信息网|专题网|网站|官网)",
         normalized,
     ):
         return True
@@ -612,7 +614,12 @@ def _title_from_document(
         # Indico exposes the clean event name in OpenGraph metadata while its
         # document title appends dates, subpage labels, and product branding.
         return current
-    if current_is_heading and current and not _is_generic_heading(current):
+    if (
+        current_is_heading
+        and current
+        and not _is_generic_heading(current)
+        and not _is_site_only_title(current)
+    ):
         # A detail heading is already more precise than a document title,
         # which often appends the institution name after a colon or dash.
         return current
@@ -820,11 +827,11 @@ def _clean_root(root: Tag) -> None:
     # A few table-era templates put an unclassified breadcrumb table inside
     # the otherwise correct article container. Restrict this fallback to a
     # compact, media-free table so real tabular article content is preserved.
-    for node in root.find_all(["table", "tr"]):
+    for node in root.find_all(["table", "tr", "div", "span", "p"]):
         value = _text(node.get_text(" ", strip=True))
         if (
             len(value) <= 120
-            and re.match(r"^(?:您的)?当前位置\s*[:：]", value)
+            and re.match(r"^(?:您的当前位置|当前位置|您现在的位置)\s*[:：]?", value)
             and not node.select_one("img, [pdfsrc], [swsrc]")
         ):
             node.decompose()
@@ -854,7 +861,7 @@ def _remove_repeated_title(root: Tag, title: str) -> None:
         return
     for node in root.select(
         "h1, h2, h3, h4, h5, .article-title, .arti_title, .post-title, "
-        ".entry-title, .detail_title, .newstitle, .wl-detail-title, td.bt01"
+        ".entry-title, .detail_title, .newstitle, .wl-detail-title, td.bt01, .center_titlea"
     ):
         if node is not root and _text(node.get_text(" ", strip=True)) == title:
             node.decompose()
@@ -938,7 +945,7 @@ def extract_page(
         ".News-detail-title, "
         ".article-title, .post-title, .entry-title, .page_title, .detail_title, "
         ".newstitle, .wl-detail-title, .content_title, #Title, "
-        ".person-title, .titles, .show01 h5, .page-header h1, .biaoti_top h1, "
+        ".person-title, .titles, .show01 h5, .center_titlea, .page-header h1, .biaoti_top h1, "
         ".biaoti_top h2, .biaoti_top h3, .bt01"
     )
     title = _text(detail_heading.get_text(" ", strip=True)) if detail_heading else ""
