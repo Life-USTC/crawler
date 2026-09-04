@@ -1863,16 +1863,18 @@ class Store:
         # Avoid one duplicate lookup query per page.  The archive is large
         # enough that the old ``duplicate_page_url`` call turned reindexing
         # into an hours-long sequence of random SQLite reads.  Build a small
-        # first-seen map while streaming the page table instead.
+        # first-seen map while streaming the page table instead.  Ordering by
+        # digest first lets SQLite group duplicate candidates during the
+        # sort; ordering the whole table by article priority first causes a
+        # much larger temporary sort and excessive read amplification.
         duplicate_first: dict[str, str] = {}
         duplicate_seen: dict[str, str] = {}
         for duplicate_row in self._core.execute(
             """SELECT p.sha256,p.url FROM pages p
+               LEFT JOIN articles a ON a.url=p.url
                WHERE p.sha256 IS NOT NULL AND p.sha256 != ''
-               ORDER BY CASE WHEN EXISTS (
-                   SELECT 1 FROM articles a
-                   WHERE a.url=p.url
-               ) THEN 0 ELSE 1 END,
+               ORDER BY p.sha256,
+               CASE WHEN a.url IS NOT NULL THEN 0 ELSE 1 END,
                p.fetched_at,p.url"""
         ):
             digest = str(duplicate_row["sha256"])
