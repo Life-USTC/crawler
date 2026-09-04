@@ -74,6 +74,13 @@ class ScoringTests(unittest.TestCase):
             )
         )
 
+    def test_video_player_asset_is_a_document_asset(self) -> None:
+        self.assertTrue(
+            document_asset_url(
+                "https://bwc.ustc.edu.cn/_upload/article/videos/anti-fraud.mp4"
+            )
+        )
+
     def test_notice_id_is_not_mistaken_for_session_id(self) -> None:
         notice = (
             "https://www.ustc.edu.cn/tzggcontent.jsp?"

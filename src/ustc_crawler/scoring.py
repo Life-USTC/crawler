@@ -38,7 +38,8 @@ NAV_RE = re.compile(
     re.IGNORECASE,
 )
 DOCUMENT_RE = re.compile(
-    r"\.(?:pdf|docx?|pptx?|ppsx?|xlsx?|csv|odt|ods|odp|rtf|wps|et|dps|caj|epub|tex|txt|md|pages|numbers|key)(?:$|[?#])",
+    r"\.(?:pdf|docx?|pptx?|ppsx?|xlsx?|csv|odt|ods|odp|rtf|wps|et|dps|caj|epub|tex|txt|md|pages|numbers|key|"
+    r"mp4|webm|mov|mkv|avi|mp3|m4a|wav|ogg)(?:$|[?#])",
     re.IGNORECASE,
 )
 
