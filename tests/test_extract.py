@@ -770,6 +770,18 @@ class ExtractTests(unittest.TestCase):
         )
         self.assertIsNone(page.article)
 
+    def test_image_only_detail_without_title_is_not_an_article(self) -> None:
+        html = """
+        <html><head><title></title></head><body>
+        <div class='wp_articlecontent'><p><img src='/images/notice.png'></p></div>
+        <span class='arti_metas'>发布时间：2024-05-11</span>
+        </body></html>
+        """
+        page = extract_page(
+            "http://physics.ustc.edu.cn/2024/0511/c12804a640625/page.htm", html
+        )
+        self.assertIsNone(page.article)
+
     def test_listing_url_is_not_an_article_with_single_article_tag(self) -> None:
         html = """
         <html><head><title>生命科学与医学部</title></head><body>

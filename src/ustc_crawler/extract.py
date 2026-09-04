@@ -1241,6 +1241,12 @@ def extract_page(
             published = _labeled_date(body_text[-1500:])
         if not published:
             published = _trailing_body_date(body_text)
+    # The ingestion protocol requires a non-empty title.  A few image-only
+    # legacy pages expose a publication date and a media element but no title
+    # at all; retaining them as articles would create records that cannot be
+    # synchronized and are impossible to identify in the public UI.
+    if is_article and not title.strip():
+        is_article = False
     article = None
     if is_article:
         article = ArticleDocument(
