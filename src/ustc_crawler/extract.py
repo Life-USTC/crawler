@@ -68,6 +68,7 @@ CONTENT_SELECTORS = (
     ".news_content",
     ".news-content",
     ".content",
+    ".InfoBox",
     ".detail",
     ".article",
     "td.content",
@@ -96,6 +97,7 @@ CONTENT_BOOSTS = {
     ".SubPage": 1500,
     ".v_news_content": 2200,
     "#vsb_content": 2200,
+    ".InfoBox": 1800,
     ".article-content": 850,
     ".article_content": 850,
     ".post-content": 800,
@@ -728,6 +730,25 @@ def _is_shell_container(node: Tag) -> bool:
     if node.name in {"header", "footer", "nav", "aside"}:
         return True
     markers = [str(node.get("id", "")), *(str(value) for value in node.get("class", []))]
+    if any(
+        marker.strip().casefold()
+        in {
+            "header",
+            "mainnav",
+            "nnav",
+            "navpull",
+            "mainleft",
+            "ntit",
+            "local",
+            "infotit",
+            "newsbtn",
+            "wpartfuns",
+            "wp_artfuns",
+            "wp_art_adjoin",
+        }
+        for marker in markers
+    ):
+        return True
     return any(
         re.search(
             r"(?:^|[-_])(?:foot(?:er)?|bottom|copyright|friendlinks?|friendlylinks?)(?:$|[-_])",
@@ -783,6 +804,7 @@ def _content_root(soup: BeautifulSoup) -> Tag:
                 or has_image
                 or has_embedded_document
                 or selector == ".cont .text"
+                or selector == ".InfoBox"
             )
             if len(clone_text) < 40 and not authoritative_content:
                 continue
