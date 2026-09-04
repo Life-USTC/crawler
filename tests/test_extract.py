@@ -494,6 +494,40 @@ class ExtractTests(unittest.TestCase):
         self.assertNotIn("当前位置", page.article.body_text)
         self.assertIn("https://ef.ustc.edu.cn/__local/interview.mp4?e=.mp4", page.links)
 
+    def test_sudy_video_player_keeps_custom_video_container_and_link(self) -> None:
+        html = """
+        <html><head><title>反诈宣传视频</title></head><body>
+        <nav>首页 新闻通知 影像</nav>
+        <h1 class='arti_title'>反诈宣传视频</h1>
+        <div class='wp_articlecontent'>
+          <div class='wp_video_player' sudy-wp-src='/_upload/article/videos/anti-fraud.mp4'></div>
+        </div>
+        <footer>地址：中国科学技术大学 保卫处</footer></body></html>
+        """
+        page = extract_page(
+            "https://bwc.ustc.edu.cn/2026/0121/c39430a720167/page.htm", html
+        )
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "反诈宣传视频")
+        self.assertEqual(page.article.body_text, "")
+        self.assertNotIn("首页", page.article.body_text)
+        self.assertIn(
+            "https://bwc.ustc.edu.cn/_upload/article/videos/anti-fraud.mp4", page.links
+        )
+
+    def test_generic_banner_detail_shell_is_not_an_article(self) -> None:
+        html = """
+        <html><head><title>banner3</title></head><body>
+        <nav>首页 学校概况 新闻</nav><h1>banner3</h1>
+        <div class='content'><p>发布时间：2021-07-05</p></div>
+        <footer>Copyright 中国科学技术大学</footer></body></html>
+        """
+        page = extract_page(
+            "https://soe.ustc.edu.cn/2021/0705/c26768a705743/page.htm", html
+        )
+        self.assertIsNone(page.article)
+
     def test_scripted_pdf_player_exposes_document_and_preview_images(self) -> None:
         html = """
         <html><head><title>2025年度审计报告</title></head><body>

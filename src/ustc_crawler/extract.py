@@ -145,6 +145,9 @@ GENERIC_HEADINGS = {
     "首页置顶",
     "最新消息",
     "位置栏目",
+    "banner",
+    "banner3",
+    "banner信息",
     "影像",
     "faculty",
     "中国科学技术大学-研究生招生在线",
@@ -764,7 +767,9 @@ def _content_root(soup: BeautifulSoup) -> Tag:
                 or image.get("srcset")
                 for image in node.find_all("img")
             )
-            has_embedded_document = bool(node.select_one("[pdfsrc], [swsrc], [vurl]")) or any(
+            has_embedded_document = bool(
+                node.select_one("[pdfsrc], [swsrc], [vurl], [sudy-wp-src], video[src], audio[src], source[src]")
+            ) or any(
                 "showVsb" in script.get_text(" ", strip=True)
                 or "vsb_pdf_image_data" in script.get_text(" ", strip=True)
                 for script in node.find_all("script")
@@ -1058,8 +1063,10 @@ def extract_page(
     root = _content_root(soup)
     root_is_fallback = root is soup.body or root is soup
     embedded_documents: list[str] = []
-    for node in soup.select("[pdfsrc], [swsrc], [vurl]"):
-        for attribute in ("pdfsrc", "swsrc", "vurl"):
+    for node in soup.select(
+        "[pdfsrc], [swsrc], [vurl], [sudy-wp-src], video[src], audio[src], source[src]"
+    ):
+        for attribute in ("pdfsrc", "swsrc", "vurl", "sudy-wp-src", "src"):
             target = normalize_url(str(node.get(attribute) or ""), url)
             if target and target not in embedded_documents:
                 embedded_documents.append(target)
