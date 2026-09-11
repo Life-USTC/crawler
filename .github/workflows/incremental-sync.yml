@@ -1,0 +1,82 @@
+name: Incremental sync
+
+on:
+  schedule:
+    - cron: "37 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: incremental-sync
+  cancel-in-progress: false
+
+env:
+  SEED_RELEASE_TAG: crawler-state-seed
+  SEED_ASSET: crawler-seed.sqlite.zst
+  DB_PATH: data/crawler.sqlite
+  DB_ARCHIVE: crawler-state.sqlite.zst
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          enable-cache: true
+          python-version: "3.13"
+      - run: uv sync --locked
+
+      - name: Restore crawler state from cache
+        id: restore
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.DB_ARCHIVE }}
+          lookup-only: true
+          key: crawler-state-${{ github.run_id }}
+          restore-keys: crawler-state-
+
+      - name: Download seed state on cache miss
+        if: steps.restore.outputs.cache-matched-key == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release download "$SEED_RELEASE_TAG" --pattern "$SEED_ASSET" --output "$DB_ARCHIVE" --clobber
+
+      - name: Decompress state
+        run: |
+          mkdir -p data
+          zstd -d "$DB_ARCHIVE" -o "$DB_PATH"
+          rm "$DB_ARCHIVE"
+
+      - name: Crawl and sync
+        env:
+          USTC_CRAWLER_INGESTION_SECRET: ${{ secrets.USTC_CRAWLER_INGESTION_SECRET }}
+        run: |
+          uv run ustc-crawler db-upgrade 2>&1 | tee db-upgrade.log
+          uv run ustc-crawler crawl --incremental 2>&1 | tee crawl.log
+          uv run ustc-crawler sync --server "${{ vars.CRAWLER_SERVER }}" 2>&1 | tee sync.log
+
+      - name: Save crawler state
+        id: compress
+        if: always()
+        run: |
+          if [ -f "$DB_PATH" ]; then zstd -f "$DB_PATH" -o "$DB_ARCHIVE"; fi
+          echo "exists=$([ -f "$DB_ARCHIVE" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload state to cache
+        if: always() && steps.compress.outputs.exists == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.DB_ARCHIVE }}
+          key: crawler-state-${{ github.run_id }}
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: incremental-sync-logs-${{ github.run_id }}
+          path: "*.log"
+          retention-days: 14
