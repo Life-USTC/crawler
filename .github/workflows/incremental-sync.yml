@@ -35,7 +35,6 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.DB_ARCHIVE }}
-          lookup-only: true
           key: crawler-state-${{ github.run_id }}
           restore-keys: crawler-state-
 
