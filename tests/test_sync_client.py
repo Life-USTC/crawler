@@ -1220,7 +1220,7 @@ class SyncClientTests(unittest.TestCase):
                 sync.close()
                 store.close()
 
-    def test_permanent_failure_stops_before_claiming_remaining_events(self) -> None:
+    def test_permanent_failure_does_not_stop_claiming_remaining_events(self) -> None:
         batch_calls = 0
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -1249,13 +1249,14 @@ class SyncClientTests(unittest.TestCase):
                     http_client=client,
                 )
                 summary = sync.sync(options=SyncOptions(batch_size=1))
-                self.assertEqual(batch_calls, 1)
-                self.assertEqual(summary["batches"], 1)
-                self.assertEqual(summary["status"], "partial")
+                self.assertEqual(batch_calls, 2)
+                self.assertEqual(summary["batches"], 2)
+                self.assertEqual(summary["failed"], 2)
+                self.assertEqual(summary["status"], "completed")
                 with store.database.session_factory() as session:
                     rows = session.scalars(select(SyncOutbox).order_by(SyncOutbox.entity_key)).all()
-                    self.assertEqual({row.status for row in rows}, {"failed", "pending"})
-                    self.assertEqual(sum(row.batch_id is not None for row in rows), 1)
+                    self.assertEqual({row.status for row in rows}, {"failed"})
+                    self.assertEqual(sum(row.batch_id is not None for row in rows), 2)
             finally:
                 sync.close()
                 store.close()
