@@ -65,7 +65,46 @@ jobs:
           if [ -f "$DB_PATH" ]; then
             sqlite3 -header -column "$DB_PATH" \
               "SELECT substr(created_at,1,16) AS created, status, last_error, attempts FROM sync_batches WHERE status NOT IN ('acked','superseded') ORDER BY created_at DESC LIMIT 20;"
+            mkdir -p diag
+            uv run python - <<'PY'
+          import json
+          from pathlib import Path
+          from sqlalchemy import select
+          from ustc_crawler.db.models import SyncBatch
+          from ustc_crawler.store import Store
+          from ustc_crawler.sync.outbox import IngestionOutbox
+
+          store = Store("data/crawler.sqlite", "data")
+          outbox = IngestionOutbox(store.database)
+          with store.database.session_factory() as session:
+              batches = session.scalars(
+                  select(SyncBatch).where(SyncBatch.status.notin_(("acked", "superseded")))
+              ).all()
+              meta = [
+                  {"id": b.id, "status": b.status, "last_error": b.last_error}
+                  for b in batches
+              ]
+          Path("diag/batches.json").write_text(json.dumps(meta, indent=2))
+          for b in meta:
+              batch = outbox.build_batch(
+                  run_id="diag",
+                  batch_id=b["id"],
+                  producer_version="diag",
+                  observed_at="2026-01-01T00:00:00+08:00",
+              )
+              Path(f"diag/{b['id']}.json").write_bytes(batch.payload_bytes())
+          store.close()
+          PY
           fi
+
+      - name: Upload sync diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-diag-${{ github.run_id }}
+          path: diag/
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Save crawler state
         id: compress
