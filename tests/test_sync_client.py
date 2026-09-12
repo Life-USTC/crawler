@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import shutil
 import threading
 import unittest
 from pathlib import Path
@@ -33,6 +35,7 @@ from ustc_crawler.sync.models import (
     MAX_OBJECT_PLAN_OBJECTS,
     IngestionBatch,
     IngestionBatchResponse,
+    LocalObjectManifest,
     PublicationSourceDescriptor,
     build_ingestion_batch,
     build_publication,
@@ -1259,6 +1262,46 @@ class SyncClientTests(unittest.TestCase):
                     self.assertEqual(sum(row.batch_id is not None for row in rows), 2)
             finally:
                 sync.close()
+                store.close()
+
+    def test_object_bytes_resolves_legacy_cwd_relative_manifest_paths(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            work = root / "repo"
+            work.mkdir()
+            # Alembic resolves its script directory relative to the cwd.
+            shutil.copytree(
+                Path(__file__).resolve().parents[1] / "alembic", work / "alembic"
+            )
+            previous_cwd = Path.cwd()
+            os.chdir(work)
+            try:
+                store = Store("data/crawler.sqlite", "data")
+                store.add_source(self._source())
+                store.enqueue_article_for_sync(self._article(11))
+            finally:
+                os.chdir(previous_cwd)
+            try:
+                with store.database.session_factory() as session:
+                    row = session.scalar(select(SyncOutbox))
+                manifest = LocalObjectManifest.model_validate(
+                    json.loads(row.object_manifest_json)[0]
+                )
+                self.assertFalse(Path(manifest.local_path).is_absolute())
+                sync = IngestionSyncClient(
+                    store.database,
+                    work / "data",
+                    self.server,
+                    self.ingestion_secret,
+                )
+                try:
+                    os.chdir(root)
+                    body = sync._object_bytes(manifest)
+                finally:
+                    os.chdir(previous_cwd)
+                    sync.close()
+                self.assertEqual(hashlib.sha256(body).hexdigest(), manifest.sha256)
+            finally:
                 store.close()
 
     def test_local_object_mutation_is_rejected_before_put(self) -> None:
