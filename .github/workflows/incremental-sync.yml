@@ -58,6 +58,14 @@ jobs:
           uv run ustc-crawler crawl --incremental 2>&1 | tee crawl.log
           uv run ustc-crawler sync --server "${{ vars.CRAWLER_SERVER }}" 2>&1 | tee sync.log
 
+      - name: Report non-terminal sync state
+        if: always()
+        run: |
+          if [ -f "$DB_PATH" ]; then
+            sqlite3 -header -column "$DB_PATH" \
+              "SELECT substr(created_at,1,16) AS created, status, last_error, attempts FROM sync_batches WHERE status NOT IN ('acked','superseded') ORDER BY created_at DESC LIMIT 20;"
+          fi
+
       - name: Save crawler state
         id: compress
         if: always()
