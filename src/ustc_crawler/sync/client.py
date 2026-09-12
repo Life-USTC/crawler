@@ -656,10 +656,21 @@ class IngestionSyncClient:
         ):
             raise SyncProtocolError("object_upload_identity_mismatch")
 
-    @staticmethod
-    def _object_bytes(manifest: LocalObjectManifest) -> bytes:
+    def _object_path(self, local_path: str) -> Path:
+        path = Path(local_path)
+        if path.is_absolute():
+            return path
+        parts = path.parts
+        # Legacy manifests store cwd-relative paths that include the data dir
+        # prefix (e.g. "data/sync-objects/..."); strip it and anchor at this
+        # client's data dir so sync works from any working directory.
+        if parts and parts[0] == self.data_dir.name:
+            path = Path(*parts[1:])
+        return self.data_dir / path
+
+    def _object_bytes(self, manifest: LocalObjectManifest) -> bytes:
         try:
-            body = Path(manifest.local_path).read_bytes()
+            body = self._object_path(manifest.local_path).read_bytes()
         except OSError as exc:
             raise ImmutableObjectChangedError("immutable_object_changed") from exc
         if len(body) != manifest.size or hashlib.sha256(body).hexdigest() != manifest.sha256:
