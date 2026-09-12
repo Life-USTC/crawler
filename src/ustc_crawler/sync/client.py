@@ -282,8 +282,10 @@ class IngestionSyncClient:
                 try:
                     delivery = future.result()
                 except SyncPermanentError:
+                    # A permanently rejected batch is terminal for that batch
+                    # only; it must not poison the rest of the run, or a single
+                    # undeliverable batch would block the queue forever.
                     summary["failed"] = int(summary["failed"]) + 1
-                    interrupted = True
                 except SyncTransientError:
                     summary["pending"] = int(summary["pending"]) + 1
                     interrupted = True
