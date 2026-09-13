@@ -1,0 +1,722 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>中国科学技术大学先进技术研究院</title>
+<link rel="stylesheet" type="text/css" href="/r/cms/xjjs/default/content/css/style.css" />
+<link rel="stylesheet" type="text/css" href="/r/cms/xjjs/default/content/css/font-awesome.min.css">
+<link rel="stylesheet" type="text/css" href="/r/cms/xjjs/default/content/css/nav.css">
+
+<script type="text/javascript" src="/r/cms/xjjs/default/content/js/jquery.min.js"></script>
+<script type="text/javascript" src="/r/cms/xjjs/default/content/js/leftnav.js"></script>
+<script type="text/javascript" src="/r/cms/front.js"></script>
+<script>
+    var _hmt = _hmt || [];
+    (function() {
+        var hm = document.createElement("script");
+        hm.src = "https://hm.baidu.com/hm.js?d1be222b54030cd9648fc179d9fa42ad";
+        var s = document.getElementsByTagName("script")[0];
+        s.parentNode.insertBefore(hm, s);
+    })();
+
+    $(function() {
+        Cms.siteFlow("", location.href, document.referrer);
+    });
+</script>
+
+    <link rel="stylesheet" href="/r/cms/share/share.min.css">
+</head>
+<body>
+<!--引入头部-->
+<div class="at-head">
+    <div class="at-top1">
+        <div class="w">
+            <a class="fl" style="color: #fff;">中国科学技术大学先进技术研究院</a>
+            <ul class="fr">
+                <li>
+                    <a href="http://iat.ustc.edu.cn//iat/index.html" style="color: #fff;">首页</a>
+                </li>
+                        <li>
+                            <a href="http://iatxt.ustc.edu.cn/" target="_blank" style="color: #fff;">门户</a>
+                        </li>
+                        <li>
+                            <a href="https://iatew.ustc.edu.cn/taskcenter/workflow/index" target="_blank" style="color: #fff;">办事大厅</a>
+                        </li>
+                        <li>
+                            <a href="http://mail.iat.ustc.edu.cn/" target="_blank" style="color: #fff;">邮箱登录</a>
+                        </li>
+            </ul>
+        </div>
+    </div>
+    <div class="at-top2">
+        <div class="w">
+            <div class="at-logo fl">
+                <a href="http://x.ustc.edu.cn/xjjs/">
+                    <img src="/r/cms/xjjs/default/img/logo.png" width="600px"/>
+                </a>
+            </div>
+            <div class="search fr">
+                <form name="searchForm" id="searchForm" action="/keySearch.jspx" method="post">
+                    <input type="hidden" name="flg" id="flg" value="1"/>
+                    <input type="hidden" name="siteId" id="siteId" value="2"/>
+                    <input name="k" id="myInput" class="search-input" placeholder="请输入您要搜索的内容"/>
+                    <button type="button" class="search-btn" onclick="check()">
+                        <img src="/r/cms/xjjs/default/img/search.png"/>
+                    </button>
+                </form>
+                <script type="text/javascript" src="/r/cms/xjjs/default/js/jquery.min.js"></script>
+                <script type="text/javascript">
+                    $(document).ready(function () {
+                        $(".sqcp_btn").click(function () {
+                            $(".spcp_block").css("display", "block");
+                        });
+                        $(".sqcpclose_btn").click(function () {
+                            $(".spcp_block").css("display", "none");
+                        });
+                    });
+
+                    /**
+                     * 弹出提示框
+                     * @param msg 消息
+                     */
+                    function alertMsg(msg) {
+                        $("#msg").text(msg);
+                        $(".spcp_block").css("display", "block");
+                    }
+
+                    function check() {
+                        var q = document.getElementById("myInput").value.trim();
+                        if (q == '' || q == '请输入您要搜索的内容') {
+                            alert("请输入搜索内容");
+                            return false;
+                        }
+
+                        var reg = /[`~!@#$%^&*()_+<>?:"{},.\/;'[\]]/im;
+                        if (reg.test(q)) {
+                            alert("您输入的信息含有非法字符！");
+                            return false;
+                        }
+                        $("#searchForm").submit();
+                    }
+                </script>
+            </div>
+        </div>
+    </div>
+</div>
+<div class="body_b showdiv">
+    <div class="header2">
+        <div class="d2">
+            <div class="block">
+                <!--<a href="/xjjs/" class="nav_main_select">网站首页</a>-->
+                <div class="nav_main">
+                            <a href="http://iat.ustc.edu.cn/iat/x228/">单位概况</a>
+                            <a href="http://iat.ustc.edu.cn/iat/x186/">技术开发</a>
+                            <a href="http://iat.ustc.edu.cn/iat/x185/">企业发展</a>
+                            <a href="https://iat.ustc.edu.cn/iat/pyms.html">研究生教育</a>
+                            <a href="http://iat.ustc.edu.cn/iat/x106/">公共技术服务</a>
+                            <a href="http://iat.ustc.edu.cn/iat/x181/">人才招聘</a>
+                            <a href="http://iat.ustc.edu.cn/iat/x178/">党建园地</a>
+                            <a href="https://iatew.ustc.edu.cn/taskcenter/workflow/index">信息门户</a>
+                            <a href="http://iat.ustc.edu.cn/iat/x182/">公共服务</a>
+                </div>
+                <div class="nav_child">
+                            <div class="nav_item">
+                                <div class="nav_item_img nav_item_img_201">
+                                    <div class="r">
+                                                    <a href="http://iat.ustc.edu.cn/iat/dwjj.html">单位简介</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x200.html">机构设置</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x107.html">现任领导</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x189/">发展历程</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x195/">工作简报</a>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="nav_item">
+                                <div class="nav_item_img nav_item_img_203">
+                                    <div class="r">
+                                                    <a href="http://iat.ustc.edu.cn/iat/x177/">研发机构</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x203/">研发动态</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x179/">科技成果</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x190/">科技政策</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/wdxz/">文档下载</a>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="nav_item">
+                                <div class="nav_item_img nav_item_img_204">
+                                    <div class="r">
+                                                    <a href="http://iat.ustc.edu.cn/iat/x213/">工作动态</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x204/">政策发布</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x212/">持股企业</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x210/">企业服务</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x211/">产业联盟</a>
+                                                    <a href="http://iat.ustc.edu.cn/x1412.jhtml">联系我们</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x132/">院地合作</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x227/">友情链接</a>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="nav_item">
+                                <div class="nav_item_img nav_item_img_205">
+                                    <div class="r">
+                                                    <a href="http://iat.ustc.edu.cn/iat/pyms.html">培养模式</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x207/">新闻动态</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x215/">通知公告</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/sjjd.html">实践基地</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/ckzx/">创客中心</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x2161.html">师资队伍</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x217/">招生工作</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x225/">教学培养</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x172/">学位授予</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x108/">学生工作</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x224/">规章制度</a>
+                                                    <a href="http://iat.ustc.edu.cn/jycg/index.jhtml">教学成果</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/jyxx/">就业信息</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/yxsslwxt/">优秀硕士论文系统</a>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="nav_item">
+                                <div class="nav_item_img nav_item_img_336">
+                                    <div class="r">
+                                                    <a href="http://iat.ustc.edu.cn/iat/x116/">公告通知</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x130/">办事指南</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x146.html">动物类技术服务</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x147.html">生物细胞类技术服务</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x148.html">多模态成像服务 </a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x149.html">计算、存储、网络服务  </a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x150.html">芯片测试分析服务</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x143/">在线服务入口</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/symmyyjsggpt.html">商用密码应用技术公共平台</a>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="nav_item">
+                                <div class="nav_item_img nav_item_img_208">
+                                    <div class="r">
+                                                    <a href="http://iat.ustc.edu.cn/iat/x137/">招聘信息</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x138/">员工培训</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x122/">薪酬福利</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x121/">人事管理</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x118/">人才政策</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x119/">文档下载</a>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="nav_item">
+                                <div class="nav_item_img nav_item_img_209">
+                                    <div class="r">
+                                                    <a href="http://iat.ustc.edu.cn/iat/zzjg.html">组织架构</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x109/">党建动态</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x120/">工作指南</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x110/">学习资料</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/djxxjy/">党纪学习教育</a>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="nav_item">
+                                <div class="nav_item_img nav_item_img_363">
+                                    <div class="r">
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="nav_item">
+                                <div class="nav_item_img nav_item_img_207">
+                                    <div class="r">
+                                                    <a href="http://iat.ustc.edu.cn/iat/x159/">办事指南</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x161/">资源下载</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/x162/">安全管理</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/tsgsmjsxt/">图书馆书目检索系统</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/kjcxfw/">科技查新服务</a>
+                                                    <a href="http://iat.ustc.edu.cn/iat/lwcscy/">论文查收查引</a>
+                                                    <a href="http://iatxt.ustc.edu.cn/">工作平台</a>
+                                    </div>
+                                </div>
+                            </div>
+                </div>
+                <div class="nav_hidden_background"></div>
+            </div>
+        </div>
+    </div>
+</div>
+<script type="text/javascript">
+    // 首页导航
+    var sto_nav;
+    $(".nav_main").hover(
+        function () {
+            var index = $(this).find("a[class='hover']").index();
+            var item = $(".nav_child").find(".nav_item").eq(index);
+            var len = item.find("a").length;
+            if (len == 0) {
+                $(".nav_hidden_background").removeClass("show");
+            } else {
+                $(".nav_hidden_background").addClass("show");
+            }
+        },
+        function () {
+            $(".nav_hidden_background").removeClass("show");
+        }
+    );
+
+    $(".nav_main a").hover(
+        function () {
+            clearTimeout(sto_nav);
+            $(".nav_child .nav_item").removeClass("s");
+            $(".nav_main a").removeClass("hover");
+            var ol = $(this).parents(".block").offset().left;
+            var al = $(this).offset().left + $(this).outerWidth() * 0.5;
+            var fl = al - ol;
+            var c = $(this).parents(".block").find(".nav_child").find(".nav_item").eq($(this).index());
+            var cl = fl - c.outerWidth() * 0.5;
+            if (c.find("a").size() == 0) {
+                c.hide();
+            }
+//            if (cl < 0) {
+//                c.css("left", 0);
+//            } else if (cl + c.outerWidth() > $(this).parents(".block").outerWidth()) {
+//                c.css("right", 0);
+//            } else {
+//                c.css("left", cl);
+//            }
+            $(this).addClass("hover");
+            c.addClass("s");
+
+            var len = c.find("a").length;
+            if (len == 0) {
+                $(".nav_hidden_background").removeClass("show");
+            } else {
+                $(".nav_hidden_background").addClass("show");
+            }
+        },
+        function () {
+            sto_nav = setTimeout(function () {
+                $(".nav_child .nav_item").removeClass("s");
+                $(".nav_main a").removeClass("hover");
+            }, 100);
+        }
+    );
+
+    $(".nav_child .nav_item").hover(
+        function () {
+            clearTimeout(sto_nav);
+            $(".nav_hidden_background").addClass("show");
+        },
+        function () {
+            sto_nav = setTimeout(function () {
+                $(".nav_child .nav_item").removeClass("s");
+                $(".nav_main a").removeClass("hover");
+                $(".nav_hidden_background").removeClass("show");
+            }, 100);
+        }
+    );
+</script><div class="clear"></div>
+<!--banner-->
+<div class="AT-Inside-page-banner">
+        <img src="/u/cms/xjjs/202105/190735111x6s.jpg"/>
+</div>
+<div class="w1200">
+    <div class="AT-Inside-page-body">
+        <!--左侧-->
+<div class="AT-Inside-page-body-left fl">
+    <div class="AT-Inside-page-body-left-nav">
+        <div class="AT-Inside-page-body-left-nav-head">
+            <img src="/r/cms/xjjs/default/img/left-nav-icon.png"/>
+            <p>
+                    研究生教育
+                    <font style="font-size: 12px;">POSTGRADUATE</font>
+            </p>
+        </div>
+        <ul id="accordion" class="accordion">
+                                    <li class="channel-li">
+                                    <div class="link">
+                                        <a href="http://iat.ustc.edu.cn/iat/pyms.html">培养模式</a>
+                                    </div>
+                                </li>
+                                    <li class="channel-li">
+                                    <div class="link">
+                                        <a href="http://iat.ustc.edu.cn/iat/x207/">新闻动态</a>
+                                    </div>
+                                </li>
+                                    <li class="channel-li">
+                                    <div class="link">
+                                        <a href="http://iat.ustc.edu.cn/iat/x215/">通知公告</a>
+                                    </div>
+                                </li>
+                                    <li>
+                                    <div class="link">实践基地
+                                        <i class="fa fa-chevron-down">
+                                            <img src="/r/cms/xjjs/default/img/left-nav-jt.png">
+                                        </i>
+                                    </div>
+                                        <ul class="submenu">
+                                                <li>
+                                                <a href="http://202.38.81.201:30031/iat/x170/20210520/4567.html">2020实践基地</a>
+                                            </li>
+                                                <li>
+                                                <a href="http://202.38.81.201:30031/iat/x171/20210520/4568.html">2021实践基地</a>
+                                            </li>
+                                                <li>
+                                                <a href="https://iat.ustc.edu.cn/iat/2022sjjd/20211130/5225.html">2022实践基地</a>
+                                            </li>
+                                                <li>
+                                                <a href="https://iat.ustc.edu.cn/iat/2023jsjjd/20220916/5892.html">2023实践基地</a>
+                                            </li>
+                                                <li>
+                                                <a href="https://iat.ustc.edu.cn/iat/2024jsjjd/20230731/6415.html">2024实践基地</a>
+                                            </li>
+                                                <li>
+                                                <a href="https://iat.ustc.edu.cn/iat/2025jsjjd/20250320/7051.html">2025实践基地</a>
+                                            </li>
+                                                <li>
+                                                <a href="https://iat.ustc.edu.cn/iat/2026sjjd/20250624/7515.html">2026实践基地</a>
+                                            </li>
+                                                <li>
+                                                <a href="http://iat.ustc.edu.cn/iat/2027sjjd2027sjjd/20260610/7964.html">2027实践基地</a>
+                                            </li>
+                                    </ul>
+                                </li>
+                                    <li class="open">
+                                    <div class="link">创客中心
+                                        <i class="fa fa-chevron-down">
+                                            <img src="/r/cms/xjjs/default/img/left-nav-jt.png">
+                                        </i>
+                                    </div>
+                                        <ul class="submenu" style="display: block">
+                                                <li>
+                                                <a href="http://iat.ustc.edu.cn/iat/zxjj.html">中心简介</a>
+                                            </li>
+                                                <li class="current">
+                                                <a href="http://iat.ustc.edu.cn/iat/xwdt/">工作动态</a>
+                                            </li>
+                                                <li>
+                                                <a href="http://iat.ustc.edu.cn/iat/gwds.html">顾问导师</a>
+                                            </li>
+                                    </ul>
+                                </li>
+                                    <li>
+                                    <div class="link">师资队伍
+                                        <i class="fa fa-chevron-down">
+                                            <img src="/r/cms/xjjs/default/img/left-nav-jt.png">
+                                        </i>
+                                    </div>
+                                        <ul class="submenu">
+                                                <li>
+                                                <a href="https://iat.ustc.edu.cn/xnds542/5870.jhtml">2023招生导师列表</a>
+                                            </li>
+                                                <li>
+                                                <a href="https://iat.ustc.edu.cn/iat/2024zsdslb/20230817/6426.html">2024招生导师列表</a>
+                                            </li>
+                                                <li>
+                                                <a href="https://iat.ustc.edu.cn/iat/2025zsdslb/20250319/6961.html">2025招生导师列表</a>
+                                            </li>
+                                                <li>
+                                                <a href="https://iat.ustc.edu.cn/iat/2026zsdslb/20250620/7514.html">2026招生导师列表</a>
+                                            </li>
+                                                <li>
+                                                <a href="https://iat.ustc.edu.cn/iat/2027zsdslb/20260527/7957.html">2027招生导师列表</a>
+                                            </li>
+                                    </ul>
+                                </li>
+                                    <li>
+                                    <div class="link">招生工作
+                                        <i class="fa fa-chevron-down">
+                                            <img src="/r/cms/xjjs/default/img/left-nav-jt.png">
+                                        </i>
+                                    </div>
+                                        <ul class="submenu">
+                                                <li>
+                                                <a href="http://iat.ustc.edu.cn/iat/x168/">硕士招生</a>
+                                            </li>
+                                                <li>
+                                                <a href="http://yzb2.ustc.edu.cn//zs/2022">博士招生</a>
+                                            </li>
+                                                <li>
+                                                <a href="https://iatyz.ustc.edu.cn">招生系统</a>
+                                            </li>
+                                                <li>
+                                                <a href="http://iat.ustc.edu.cn/iat/xyycxyyxly/">先研院创新应用夏令营</a>
+                                            </li>
+                                    </ul>
+                                </li>
+                                    <li>
+                                    <div class="link">教学培养
+                                        <i class="fa fa-chevron-down">
+                                            <img src="/r/cms/xjjs/default/img/left-nav-jt.png">
+                                        </i>
+                                    </div>
+                                        <ul class="submenu">
+                                                <li>
+                                                <a href="http://iat.ustc.edu.cn/iat/x218/">培养方案</a>
+                                            </li>
+                                    </ul>
+                                </li>
+                                    <li class="channel-li">
+                                    <div class="link">
+                                        <a href="http://iat.ustc.edu.cn/iat/x172/">学位授予</a>
+                                    </div>
+                                </li>
+                                    <li class="channel-li">
+                                    <div class="link">
+                                        <a href="http://iat.ustc.edu.cn/iat/x108/">学生工作</a>
+                                    </div>
+                                </li>
+                                    <li class="channel-li">
+                                    <div class="link">
+                                        <a href="http://iat.ustc.edu.cn/iat/x224/">规章制度</a>
+                                    </div>
+                                </li>
+                                    <li class="channel-li">
+                                    <div class="link">
+                                        <a href="http://iat.ustc.edu.cn/jycg/index.jhtml">教学成果</a>
+                                    </div>
+                                </li>
+                                    <li class="channel-li">
+                                    <div class="link">
+                                        <a href="http://iat.ustc.edu.cn/iat/jyxx/">就业信息</a>
+                                    </div>
+                                </li>
+                                    <li class="channel-li">
+                                    <div class="link">
+                                        <a href="http://iat.ustc.edu.cn/iat/yxsslwxt/">优秀硕士论文系统</a>
+                                    </div>
+                                </li>
+        </ul>
+    </div>
+    <!--新闻专题-->
+    <div class="AT-Inside-page-body-left-News-feature">
+        <div class="AT-Inside-page-body-left-News-feature-head">
+            <a href="http://iat.ustc.edu.cn/iat/x197/">
+                <p>新闻专题</p>
+                <font>>></font>
+            </a>
+        </div>
+                <a href="http://iat.ustc.edu.cn/iat/x197/20160505/4954.html" class="AT-Inside-page-body-left-News-feature-con-a">
+                    <div class="AT-Inside-page-body-left-News-feature-body">
+                        <div class="AT-Inside-page-body-left-News-feature-photo">
+                            <img src="/u/cms/rgzn/202107/15160358abga.jpeg" />
+                        </div>
+                        <p class="AT-Inside-page-body-left-News-feature-con">
+                        </p>
+                    </div>
+                </a>
+    </div>
+    <!--联系我们-->
+    <div class="AT-Inside-page-body-left-Contact-us">
+        <div class="AT-Inside-page-body-left-Contact-us-head">
+            <p>
+                <img src="/r/cms/xjjs/default/img/Contact-us-head-icon.png" /> 联系我们
+            </p>
+        </div>
+        <ul class="AT-Inside-page-body-left-Contact-us-body">
+            <li>
+                地址：安徽省合肥市高新5089号
+            </li>
+            <li>
+                邮编：230000
+            </li>
+            <li>
+                传真：0551-65708002
+            </li>
+            <li>
+                网址：https://iat.ustc.edu.cn/
+            </li>
+            <li>
+                邮箱：zhb@iat.ustc.edu.cn
+            </li>
+        </ul>
+    </div>
+</div>
+<script type="text/javascript">
+    $(function() {
+        Cms.viewCount("","6731");
+    });
+</script>        <!--右侧内容区-->
+        <div class="AT-Inside-page-body-right fr">
+            <!--栏目标题/面包屑-->
+            <div class="AT-Inside-page-body-right-head">
+                <p class="AT-Inside-page-body-right-head-title fl">工作动态</p>
+                <div class="AT-Inside-page-body-right-head-Bread fr">
+                    <img src="/r/cms/xjjs/default/img/Bread-Crumbs-icon.png"/>
+                    <p>
+                        当前位置：
+                        <a href='/'>首页</a> &gt;
+                        <a href='https://iat.ustc.edu.cn/iat/pyms.html' target='_blank'>研究生教育</a>
+                        &gt; <a href='http://iat.ustc.edu.cn/iat/ckzx/' target='_blank'>创客中心</a>
+                        &gt; <a href='http://iat.ustc.edu.cn/iat/xwdt/' target='_blank'>工作动态</a> &gt;
+                    </p>
+                </div>
+            </div>
+            <!--内容-->
+            <div class="AT-Inside-page-body-right-body">
+                <div class="News-detail-con">
+                    <p class="News-detail-title">体验 ChatGPT  Get AI新趋势—— 先研院举办创客嘉年华第六期科普活动</p>
+                    <div class="notes-share">
+                        <div class="news-detail-notes fl">
+                            <p>文章来源：本站原创</p>
+                            <p>发布时间：2023-03-14 00:00:00</p>
+                            <p>文章作者：本站编辑</p>
+                        </div>
+                        <div class="share fr">
+                            <div id="share-2"></div>
+                            <!--<a href=""><img src="img/share-icon1.png"></a>
+                            <a href=""><img src="img/share-icon2.png"></a>
+                            <a href=""><img src="img/share-icon3.png"></a>
+                            <a href=""><img src="img/share-icon4.png"></a>
+                            <a href=""><img src="img/share-icon5.png"></a>
+                            <a href=""><img src="img/share-icon6.png"></a>-->
+                        </div>
+                    </div>
+                    <div class="clear"></div>
+                    <!--<div class="Guided-reading">-->
+                        <!--<p>【导读】</p>-->
+                    <!--</div>-->
+                    <div class="news-detail-news-con" id="newsContent">
+                        <p style="text-align: justify; text-indent: 2em;"><span style="font-family: 宋体, SimSun; font-size: 18px;">3月11日，“体验 ChatGPT &nbsp;Get AI新趋势”——创客嘉年华(第六期)科普活动在科大讯飞总部举办，来自园区创新研发单元、入驻企业员工及院部机关员工与子女共60人参加了此次活动。</span></p><p style="text-align: justify; text-indent: 2em;"><span style="font-family: 宋体, SimSun; font-size: 18px;">ChatGPT到底是什么？人工智能可以帮人类做哪些工作？在ChatGPT科普讲座中，人工智能神秘的面纱被一点点揭开。主讲老师将人工智能发展历史、 遇到的挑战、技术原理、前沿技术进展、落地应用情况等娓娓道来，小朋友们不时为人工智能的强大发出“哇偶”的赞叹！</span></p><p style="text-align: justify; text-indent: 2em;"><span style="font-family: 宋体, SimSun; font-size: 18px;">在AI达人PK赛环节，小朋友在家长的辅助下，深度体验了AI在辅助学习领域的强大运用。知识图谱、用户画像、 自适应学习推荐、数学智能批改等功能一一呈现在小朋友的眼前。</span></p><p style="text-align:center"><img src="/u/cms/xjjs/202312/23182358gor7.png" title="图片1.png" alt="图片1.png" style="max-width:80%"/></p><p style="text-align: justify; text-indent: 2em;"><span style="font-family: 宋体, SimSun; font-size: 18px;">“欢迎来到科大讯飞，我是飞飞！”一进人工智能展厅，小朋友们立刻被屏幕中的虚拟人形象所吸引。接下来的参观中，大家近距离学习虚拟人的形象塑造过程，体验了语音识别和重塑的乐趣；饶有兴致地与机器人对弈，充分感受人工智能的魅力。得知人工智能可以作诗，小朋友们兴奋不已，纷纷绞尽脑汁给AI出题！把名字输入系统以后，AI很快就做出了带着小朋友名字的颇有意境的藏头诗！</span></p><p style="text-align: justify; text-indent: 2em;"><span style="font-family: 宋体, SimSun; font-size: 18px;">机器人编程课程涉及到及数学、物理、计算机、美学、人工智能等多领域学科。在AI辅助编程课上，小朋友们运用“编程机械组101”编程搭建教具，不仅全方位体验了“人工智能”理论知识以及相关技术在生活场景中的应用，动手能力更是得到了很好的锻炼!</span></p><p style="text-align: justify; text-indent: 2em;"><span style="font-family: 宋体, SimSun; font-size: 18px; text-indent: 2em;">本次活动旨在使青少年对人工智能有直观的了解和认识，帮助其适应与人工智能共存相处，最终善用人工智能。活动的举办</span><span style="font-family: 宋体, SimSun; font-size: 18px; text-indent: 2em;">得到了大朋友和小朋友们的一致好评。</span><span style="font-family: 宋体, SimSun; font-size: 18px; text-indent: 2em;">我们将继续</span><span style="font-family: 宋体, SimSun; font-size: 18px; text-indent: 2em;">践行</span><span style="font-family: 宋体, SimSun; font-size: 18px; text-indent: 2em;">先研院传播创新理念、培育创新人才的责任和使命</span><span style="font-family: 宋体, SimSun; font-size: 18px; text-indent: 2em;">，</span><span style="font-family: 宋体, SimSun; font-size: 18px; text-indent: 2em;">紧跟科技潮流，不断创新活动形式，丰富活动内容，</span><span style="font-family: 宋体, SimSun; font-size: 18px; text-indent: 2em;">为营造科技创新与人文关怀并重的园区文化氛围贡献力量。</span></p><p><br/></p>
+
+                    </div>
+
+                    <!-- 正文中UEditor插入的PDF自动转换为内联预览 -->
+                    <div id="pdfInlineContainer" style="display:none;"></div>
+                    <!--<div class="news-detail-news-footer">-->
+                        <!--<p class="fr">标签、关键词：</p>-->
+                    <!--</div>-->
+                    <!--附件下载-->
+                    <div class="appendices">
+                        <p class="appendices-title">
+                        </p>
+                        <div class="appendices-fl">
+                        </div>
+                        <div class="appendices-fr">
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+<!--引入公共尾部-->
+<div class="footer-iframe">
+<div class="footer">
+	<div class="w">
+		<ul class="footer-nav">
+			<!--<li>
+				<a href="/xjjs/">网站首页</a>
+			</li>-->
+					<li>
+						<a href="http://iat.ustc.edu.cn/iat/x228/">单位概况</a>
+					</li>
+					<li>
+						<a href="http://iat.ustc.edu.cn/iat/x186/">技术开发</a>
+					</li>
+					<li>
+						<a href="http://iat.ustc.edu.cn/iat/x185/">企业发展</a>
+					</li>
+					<li>
+						<a href="https://iat.ustc.edu.cn/iat/pyms.html">研究生教育</a>
+					</li>
+					<li>
+						<a href="http://iat.ustc.edu.cn/iat/x106/">公共技术服务</a>
+					</li>
+					<li>
+						<a href="http://iat.ustc.edu.cn/iat/x181/">人才招聘</a>
+					</li>
+					<li>
+						<a href="http://iat.ustc.edu.cn/iat/x178/">党建园地</a>
+					</li>
+					<li>
+						<a href="https://iatew.ustc.edu.cn/taskcenter/workflow/index">信息门户</a>
+					</li>
+					<li>
+						<a href="http://iat.ustc.edu.cn/iat/x182/">公共服务</a>
+					</li>
+		</ul>
+		<div class="clear"></div>
+		<div class="footer-body">
+			<div class="copyright fl">
+				<div class="footer-lodo fl">
+					<img src="/r/cms/xjjs/default/img/At-footer-logo.png" />
+				</div>
+				<div class="copyright-body fl">
+					<p>版权所有 ©2020 中国科学技术大学 </p>
+					<p>地址：安徽省合肥市金寨路 96 号，邮政编码：230026</p>
+					<p>联系我们 <a href="http://beian.miit.gov.cn" target="_blank" style="text-decoration:underline; color:#fff">皖ICP备05002528号-1</a> 皖公网安备34011102001530号</p>
+				</div>
+			</div>
+			<div class="dimensional fr">
+				<img src="/r/cms/xjjs/default/img/wechat.png" />
+				<img src="/r/cms/xjjs/default/img/weibo.png" />
+				<img src="/r/cms/xjjs/default/img/video.png" />
+			</div>
+		</div>
+	</div>
+</div></div>
+<!-- 正文PDF链接自动内联预览 -->
+<script>
+(function() {
+    var contentEl = document.getElementById('newsContent');
+    if (!contentEl) return;
+    var links = contentEl.querySelectorAll('a[href$=".pdf"], a[href*=".pdf?"]');
+    if (links.length === 0) return;
+    var container = document.getElementById('pdfInlineContainer');
+    if (!container) return;
+    links.forEach(function(link) {
+        var pdfUrl = link.href || link.getAttribute('href');
+        if (!pdfUrl) return;
+        var wrapper = document.createElement('div');
+        wrapper.style.cssText = 'margin-bottom:20px;';
+        var previewBox = document.createElement('div');
+        previewBox.style.cssText = 'border:1px solid #e0e0e0;border-radius:4px;overflow:hidden;margin-bottom:10px;';
+        var iframe = document.createElement('iframe');
+        iframe.width = '100%';
+        iframe.height = '800';
+        iframe.style.border = 'none';
+        iframe.src = '/thirdparty/pdfjs/web/viewer.html?file=' + pdfUrl;
+        previewBox.appendChild(iframe);
+        wrapper.appendChild(previewBox);
+        var downloadLink = document.createElement('a');
+        downloadLink.href = pdfUrl;
+        downloadLink.target = '_blank';
+        downloadLink.style.cssText = 'display:inline-block;padding:8px 16px;color:#0066cc;text-decoration:none;font-size:14px;';
+        downloadLink.innerHTML = '<span style="margin-right:6px;color:#0066cc;font-weight:bold;">></span>' + (link.textContent || link.title || 'PDF下载');
+        wrapper.appendChild(downloadLink);
+        container.appendChild(wrapper);
+        container.style.display = 'block';
+    });
+})();
+</script>
+<script src="/r/cms/share/jquery.min.js"></script>
+<script src="/r/cms/share/jquery.share.min.js"></script>
+<script src="/r/cms/md5/md5.js"></script>
+<script>
+    $('#share-1').share();
+    $('#share-2').share({sites: ['qzone', 'qq', 'weibo','wechat']});
+    $('#share-3').share();
+    $('#share-4').share();
+</script>
+<script type="text/javascript">
+    $(document).ready(function () {
+        if("500" == "360" || "500" == "361"){
+            var md5Str = $.md5("2_500_6731");
+            var secretKey = getUrlParameter('secretKey');
+
+            if(secretKey === "" || !secretKey.trim() === md5Str.trim()){
+                console.log(false)
+                window.location.href = "http://iat.ustc.edu.cn//iat/index.html";
+            }else{
+                console.log(true)
+            }
+        }
+    });
+
+    function getUrlParameter(name) {
+        name = name.replace(/[]/, "\[").replace(/[]/, "\[").replace(/[]/, "\\\]");
+        var regexS = "[\\?&]" + name + "=([^&#]*)";
+        var regex = new RegExp(regexS);
+        var results = regex.exec(window.parent.location.href);
+        if (results == null) return ""; else {
+            return results[1];
+        }
+    };
+</script>
+</body>
+</html>

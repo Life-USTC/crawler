@@ -24,4 +24,4 @@ def adapter_for(source_id: str, url: str) -> SiteAdapter | None:
     return _by_host.get(host)
 
 
-from . import vsb, wordpress  # noqa: E402, F401
+from . import jhtml, vsb, wordpress  # noqa: E402, F401
