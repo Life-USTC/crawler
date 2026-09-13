@@ -9,6 +9,7 @@ from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup, Tag, XMLParsedAsHTMLWarning
 
+from .adapters import adapter_for
 from .canonicalize import normalize_url
 from .markdown import html_to_markdown
 from .models import ArticleDocument, ImageRef, PageDocument
@@ -1267,6 +1268,34 @@ def extract_page(
             raw_metadata={"jsonld": metadata},
             images=images,
         )
+    adapter = adapter_for(source_id, url)
+    if adapter is not None:
+        try:
+            fields = adapter.extract(url, html)
+        except Exception:
+            fields = None
+        if fields is not None and fields.title.strip():
+            body_text = re.sub(
+                r"\n{3,}", "\n\n",
+                BeautifulSoup(fields.body_html, "html.parser").get_text("\n", strip=True),
+            ).strip()
+            article = ArticleDocument(
+                url=canonical or url,
+                source_id=source_id,
+                title=fields.title,
+                author=fields.author,
+                published_at=fields.published_at,
+                updated_at=updated,
+                category=fields.category,
+                summary=fields.summary,
+                body_html=fields.body_html,
+                body_text=body_text,
+                body_markdown=html_to_markdown(fields.body_html),
+                extraction_method=f"adapter:{adapter.name}",
+                source_page_url=url,
+                raw_metadata={"jsonld": metadata},
+                images=images,
+            )
     return PageDocument(
         requested_url=url,
         final_url=url,
