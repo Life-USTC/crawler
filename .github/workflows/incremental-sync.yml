@@ -80,10 +80,15 @@ jobs:
       - name: Crawl and sync
         env:
           USTC_CRAWLER_INGESTION_SECRET: ${{ secrets.USTC_CRAWLER_INGESTION_SECRET }}
+          # End sync on its own before the job timeout so the always() state
+          # save below runs against a quiet database instead of a live writer.
+          SYNC_BUDGET_MINUTES: ${{ (inputs.reindex || inputs.retext) && 190 || 30 }}
         run: |
           uv run ustc-crawler db-upgrade 2>&1 | tee db-upgrade.log
           uv run ustc-crawler crawl --incremental 2>&1 | tee crawl.log
-          uv run ustc-crawler sync --server "${{ vars.CRAWLER_SERVER }}" 2>&1 | tee sync.log
+          timeout --signal=TERM --kill-after=60s "${SYNC_BUDGET_MINUTES}m" \
+            uv run ustc-crawler sync --server "${{ vars.CRAWLER_SERVER }}" 2>&1 | tee sync.log
+          test "${PIPESTATUS[0]}" = 0 -o "${PIPESTATUS[0]}" = 124
 
       - name: Report non-terminal sync state
         if: always()
@@ -145,7 +150,12 @@ jobs:
         id: compress
         if: always()
         run: |
-          if [ -f "$DB_PATH" ]; then zstd -f "$DB_PATH" -o "$DB_ARCHIVE"; fi
+          if [ -f "$DB_PATH" ]; then
+            sqlite3 "$DB_PATH" "PRAGMA wal_checkpoint(TRUNCATE);"
+            cp --reflink=auto "$DB_PATH" state-snapshot.sqlite
+            zstd -f state-snapshot.sqlite -o "$DB_ARCHIVE"
+            rm -f state-snapshot.sqlite
+          fi
           echo "exists=$([ -f "$DB_ARCHIVE" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
       - name: Upload state to cache
