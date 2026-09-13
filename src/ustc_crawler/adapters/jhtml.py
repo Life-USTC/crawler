@@ -26,14 +26,11 @@ class JhtmlAdapter(SiteAdapter):
             return None
         notes = soup.select_one("div.news-detail-notes")
         published = ""
-        author = ""
         if notes is not None:
             match = _DATE_LABEL.search(notes.get_text(" ", strip=True))
             if match:
-                published = match.group(0).split("：", 1)[-1].strip()[:10]
-        return ArticleFields(
-            title=title, published_at=published, author=author, body_html=str(body)
-        )
+                published = f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+        return ArticleFields(title=title, published_at=published, body_html=str(body))
 
 
 from . import register  # noqa: E402

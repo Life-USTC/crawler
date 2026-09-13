@@ -6,7 +6,7 @@ from ustc_crawler.adapters.course import CourseAdapter
 
 class CourseAdapterTests(unittest.TestCase):
     def test_course_fixture(self) -> None:
-        html = Path("tests/fixtures/adapters/course/course.html").read_text(
+        html = (Path(__file__).parent / "fixtures/adapters/course/course.html").read_text(
             encoding="utf-8"
         )
         fields = CourseAdapter().extract(

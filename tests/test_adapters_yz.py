@@ -6,7 +6,7 @@ from ustc_crawler.adapters.yz import YzAdapter
 
 class YzAdapterTests(unittest.TestCase):
     def test_yz_fixture(self) -> None:
-        html = Path("tests/fixtures/adapters/yz/yz.html").read_text(encoding="utf-8")
+        html = (Path(__file__).parent / "fixtures/adapters/yz/yz.html").read_text(encoding="utf-8")
         fields = YzAdapter().extract(
             "https://yz.ustc.edu.cn/article/2827/181", html
         )

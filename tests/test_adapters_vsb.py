@@ -10,7 +10,7 @@ class VsbAdapterTests(unittest.TestCase):
     def test_mech_fixture(self) -> None:
         from ustc_crawler.adapters.vsb import VsbCmsAdapter
 
-        html = Path("tests/fixtures/adapters/vsb/mech.html").read_text(encoding="utf-8")
+        html = (Path(__file__).parent / "fixtures/adapters/vsb/mech.html").read_text(encoding="utf-8")
         adapter = VsbCmsAdapter()
         fields = adapter.extract(
             "https://mech.ustc.edu.cn/2022/0331/c4596a550763/page.htm", html

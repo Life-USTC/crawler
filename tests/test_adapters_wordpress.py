@@ -11,7 +11,7 @@ class WordPressAdapterTests(unittest.TestCase):
 
         from ustc_crawler.adapters.wordpress import WordPressAdapter
 
-        html = Path("tests/fixtures/adapters/wordpress/lib.html").read_text(
+        html = (Path(__file__).parent / "fixtures/adapters/wordpress/lib.html").read_text(
             encoding="utf-8"
         )
         fields = WordPressAdapter().extract("https://lib.ustc.edu.cn/?p=6092", html)
