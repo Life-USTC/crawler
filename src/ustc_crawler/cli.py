@@ -154,6 +154,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="limit re-extraction to one or more source IDs (repeatable)",
     )
 
+    retext = sub.add_parser(
+        "retext",
+        help="recompute article body_text from stored body_html without network requests",
+    )
+    retext.add_argument("--db", default="data/crawler.sqlite", type=_path)
+    retext.add_argument("--data-dir", default="data", type=_path)
+    retext.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        help="limit recomputation to one or more source IDs (repeatable)",
+    )
+
     rebuild_bundles = sub.add_parser(
         "rebuild-bundles", help="rebuild URL-specific article JSON/HTML archives"
     )
@@ -394,6 +407,19 @@ def main(argv: list[str] | None = None) -> int:
                         set(args.source) or None,
                         _source_image_caps(args.config),
                     ),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        finally:
+            store.close()
+        return 0
+    if args.command == "retext":
+        store = Store(args.db, args.data_dir)
+        try:
+            print(
+                json.dumps(
+                    store.retext_article_bodies(set(args.source) or None),
                     ensure_ascii=False,
                     indent=2,
                 )

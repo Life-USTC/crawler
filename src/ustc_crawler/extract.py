@@ -341,6 +341,34 @@ def _text(value: Any) -> str:
     return ""
 
 
+_BLOCK_TAGS = (
+    "address", "article", "aside", "blockquote", "dd", "details", "div", "dl",
+    "dt", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4",
+    "h5", "h6", "header", "hr", "li", "main", "nav", "ol", "p", "pre",
+    "section", "table", "ul",
+)
+
+
+def _block_text(root: Tag) -> str:
+    """Plain text broken at block boundaries instead of every inline tag.
+
+    ``get_text("\\n")`` explodes Word-exported pages that wrap each text run
+    in its own inline ``<span>``; joining at block level keeps paragraphs and
+    phone numbers on one line.
+    """
+    for br in root.find_all("br"):
+        br.replace_with("\n")
+    lines: list[str] = []
+    for node in root.find_all(_BLOCK_TAGS):
+        if node.find(_BLOCK_TAGS):
+            continue
+        text = re.sub(r"[^\S\n]+", " ", node.get_text(""))
+        lines.extend(line.strip() for line in text.split("\n") if line.strip())
+    if not lines:
+        return re.sub(r"\n{3,}", "\n\n", root.get_text("\n", strip=True)).strip()
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
 def _jsonld_values(soup: BeautifulSoup) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for script in soup.select("script[type='application/ld+json']"):
@@ -1128,7 +1156,7 @@ def extract_page(
             if title:
                 break
     body_html = str(root)
-    body_text = re.sub(r"\n{3,}", "\n\n", root.get_text("\n", strip=True)).strip()
+    body_text = _block_text(root)
     fallback_has_substantive_paragraph = any(
         len(_text(node.get_text(" ", strip=True))) >= 20 for node in root.find_all("p")
     )
@@ -1275,10 +1303,7 @@ def extract_page(
         except Exception:
             fields = None
         if fields is not None and fields.title.strip():
-            body_text = re.sub(
-                r"\n{3,}", "\n\n",
-                BeautifulSoup(fields.body_html, "html.parser").get_text("\n", strip=True),
-            ).strip()
+            body_text = _block_text(BeautifulSoup(fields.body_html, "html.parser"))
             article = ArticleDocument(
                 url=canonical or url,
                 source_id=source_id,
