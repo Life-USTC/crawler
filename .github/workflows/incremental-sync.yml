@@ -85,12 +85,21 @@ jobs:
               ]
           Path("diag/batches.json").write_text(json.dumps(meta, indent=2))
           for b in meta:
-              batch = outbox.build_batch(
-                  run_id="diag",
-                  batch_id=b["id"],
-                  producer_version="diag",
-                  observed_at="2026-01-01T00:00:00+08:00",
-              )
+              try:
+                  batch = outbox.build_batch(
+                      run_id="diag",
+                      batch_id=b["id"],
+                      producer_version="diag",
+                      observed_at="2026-01-01T00:00:00+08:00",
+                  )
+              except Exception as exc:
+                  Path(f"diag/{b['id']}.error.txt").write_text(
+                      f"{type(exc).__name__}: {exc}"
+                  )
+                  continue
+              if batch is None:
+                  Path(f"diag/{b['id']}.error.txt").write_text("batch rebuild returned None")
+                  continue
               Path(f"diag/{b['id']}.json").write_bytes(batch.payload_bytes())
           store.close()
           PY
