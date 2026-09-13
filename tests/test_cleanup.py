@@ -385,6 +385,41 @@ class CleanupExcessImagesTests(unittest.TestCase):
         self.assertEqual(json.loads(tombstone["payload_json"])["canonicalUrl"], url)
         self.assertTrue(json.loads(tombstone["payload_json"])["tombstone"])
 
+    def test_reindex_removes_article_with_attached_media(self) -> None:
+        url = (
+            "https://www.ustc.edu.cn/_upload/article/files/7d/f9/"
+            "033cd3b84a9d8a16b2b2eb9987e6/W020150417520333865224.htm"
+        )
+        html = """<html><body><article><h1>带图附件</h1>
+        <time>发布时间：2026-08-01</time>
+        <p>这是一个足够长的 HTML 附件正文，用于验证带图片的静态附件在重新索引时能被干净移除。</p>
+        <p>第二段内容让旧版提取结果满足文章阈值，但重新索引必须把它归档为附件。</p>
+        <img src='/images/0.png'>
+        </article></body></html>"""
+        page = extract_page(url, html, source_id="university")
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        page.raw_body = html.encode()
+        self.store.save_page(page, "university", 1)
+        self.store.save_article(page.article)
+        for image in page.article.images:
+            self.store.save_media(image, b"data", "image/png", url, url)
+
+        result = self.store.reindex_extractions(page_urls={url})
+
+        self.assertEqual(result["removed"], 1)
+        self.assertIsNone(
+            store_core(self.store).execute(
+                "SELECT url FROM articles WHERE url=?", (url,)
+            ).fetchone()
+        )
+        self.assertEqual(
+            store_core(self.store).execute(
+                "SELECT COUNT(*) FROM media WHERE article_url=?", (url,)
+            ).fetchone()[0],
+            0,
+        )
+
 
 class CleanupCliTests(unittest.TestCase):
     def test_cli_dry_run_reports_counts(self) -> None:

@@ -1864,16 +1864,17 @@ class Store:
         def remove_article_with_media(url: str) -> int:
             """Delete one article and detach media owned by that article.
 
-            A retained article keeps its ``media.article_url`` owner while its
-            relationships are rebuilt below.  Clearing that owner for every
-            retained article turns the unindexed column into a full-table scan
-            for each page; only deleted articles need the detach operation.
+            The ``media.article_url`` owner must be cleared before the
+            ``articles`` row is deleted: the foreign key is enforced, so
+            detaching afterwards would fail the delete.  Only removal keys
+            run the detach; retained articles keep their owner while their
+            relationships are rebuilt below, avoiding a full-table scan on
+            the unindexed column for every page.
             """
 
             self._core.execute("DELETE FROM article_media WHERE article_url=?", (url,))
+            self._core.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (url,))
             deleted = remove_article(url)
-            if deleted:
-                self._core.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (url,))
             return deleted
         # Avoid one duplicate lookup query per page.  The archive is large
         # enough that the old ``duplicate_page_url`` call turned reindexing
