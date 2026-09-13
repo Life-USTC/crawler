@@ -209,6 +209,7 @@ class IngestionSyncClient:
         self._sleep = sleep
         self._now = now
         self.outbox = IngestionOutbox(database)
+        self._archive_object_cache: dict[str, dict[str, bytes]] = {}
 
     def close(self) -> None:
         if self._owns_http:
@@ -681,9 +682,44 @@ class IngestionSyncClient:
     def _object_bytes(self, manifest: LocalObjectManifest) -> bytes:
         try:
             body = self._object_path(manifest.local_path).read_bytes()
-        except OSError as exc:
-            raise ImmutableObjectChangedError("immutable_object_changed") from exc
+        except OSError:
+            body = self._archived_object_bytes(manifest)
         if len(body) != manifest.size or hashlib.sha256(body).hexdigest() != manifest.sha256:
+            raise ImmutableObjectChangedError("immutable_object_changed")
+        return body
+
+    def _archived_object_bytes(self, manifest: LocalObjectManifest) -> bytes:
+        """Rebuild body object bytes from the articles table.
+
+        The spool file is missing when the event was enqueued on another
+        machine (the shared crawl state ships only the database, not the
+        object spool).  Article ``body_html``/``body_markdown`` columns hold
+        the same sanitized bytes the manifest was hashed from.  Media and
+        asset objects have no archived copy and still fail permanently.
+        """
+        if manifest.kind not in ("body_html", "body_markdown"):
+            raise ImmutableObjectChangedError("immutable_object_changed")
+        cache = self._archive_object_cache.get(manifest.kind)
+        if cache is None:
+            from sqlalchemy import text
+
+            from ..models import sanitize_text
+
+            cache = {}
+            column = manifest.kind
+            with self.database.session_factory() as session:
+                rows = session.execute(
+                    text(
+                        f"SELECT {column} FROM articles"
+                        f" WHERE {column} IS NOT NULL AND {column} != ''"
+                    )
+                )
+                for (value,) in rows:
+                    body = sanitize_text(str(value)).encode("utf-8")
+                    cache.setdefault(hashlib.sha256(body).hexdigest(), body)
+            self._archive_object_cache[manifest.kind] = cache
+        body = cache.get(manifest.sha256)
+        if body is None:
             raise ImmutableObjectChangedError("immutable_object_changed")
         return body
 
