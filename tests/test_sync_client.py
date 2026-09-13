@@ -583,6 +583,49 @@ class SyncClientTests(unittest.TestCase):
                 sync.close()
                 store.close()
 
+    def test_unchanged_items_skip_object_requests_and_ack(self) -> None:
+        # The server only registers batch object claims when it creates or
+        # updates a revision; items reported as "unchanged" have no claims,
+        # so planning their objects would fail with http_404. Their bytes
+        # were delivered with the batch that first created the revision.
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/ingestion/publications/batches":
+                payload = json.loads(request.content)
+                statuses = {item["canonicalUrl"]: "unchanged" for item in payload["items"]}
+                return httpx.Response(
+                    200,
+                    json=self._batch_response(request, statuses=statuses),
+                    request=request,
+                )
+            raise AssertionError(f"unchanged item must not cause object request: {request.url}")
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            try:
+                store.enqueue_article_for_sync(self._article(1))
+                store.enqueue_article_for_sync(self._article(2))
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=client,
+                )
+                summary = sync.sync()
+                self.assertEqual(summary["acked"], 1)
+                self.assertEqual(summary["failed"], 0)
+                with store.database.session_factory() as session:
+                    batch = session.scalar(select(SyncBatch))
+                    self.assertEqual(batch.status, "acked")
+                    self.assertEqual(batch.last_error, None)
+                    rows = session.scalars(select(SyncOutbox)).all()
+                    self.assertEqual({row.status for row in rows}, {"acked"})
+            finally:
+                sync.close()
+                store.close()
+
     def test_large_batch_checks_existing_objects_at_protocol_limit(self) -> None:
         plan_requests: list[dict] = []
 

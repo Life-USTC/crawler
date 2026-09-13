@@ -406,12 +406,21 @@ class IngestionSyncClient:
         self.outbox.mark_batch(batch.batch_id, status="uploading")
         try:
             response = self._post_batch(batch, options)
-            accepted_identities, rejected_identities = self._result_identities(batch, response)
+            accepted_identities, rejected_identities, unchanged_identities = (
+                self._result_identities(batch, response)
+            )
             accepted_item_keys = self.outbox.batch_item_keys(
                 batch.batch_id,
                 accepted_identities,
             )
-            self._upload_objects(batch.batch_id, item_keys=accepted_item_keys, options=options)
+            # The server registers batch object claims only when it creates or
+            # updates a revision; "unchanged" items have no claims and their
+            # bytes were delivered with the batch that first created them.
+            upload_item_keys = accepted_item_keys - self.outbox.batch_item_keys(
+                batch.batch_id,
+                unchanged_identities,
+            )
+            self._upload_objects(batch.batch_id, item_keys=upload_item_keys, options=options)
             status = self.outbox.mark_batch_results(
                 batch.batch_id,
                 accepted_identities=accepted_identities,
@@ -431,7 +440,7 @@ class IngestionSyncClient:
     def _result_identities(
         batch: IngestionBatch,
         response: IngestionBatchResponse,
-    ) -> tuple[set[tuple[str, str, str]], set[tuple[str, str, str]]]:
+    ) -> tuple[set[tuple[str, str, str]], set[tuple[str, str, str]], set[tuple[str, str, str]]]:
         expected = Counter(
             (item.source_id, item.canonical_url, item.revision_hash) for item in batch.items
         )
@@ -448,7 +457,8 @@ class IngestionSyncClient:
             raise SyncProtocolError("batch_result_duplicate_status")
         rejected = {identity for identity, values in statuses.items() if "rejected" in values}
         accepted = set(statuses) - rejected
-        return accepted, rejected
+        unchanged = {identity for identity, values in statuses.items() if "unchanged" in values}
+        return accepted, rejected, unchanged
 
     @staticmethod
     def _safe_response_json(response: IngestionBatchResponse) -> str:
