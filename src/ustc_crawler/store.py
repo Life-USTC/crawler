@@ -1807,6 +1807,47 @@ class Store:
             saved += 1
         return {"scanned": scanned, "saved": saved}
 
+    def retext_article_bodies(self, source_ids: set[str] | None = None) -> dict[str, int]:
+        """Recompute article ``body_text`` from stored ``body_html``.
+
+        Cheap alternative to a full reindex when only the plain-text
+        rendering changed: ``body_html``/``body_markdown``/media are
+        untouched, and only rows whose text actually changes get a new
+        ``content_hash`` so ``sync-backfill`` enqueues exactly those.
+        """
+        from bs4 import BeautifulSoup
+
+        from .extract import _block_text
+
+        scanned = 0
+        changed = 0
+        query = "SELECT url,body_html,body_text FROM articles"
+        params: tuple[str, ...] = ()
+        if source_ids:
+            placeholders = ",".join("?" for _ in source_ids)
+            query += f" WHERE source_id IN ({placeholders})"
+            params = tuple(sorted(source_ids))
+        for row in self._core.execute(query, params):
+            scanned += 1
+            body_html = str(row["body_html"] or "")
+            if not body_html:
+                continue
+            new_text = _block_text(BeautifulSoup(body_html, "html.parser"))
+            if new_text != str(row["body_text"] or ""):
+                self._core.execute(
+                    "UPDATE articles SET body_text=?,content_hash=? WHERE url=?",
+                    (
+                        new_text,
+                        sha256_bytes(new_text.encode("utf-8", errors="replace")),
+                        row["url"],
+                    ),
+                )
+                changed += 1
+            if scanned % 1000 == 0:
+                self._core.commit()
+        self._core.commit()
+        return {"scanned": scanned, "changed": changed}
+
     def reindex_extractions(
         self,
         source_ids: set[str] | None = None,

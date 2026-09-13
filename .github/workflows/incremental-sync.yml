@@ -9,6 +9,10 @@ on:
         description: "Re-extract saved pages for adapter-covered sources and enqueue changed articles before sync"
         type: boolean
         default: false
+      retext:
+        description: "Recompute article body_text from stored body_html and enqueue changed articles before sync"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -65,6 +69,12 @@ jobs:
             --source unit-iat-ustc-edu-cn \
             --source graduate-admissions \
             --source course 2>&1 | tee reindex.log
+          uv run ustc-crawler sync-backfill 2>&1 | tee backfill.log
+
+      - name: Retext article bodies
+        if: inputs.retext
+        run: |
+          uv run ustc-crawler retext 2>&1 | tee retext.log
           uv run ustc-crawler sync-backfill 2>&1 | tee backfill.log
 
       - name: Crawl and sync

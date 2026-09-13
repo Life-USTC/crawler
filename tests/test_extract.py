@@ -395,6 +395,29 @@ class ExtractTests(unittest.TestCase):
         assert page.article is not None
         self.assertEqual(page.article.body_text, "负责艺术教学中心和通识教育中心教务工作")
 
+    def test_word_exported_span_soup_keeps_paragraph_lines(self) -> None:
+        html = """
+        <html><head><title>体检通知</title></head><body>
+        <div class='v_news_content'>
+        <p><span>各有关单位：</span></p>
+        <p><span>根据省保健委</span><span>《关于做好<span>2026</span>年度健康体检工作的通知》，</span><span>我校现开展年度健康体检工作，</span><span>现将有关事项通知如下，请各单位及时转告相关人员，</span><span>按要求安排好体检预约与车辆乘坐事宜。</span></p>
+        <p><span>一、体检对象</span></p>
+        <p><span>持有干部保健证的省保健对象人员，及新进的正高级专业技术职务人员（含特任正高），请按通知要求参加。</span></p>
+        <p><span>联系电话：</span><span>62283555-800</span><span>或</span><span>802</span><span>。</span></p>
+        </div></body></html>
+        """
+        page = extract_page(
+            "https://www.ustc.edu.cn/tzggcontent.jsp?urltype=news.NewsContentUrl&wbnewsid=1&wbtreeid=1363",
+            html,
+        )
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertIn(
+            "根据省保健委《关于做好2026年度健康体检工作的通知》，我校现开展年度健康体检工作，现将有关事项通知如下，请各单位及时转告相关人员，按要求安排好体检预约与车辆乘坐事宜。",
+            page.article.body_text,
+        )
+        self.assertIn("62283555-800或802。", page.article.body_text)
+
     def test_nested_footer_class_is_removed_from_article_container(self) -> None:
         html = """
         <html><head><title>研究生会活动报道</title></head><body>

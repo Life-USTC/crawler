@@ -7,7 +7,7 @@ from tests.support import store_core
 from ustc_crawler.cli import main as cli_main
 from ustc_crawler.extract import extract_page
 from ustc_crawler.models import ArticleDocument, ImageRef, PageDocument, SourceConfig
-from ustc_crawler.store import Store
+from ustc_crawler.store import Store, sha256_bytes
 
 
 class CleanupBlockedHostArticlesTests(unittest.TestCase):
@@ -419,6 +419,85 @@ class CleanupExcessImagesTests(unittest.TestCase):
             ).fetchone()[0],
             0,
         )
+
+
+class RetextArticleBodiesTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        root = Path(self.temp_dir.name)
+        self.data_dir = root / "data"
+        self.db_path = self.data_dir / "crawler.sqlite"
+        self.store = Store(self.db_path, self.data_dir)
+        self.store.add_source(
+            SourceConfig(
+                id="library",
+                name="图书馆",
+                organization_level="service",
+                seed_urls=["https://lib.ustc.edu.cn/"],
+                allowed_hosts=["lib.ustc.edu.cn"],
+                blocked_hosts=["career.lib.ustc.edu.cn", "mirror.lib.ustc.edu.cn"],
+            )
+        )
+
+    def tearDown(self) -> None:
+        self.store.close()
+        self.temp_dir.cleanup()
+
+    def _save(self, url: str, body_html: str, body_text: str) -> None:
+        self.store.save_article(
+            ArticleDocument(
+                url=url,
+                source_id="library",
+                title="通知",
+                author="",
+                published_at="2026-09-01",
+                updated_at="",
+                category="",
+                summary="",
+                body_html=body_html,
+                body_text=body_text,
+                body_markdown="",
+                extraction_method="test",
+                source_page_url=url,
+            )
+        )
+
+    def test_retext_joins_inline_spans_and_updates_hash(self) -> None:
+        url = "https://lib.ustc.edu.cn/2026/0901/c1a2/page.htm"
+        self._save(
+            url,
+            "<div><p><span>根据省保健委</span><span>《关于做好<span>2026</span>"
+            "年度健康体检工作的通知》，</span><span>我校现开展体检工作。</span></p></div>",
+            "根据省保健委\n《关于做好\n2026\n年度健康体检工作的通知》，\n我校现开展体检工作。",
+        )
+
+        result = self.store.retext_article_bodies()
+
+        self.assertEqual(result, {"scanned": 1, "changed": 1})
+        row = store_core(self.store).execute(
+            "SELECT body_text,content_hash FROM articles WHERE url=?", (url,)
+        ).fetchone()
+        self.assertEqual(
+            row["body_text"], "根据省保健委《关于做好2026年度健康体检工作的通知》，我校现开展体检工作。"
+        )
+        self.assertEqual(
+            row["content_hash"], sha256_bytes(row["body_text"].encode("utf-8"))
+        )
+
+    def test_retext_leaves_clean_text_untouched(self) -> None:
+        url = "https://lib.ustc.edu.cn/2026/0901/c1a3/page.htm"
+        self._save(url, "<div><p>各有关单位：</p><p>请知悉。</p></div>", "各有关单位：\n请知悉。")
+        before = store_core(self.store).execute(
+            "SELECT content_hash FROM articles WHERE url=?", (url,)
+        ).fetchone()["content_hash"]
+
+        result = self.store.retext_article_bodies()
+
+        self.assertEqual(result, {"scanned": 1, "changed": 0})
+        after = store_core(self.store).execute(
+            "SELECT content_hash FROM articles WHERE url=?", (url,)
+        ).fetchone()["content_hash"]
+        self.assertEqual(before, after)
 
 
 class CleanupCliTests(unittest.TestCase):
