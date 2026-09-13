@@ -10,7 +10,10 @@ import httpx
 from .models import FetchResponse
 from .robots import RobotsPolicy
 
-USER_AGENT = "ustc-public-site-crawler/0.1 (+local public archive; no authentication)"
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
 
 
 class HostRateLimiter:
@@ -52,7 +55,8 @@ class Fetcher:
             limits=limits,
             headers={
                 "User-Agent": user_agent,
-                "Accept": "text/html,application/xhtml+xml,image/*;q=0.8,*/*;q=0.1",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             },
         )
         self.rate_limiter = HostRateLimiter(delay)
