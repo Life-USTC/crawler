@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from bs4 import BeautifulSoup, Tag, XMLParsedAsHTMLWarning
 
 from .canonicalize import normalize_url
+from .markdown import html_to_markdown
 from .models import ArticleDocument, ImageRef, PageDocument
 
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
@@ -1260,7 +1261,7 @@ def extract_page(
             summary=summary,
             body_html=body_html,
             body_text=body_text,
-            body_markdown=body_text,
+            body_markdown=html_to_markdown(body_html),
             extraction_method="jsonld+meta+heuristic",
             source_page_url=url,
             raw_metadata={"jsonld": metadata},
