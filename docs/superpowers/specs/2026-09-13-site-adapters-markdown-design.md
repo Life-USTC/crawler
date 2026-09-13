@@ -1,0 +1,101 @@
+# 站点适配器与 Markdown 提取改造设计(第一阶段)
+
+日期:2026-09-13。状态:已批准(方案 A)。
+
+## 背景与目标
+
+爬虫目前对所有站点共用一套启发式提取器。实测发现:图书馆(32,253 页仅提取 1 篇)、
+先研院 iat、近代力学系 mech、信息与智能学部 iid、course、graduate-admissions 等站
+点页面抓取成功但文章判定/正文提取失败;`body_markdown` 字段当前只是纯文本而非真
+Markdown。本阶段目标:
+
+1. 浏览器 UA 伪装,拿到与普通浏览器一致的页面。
+2. 按站点适配器架构:同构 CMS 复用家族基类,异构站单独适配。
+3. 修复已知覆盖缺口,并对全部源做提取率审计。
+4. 产出真正的结构化 Markdown(标题、列表、表格、图片、链接)。
+
+非目标(后续阶段):增量爬取强化、全量并行提速、supplemental 源转正、平台侧改动。
+
+## 架构
+
+### UA 与抓取层
+
+- `http.py` 的 `USER_AGENT` 默认值改为当前桌面 Chrome UA 字符串(含 `Chrome/xx Safari/537.36`),
+  并补充常见浏览器请求头(`Accept`、`Accept-Language: zh-CN`)。
+- 继续遵守 robots.txt 与按 host 的并发锁/限流,不变。
+
+### 适配器注册表(`src/ustc_crawler/adapters/`)
+
+```text
+adapters/
+  __init__.py        # registry:source_id / host 模式 → Adapter
+  base.py            # SiteAdapter 基类(默认行为 = 现有通用启发式)
+  vsb.py             # 学校统一 CMS(/20xx/MMDD/cNNaNN/page.htm,覆盖绝大多数院系站)
+  wordpress.py       # 图书馆等 WordPress 站(?p=NNN、中文栏目路径、wp-sitemap)
+  jhtml.py           # 先研院等 .jhtml CMS
+  sites.py           # 少量异构站的单独适配(需要时)
+```
+
+`SiteAdapter` 接口(每个适配器都是小而可测的单元):
+
+- `article_url_patterns: tuple[Pattern, ...]` — 该站文章详情页 URL 模式。
+- `listing_url_patterns` — 列表页模式(供增量与发现使用)。
+- `extract(url, html) -> ArticleFields | None` — 用本站选择器提取标题、发布时间、
+  正文根节点;返回 None 表示"不是文章",交给兜底逻辑。
+- `markdown_options: dict` — 该站 Markdown 转换的清洗选项(要剔除的页脚/签名节点等)。
+
+注册表解析顺序:精确 `source_id` → host 模式 → 无适配器时走现有通用启发式
+(行为与今天完全一致,未适配站点不退化)。
+
+### Markdown 转换(`src/ustc_crawler/markdown.py`)
+
+- 新增依赖 `markdownify`;`html_to_markdown(body_html, options) -> str`。
+- 转换前清洗:移除脚本/样式/表单、站方页脚签名块(经适配器声明)、base64 图片;
+- 保留:标题层级、有序/无序列表、表格、链接、图片(图片保留规范化后的源站 URL,由现有 media 管线负责下载与上行;alt 文本保留)。
+- `extract_page` 产出:`body_html` 不变,`body_markdown` 改为真 Markdown,
+  `body_text` 保持纯文本(平台 schema 已支持三种对象,无需协议变更)。
+
+### 已知缺口修复(第一批适配器)
+
+| 站点 | 家族 | 问题 | 适配要点 |
+|---|---|---|---|
+| lib.ustc.edu.cn | wordpress | `?p=NNN` 与中文路径不匹配任何模式 | WP 选择器 + wp-sitemap 发现 |
+| iat.ustc.edu.cn | jhtml | `/iat/xwdt/20230314/6731.html` 无模式 | jhtml URL 模式 + 日期标记 |
+| mech.ustc.edu.cn | vsb | URL 匹配但正文容器被否决 | 声明本站正文容器选择器 |
+| iid.ustc.edu.cn | vsb | 同上核实 | 同上 |
+| course.ustc.edu.cn | 异构 | 0 篇 | 实测后定制 |
+| yz.ustc.edu.cn | 异构 | 仅 6 篇 | 实测后定制 |
+
+### 提取率审计
+
+- 一次性脚本(不入库):对每个源统计 `pages 抓取数 / articles 提取数`,
+  列出提取率 < 5% 且页面数 > 500 的源,逐个人工定性(内容本就少 vs 提取失败)。
+- 审计发现的提取失败站点,按家族补适配器。
+
+## 数据流
+
+不变:crawl → articles 表 → sync outbox → 平台。Markdown 字节变化会导致
+revisionHash 变化,已同步文章会以"updated"重新上行一次(符合预期的一次性回填)。
+
+## 错误处理
+
+- 适配器 `extract` 抛异常 → 记为该页提取失败(failures 表),不影响其他页面;
+  绝不让单站 bug 中断整个爬取。
+- 适配器与兜底都失败 → 与现状相同,页面仅存 raw,不产生文章。
+
+## 测试
+
+- 每个家族适配器:golden-fixture 测试(`tests/fixtures/adapters/<family>/*.html`
+  存真实页面样本,断言标题/日期/正文 Markdown 快照)。
+- 注册表:未知源回落到通用路径的回归测试。
+- UA:断言默认请求头为浏览器 UA。
+- Markdown:HTML 样本 → Markdown 快照测试(标题/列表/表格/图片)。
+- 现有 222 个测试必须全部保持通过。
+
+## 验收标准
+
+1. 图书馆本地重爬提取出 ≥ 1,000 篇文章(已知内容页约 3,000),抽查标题/日期正确。
+2. iat/mech/iid 重爬后文章数 > 0 且抽查正确。
+3. 全源提取率审计报告产出,低提取率源逐一定性。
+4. `uv run pytest -q` 全绿,`ruff` 干净。
+5. 平台协议不变,同步链路不回归(本地小批量 sync 验证)。

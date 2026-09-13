@@ -8,6 +8,7 @@ dependencies = [
   "alembic>=1.16.0",
   "beautifulsoup4>=4.15.0",
   "httpx>=0.28.1",
+  "markdownify>=1.0.0",
   "pydantic>=2.12.0",
   "pyyaml>=6.0.3",
   "sqlalchemy>=2.0.43",
