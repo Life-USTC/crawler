@@ -22,3 +22,6 @@ def adapter_for(source_id: str, url: str) -> SiteAdapter | None:
         return _by_source[source_id]
     host = (urlsplit(url).hostname or "").lower()
     return _by_host.get(host)
+
+
+from . import vsb  # noqa: E402, F401
