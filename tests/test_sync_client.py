@@ -1390,6 +1390,47 @@ class SyncClientTests(unittest.TestCase):
                 sync.close()
                 store.close()
 
+    def test_missing_spool_file_falls_back_to_archived_body(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/ingestion/publications/batches":
+                return httpx.Response(200, json=self._batch_response(request), request=request)
+            if request.url.path == "/api/ingestion/publications/objects/plan":
+                return httpx.Response(
+                    200, json=self._plan_response(request, upload=True), request=request
+                )
+            if request.url.path.startswith("/api/ingestion/publications/objects/"):
+                return httpx.Response(200, json=self._upload_response(request), request=request)
+            raise AssertionError(f"unexpected request: {request.url}")
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            try:
+                article = self._article(7)
+                store.save_article(article)
+                store.enqueue_article_for_sync(article)
+                with store.database.session_factory() as session:
+                    row = session.scalar(select(SyncOutbox))
+                    manifests = json.loads(row.object_manifest_json)
+                for manifest in manifests:
+                    Path(manifest["local_path"]).unlink()
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=client,
+                )
+                try:
+                    summary = sync.sync(options=SyncOptions(max_retries=0))
+                finally:
+                    sync.close()
+                self.assertEqual(summary["failed"], 0)
+                self.assertEqual(summary["acked"], 1)
+            finally:
+                store.close()
+
     def test_backfill_is_keyset_paginated_and_idempotent_without_network(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
