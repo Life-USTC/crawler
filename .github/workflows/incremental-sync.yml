@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "37 */6 * * *"
   workflow_dispatch:
+    inputs:
+      reindex:
+        description: "Re-extract saved pages for adapter-covered sources and enqueue changed articles before sync"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -21,7 +26,7 @@ env:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: ${{ inputs.reindex && 240 || 45 }}
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.0.1
@@ -49,6 +54,18 @@ jobs:
           mkdir -p data
           zstd -d "$DB_ARCHIVE" -o "$DB_PATH"
           rm "$DB_ARCHIVE"
+
+      - name: Reindex adapter-covered sources
+        if: inputs.reindex
+        run: |
+          uv run ustc-crawler reindex \
+            --source library \
+            --source unit-mech-ustc-edu-cn \
+            --source unit-iid-ustc-edu-cn \
+            --source unit-iat-ustc-edu-cn \
+            --source graduate-admissions \
+            --source course 2>&1 | tee reindex.log
+          uv run ustc-crawler sync-backfill 2>&1 | tee backfill.log
 
       - name: Crawl and sync
         env:
