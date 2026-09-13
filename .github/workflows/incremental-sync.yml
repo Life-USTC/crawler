@@ -30,7 +30,7 @@ env:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ inputs.reindex && 240 || 45 }}
+    timeout-minutes: ${{ (inputs.reindex || inputs.retext) && 240 || 45 }}
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.0.1
