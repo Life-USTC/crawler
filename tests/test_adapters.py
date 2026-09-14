@@ -116,6 +116,29 @@ class AdapterRegistryTests(unittest.TestCase):
         # Fields the adapter filled still win over the generic values.
         self.assertEqual(page.article.author, "适配器作者")
 
+    def test_host_conflict_logs_warning(self) -> None:
+        class FirstAdapter(SiteAdapter):
+            name = "first"
+            hosts = ("conflict.test",)
+
+        class SecondAdapter(SiteAdapter):
+            name = "second"
+            hosts = ("conflict.test",)
+
+        try:
+            register(FirstAdapter())
+            with self.assertLogs("ustc_crawler.adapters", level="WARNING") as captured:
+                register(SecondAdapter())
+            self.assertTrue(
+                any("conflict.test" in message for message in captured.output),
+                captured.output,
+            )
+            self.assertEqual(
+                adapter_for("", "https://conflict.test/info/1/2.htm").name, "second"
+            )
+        finally:
+            adapters._by_host.pop("conflict.test", None)
+
 
 if __name__ == "__main__":
     unittest.main()

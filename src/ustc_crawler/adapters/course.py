@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 
 from bs4 import BeautifulSoup
 
-from .base import ArticleFields, SiteAdapter
+from .base import ISO_DATE, LABELED_DATE, ArticleFields, SiteAdapter, iso_date_text
 
 
 class CourseAdapter(SiteAdapter):
@@ -27,7 +27,12 @@ class CourseAdapter(SiteAdapter):
         title = title_node.get_text(" ", strip=True)
         if not title:
             return None
-        return ArticleFields(title=title, published_at="", body_html=str(body))
+        # The info header sometimes carries a publication date next to the
+        # title; leave it empty otherwise so generic extraction can fill in.
+        container_text = container.get_text(" ", strip=True)
+        match = LABELED_DATE.search(container_text) or ISO_DATE.search(container_text)
+        published = iso_date_text(match) if match else ""
+        return ArticleFields(title=title, published_at=published, body_html=str(body))
 
 
 from . import register  # noqa: E402

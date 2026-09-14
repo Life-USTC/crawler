@@ -27,6 +27,23 @@ class CourseAdapterTests(unittest.TestCase):
             )
         )
 
+    def test_date_in_infion_con_is_extracted(self) -> None:
+        html = (
+            "<html><body><div class='infion-con'>"
+            "<a href='/portal/news/notice' class='fr'>返回</a>"
+            "<span>平台维护通知标题 </span>"
+            "<em>发布时间：2026-09-01</em></div>"
+            "<div class='Content'><p>正文内容</p></div>"
+            "</body></html>"
+        )
+        fields = CourseAdapter().extract(
+            "https://course.ustc.edu.cn/portal/news/info?id=20", html
+        )
+        self.assertIsNotNone(fields)
+        assert fields is not None
+        self.assertEqual(fields.title, "平台维护通知标题")
+        self.assertEqual(fields.published_at, "2026-09-01")
+
 
 if __name__ == "__main__":
     unittest.main()

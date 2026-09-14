@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-import re
-
 from bs4 import BeautifulSoup
 
-from .base import ArticleFields, SiteAdapter
-
-_DATE_LABEL = re.compile(r"发布时间[：:]\s*(20\d{2})-(\d{2})-(\d{2})")
+from .base import LABELED_DATE, ArticleFields, SiteAdapter, iso_date_text
 
 
 class JhtmlAdapter(SiteAdapter):
@@ -27,9 +23,9 @@ class JhtmlAdapter(SiteAdapter):
         notes = soup.select_one("div.news-detail-notes")
         published = ""
         if notes is not None:
-            match = _DATE_LABEL.search(notes.get_text(" ", strip=True))
+            match = LABELED_DATE.search(notes.get_text(" ", strip=True))
             if match:
-                published = f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+                published = iso_date_text(match)
         return ArticleFields(title=title, published_at=published, body_html=str(body))
 
 

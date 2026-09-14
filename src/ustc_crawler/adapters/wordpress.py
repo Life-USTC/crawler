@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-import re
-
 from bs4 import BeautifulSoup
 
-from .base import ArticleFields, SiteAdapter
-
-_ISO_DATE = re.compile(r"(20\d{2})-(\d{2})-(\d{2})")
+from .base import ISO_DATE, ArticleFields, SiteAdapter, iso_date_text
 
 
 class WordPressAdapter(SiteAdapter):
@@ -22,14 +18,27 @@ class WordPressAdapter(SiteAdapter):
         )
         if container is None:
             return None
+        # The library template renders exactly one h1 in the detail
+        # container (the post title); the first h1 is assumed to be it.
         title_node = container.find("h1")
-        date_node = container.find("h2", string=_ISO_DATE)
+        # Match on the h2's full text so a date wrapped in a nested inline
+        # element (e.g. ``<h2><span>2026-01-05</span></h2>``) is still found.
+        date_node = next(
+            (
+                h2
+                for h2 in container.find_all("h2")
+                if ISO_DATE.search(h2.get_text(" ", strip=True))
+            ),
+            None,
+        )
         if title_node is None or date_node is None:
             return None
         title = title_node.get_text(" ", strip=True)
         if not title:
             return None
-        published = _ISO_DATE.search(date_node.get_text()).group(0)
+        match = ISO_DATE.search(date_node.get_text(" ", strip=True))
+        assert match is not None
+        published = iso_date_text(match)
         for node in (title_node, date_node):
             node.extract()
         body = container.get_text(" ", strip=True)

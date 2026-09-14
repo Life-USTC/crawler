@@ -36,6 +36,20 @@ class JhtmlAdapterTests(unittest.TestCase):
         self.assertIsNotNone(fields)
         self.assertEqual(fields.published_at, "2023-03-14")
 
+    def test_single_digit_month_is_zero_padded(self) -> None:
+        html = (
+            "<html><body><p class='News-detail-title'>标题</p>"
+            "<div class='news-detail-notes'>发布时间：2023-3-5 浏览次数：10</div>"
+            "<div class='news-detail-news-con'><p>正文内容</p></div>"
+            "</body></html>"
+        )
+        fields = JhtmlAdapter().extract(
+            "https://iat.ustc.edu.cn/iat/xwdt/20230305/6731.html", html
+        )
+        self.assertIsNotNone(fields)
+        assert fields is not None
+        self.assertEqual(fields.published_at, "2023-03-05")
+
 
 if __name__ == "__main__":
     unittest.main()
