@@ -34,8 +34,9 @@ def _job_priority(existing: Any) -> int:
             size = existing.get("size")
             # A killed download can leave a truncated file behind an 'ok'
             # record.  A size mismatch means the object is not really local
-            # and must be downloaded again.
-            if size is None or path.stat().st_size == size:
+            # and must be downloaded again; a missing/zero size is a legacy
+            # row we cannot verify, so the file is trusted.
+            if not size or path.stat().st_size == size:
                 return 2
     return 1
 

@@ -43,15 +43,15 @@ def _create_index_if_missing(name: str, table: str, columns: list[object]) -> No
 
 def _dedupe_failures() -> None:
     # Collapse historical duplicate failure rows into one row per URL so the
-    # new unique index can be created; the surviving row keeps the latest
-    # error and the accumulated attempt count.
+    # new unique index can be created; the surviving (latest) row keeps the
+    # latest error and the accumulated attempt count.
     bind = op.get_bind()
     bind.execute(
         sa.text(
             """UPDATE failures SET attempts=(
                    SELECT COALESCE(SUM(f.attempts), 1) FROM failures f WHERE f.url=failures.url
                )
-               WHERE id NOT IN (SELECT MAX(id) FROM failures GROUP BY url)"""
+               WHERE id IN (SELECT MAX(id) FROM failures GROUP BY url)"""
         )
     )
     bind.execute(

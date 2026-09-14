@@ -71,6 +71,45 @@ class SchemaIndexTests(unittest.TestCase):
         self.assertIn("WHERE", sql.upper())
         self.assertIn("pages_sha256_idx", indexes)
 
+    def test_dedupe_failures_accumulates_attempts_on_surviving_row(self) -> None:
+        with TemporaryDirectory() as temp:
+            db_path = Path(temp) / "crawler.sqlite"
+            store = Store(db_path, Path(temp) / "data")
+            store.close()
+            connection = sqlite3.connect(db_path)
+            try:
+                connection.execute(
+                    "INSERT INTO sources(id,name,organization_level,allowed_hosts,blocked_hosts,seed_urls,aliases,discovery_only,max_images_per_page,created_at)"
+                    " VALUES('news','n','university','[]','[]','[]','[]',0,NULL,'2026-01-01')"
+                )
+                connection.execute("DROP INDEX failures_url_idx")
+                # Legacy pre-0005 history: one row per failure occurrence.
+                for attempts, error in ((2, "http 503"), (3, "http 500")):
+                    connection.execute(
+                        "INSERT INTO failures(url,source_id,error,status,attempts,last_seen)"
+                        " VALUES('https://example.test/x','news',?,500,?,'2026-01-01')",
+                        (error, attempts),
+                    )
+                connection.execute(
+                    "UPDATE alembic_version SET version_num='0004_sync_snapshots_and_indexes'"
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            upgrade_database(db_path)
+            connection = sqlite3.connect(db_path)
+            try:
+                rows = connection.execute(
+                    "SELECT url, error, attempts FROM failures"
+                ).fetchall()
+            finally:
+                connection.close()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][1], "http 500")
+        self.assertEqual(rows[0][2], 5)
+
 
 if __name__ == "__main__":
     unittest.main()

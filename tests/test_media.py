@@ -77,6 +77,22 @@ class MediaJobTests(unittest.TestCase):
                 2,
             )
 
+    def test_ok_record_with_unknown_size_is_trusted(self) -> None:
+        # Legacy rows can carry size=0; treat an unknown size as intact
+        # rather than re-downloading the whole archive.
+        with tempfile.TemporaryDirectory() as directory:
+            local_path = Path(directory) / "image.jpg"
+            local_path.write_bytes(b"image")
+
+            self.assertEqual(
+                _job_priority({"status": "ok", "local_path": str(local_path), "size": 0}),
+                2,
+            )
+            self.assertEqual(
+                _job_priority({"status": "ok", "local_path": str(local_path)}),
+                2,
+            )
+
     def test_media_jobs_round_robin_hosts_within_priority(self) -> None:
         retry = {"status": "error", "local_path": ""}
         planned = [

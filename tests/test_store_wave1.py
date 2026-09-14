@@ -135,10 +135,6 @@ class ArticleBundleAtomicTests(unittest.TestCase):
             self.assertTrue(all(not name.startswith(".") for name in files))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class FrontierRevivalTests(unittest.TestCase):
     def test_errored_frontier_row_is_revived_below_attempt_cap(self) -> None:
         with TemporaryDirectory() as temp:
@@ -331,3 +327,7 @@ class StoreWave1Tests(unittest.TestCase):
             store.close()
             self.assertEqual(result, {"scanned": 1, "changed": 1})
             self.assertIn("重新计算的正文", row["body_text"])
+
+
+if __name__ == "__main__":
+    unittest.main()

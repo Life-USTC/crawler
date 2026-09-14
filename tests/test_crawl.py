@@ -710,6 +710,66 @@ class CrawlSinceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(link)
         self.assertTrue(link["local_path"])
 
+    async def test_download_images_trusts_ok_record_with_unknown_size(self) -> None:
+        # Legacy rows may carry size=0: an intact file behind such a record is
+        # linked without a refetch, matching media._job_priority semantics.
+        url = "https://news.example.test/article/legacy-image"
+        image_url = "https://news.example.test/img/legacy.jpg"
+        store = Store(self.db_path, self.data_dir)
+        store.save_article(
+            ArticleDocument(
+                url="https://news.example.test/article/original",
+                source_id="news",
+                title="原始文章",
+                author="",
+                published_at="",
+                updated_at="",
+                category="",
+                summary="",
+                body_html="<p>正文</p>",
+                body_text="正文",
+                body_markdown="正文",
+                extraction_method="test",
+                source_page_url="https://news.example.test/article/original",
+            )
+        )
+        store.save_media(
+            ImageRef(url=image_url, alt="", title="", caption=""),
+            b"legacy-image-bytes",
+            "image/jpeg",
+            "https://news.example.test/article/original",
+            "",
+        )
+        store_core(store).execute("UPDATE media SET size=0 WHERE url=?", (image_url,))
+        store_core(store).commit()
+        store.close()
+
+        html = f"""<html><body><article>
+          <h1>旧记录图片新闻</h1>
+          <p>这是足够长的正文内容，用来验证 size 未知的旧 ok 记录不会触发重复下载。</p>
+          <p>第二段正文确保页面得分可以达到索引阈值。</p>
+          <img src="{image_url}" />
+        </article></body></html>"""
+        crawler = self._crawler()
+        fetched: list[str] = []
+
+        async def fake_fetch(requested: str, *, max_bytes: int | None = None) -> FetchResponse:
+            fetched.append(requested)
+            return FetchResponse(
+                requested_url=requested,
+                final_url=requested,
+                status=200,
+                content_type="text/html",
+                headers={"content-type": "text/html"},
+                body=html.encode("utf-8"),
+            )
+
+        crawler.fetcher.fetch = fake_fetch
+        await crawler._process(url, "news", 1, "")
+        await crawler.close()
+
+        self.assertNotIn(image_url, fetched)
+
     async def test_incremental_article_page_still_enqueues_document_attachments(self) -> None:
         url = "https://news.example.test/article/with-attachment"
         attachment = "https://news.example.test/files/notice.pdf"
