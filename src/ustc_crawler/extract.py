@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import warnings
 from datetime import datetime, timedelta
@@ -13,6 +14,8 @@ from .adapters import adapter_for
 from .canonicalize import normalize_url
 from .markdown import html_to_markdown
 from .models import ArticleDocument, ImageRef, PageDocument
+
+logger = logging.getLogger(__name__)
 
 warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
 
@@ -345,7 +348,7 @@ _BLOCK_TAGS = (
     "address", "article", "aside", "blockquote", "dd", "details", "div", "dl",
     "dt", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4",
     "h5", "h6", "header", "hr", "li", "main", "nav", "ol", "p", "pre",
-    "section", "table", "ul",
+    "section", "table", "tr", "ul",
 )
 
 
@@ -354,10 +357,20 @@ def _block_text(root: Tag) -> str:
 
     ``get_text("\\n")`` explodes Word-exported pages that wrap each text run
     in its own inline ``<span>``; joining at block level keeps paragraphs and
-    phone numbers on one line.
+    phone numbers on one line.  Table rows (``tr``) count as block boundaries
+    and their cells are padded below so adjacent ``td``/``th`` text does not
+    glue together.
+
+    This function mutates ``root`` in place (``br`` elements are replaced by
+    newlines and cells gain a padding space).  Callers that still need the
+    original markup must serialize it before calling, as ``extract_page``
+    does for ``body_html``.
     """
     for br in root.find_all("br"):
         br.replace_with("\n")
+    for cell in root.find_all(["td", "th"]):
+        # Separate adjacent cells when a row is flattened with get_text("").
+        cell.append(" ")
     lines: list[str] = []
     for node in root.find_all(_BLOCK_TAGS):
         if node.find(_BLOCK_TAGS):
@@ -1301,18 +1314,25 @@ def extract_page(
         try:
             fields = adapter.extract(url, html)
         except Exception:
+            # A broken adapter must not lose the page: keep the generic
+            # result, but make the failure visible in logs and raw_metadata.
+            logger.warning("adapter %s failed on %s", adapter.name, url, exc_info=True)
             fields = None
+            if article is not None:
+                article.raw_metadata["adapter_error"] = adapter.name
         if fields is not None and fields.title.strip():
             body_text = _block_text(BeautifulSoup(fields.body_html, "html.parser"))
             article = ArticleDocument(
                 url=canonical or url,
                 source_id=source_id,
                 title=fields.title,
-                author=fields.author,
-                published_at=fields.published_at,
+                # Fields an adapter leaves empty fall back to the generic
+                # jsonld/meta extraction instead of being wiped out.
+                author=fields.author or author,
+                published_at=fields.published_at or published,
                 updated_at=updated,
-                category=fields.category,
-                summary=fields.summary,
+                category=fields.category or category,
+                summary=fields.summary or summary,
                 body_html=fields.body_html,
                 body_text=body_text,
                 body_markdown=html_to_markdown(fields.body_html),

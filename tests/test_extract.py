@@ -418,6 +418,24 @@ class ExtractTests(unittest.TestCase):
         )
         self.assertIn("62283555-800或802。", page.article.body_text)
 
+    def test_table_cells_and_rows_are_separated_in_body_text(self) -> None:
+        html = """
+        <html><head><title>奖学金评选结果公示</title></head><body>
+        <div class='v_news_content'>
+        <p>现将本年度奖学金评选结果公示如下，公示期为一周，如有异议请联系教务办公室。</p>
+        <table><tr><th>项目</th><th>获奖人</th></tr>
+        <tr><td>姓名</td><td>张三</td></tr>
+        <tr><td>学号</td><td>PB20000001</td></tr></table>
+        </div></body></html>
+        """
+        page = extract_page("https://www.ustc.edu.cn/info/1055/1234.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        lines = page.article.body_text.split("\n")
+        self.assertIn("项目 获奖人", lines)
+        self.assertIn("姓名 张三", lines)
+        self.assertIn("学号 PB20000001", lines)
+
     def test_nested_footer_class_is_removed_from_article_container(self) -> None:
         html = """
         <html><head><title>研究生会活动报道</title></head><body>
