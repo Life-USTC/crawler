@@ -5,13 +5,16 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
+import sys
+import threading
 import time
 import uuid
 from collections import Counter
 from collections.abc import Callable, Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -35,7 +38,6 @@ from .models import (
 )
 from .outbox import (
     DEFAULT_MAX_BATCH_BYTES,
-    BatchTooLargeError,
     IngestionOutbox,
 )
 
@@ -48,6 +50,13 @@ OBJECT_UPLOAD_PREFIX = "/api/ingestion/publications/objects"
 INGESTION_SECRET_ENV = "USTC_CRAWLER_INGESTION_SECRET"
 INGESTION_SECRET_HEADER = "X-Publication-Ingestion-Secret"
 RETRY_STATUS_CODES = frozenset({408, 429})
+RETRYABLE_HTTP_ERRORS = (
+    httpx.ConnectError,
+    httpx.ReadError,
+    httpx.WriteError,
+    httpx.TimeoutException,
+    httpx.RemoteProtocolError,
+)
 DEFAULT_OBJECT_CONCURRENCY = 8
 MAX_OBJECT_CONCURRENCY = 64
 DEFAULT_BATCH_CONCURRENCY = 1
@@ -155,7 +164,7 @@ def _json_bytes(value: object) -> bytes:
 def _error_code(response: httpx.Response) -> str:
     try:
         value = response.json()
-    except (ValueError, json.JSONDecodeError):
+    except ValueError:
         value = None
     if isinstance(value, dict):
         error = value.get("error")
@@ -174,7 +183,9 @@ def _retry_after(response: httpx.Response, now: Callable[[], float]) -> float | 
         try:
             target = parsedate_to_datetime(value)
             if target.tzinfo is None:
-                target = target.astimezone()
+                # HTTP-dates are always GMT; a naive parse must be read as
+                # UTC, not as local time.
+                target = target.replace(tzinfo=UTC)
             return max(0.0, target.timestamp() - now())
         except (TypeError, ValueError, OverflowError):
             return None
@@ -210,6 +221,7 @@ class IngestionSyncClient:
         self._now = now
         self.outbox = IngestionOutbox(database)
         self._archive_object_cache: dict[str, dict[str, bytes]] = {}
+        self._archive_object_lock = threading.Lock()
 
     def close(self) -> None:
         if self._owns_http:
@@ -258,11 +270,31 @@ class IngestionSyncClient:
         pending_replays: list[SyncBatch] = []
         replay_index = 0
         new_batches_exhausted = False
-        in_flight: dict[Future[DeliveryResult], int] = {}
+        in_flight: dict[Future[DeliveryResult], tuple[int, str]] = {}
         sequence = 0
 
         def can_claim() -> bool:
             return not options.max_batches or int(summary["batches"]) < options.max_batches
+
+        def log_progress(batch_id: str, outcome: str) -> None:
+            print(
+                f"sync batch {batch_id}: {outcome}"
+                f" acked={summary['acked']} failed={summary['failed']}"
+                f" pending={summary['pending']}",
+                file=sys.stderr,
+                flush=True,
+            )
+
+        previous_sigterm: Any = None
+        if threading.current_thread() is threading.main_thread():
+            # SIGTERM (e.g. `timeout --signal=TERM`) flips the same interrupted
+            # flag a transient failure uses, so the run drains in-flight
+            # batches and records its summary instead of dying mid-flight.
+            def _sigterm_interrupt(_signum: int, _frame: Any) -> None:
+                nonlocal interrupted
+                interrupted = True
+
+            previous_sigterm = signal.signal(signal.SIGTERM, _sigterm_interrupt)
 
         def record_claim(batch: IngestionBatch, *, replayed: bool) -> None:
             nonlocal sequence
@@ -273,23 +305,25 @@ class IngestionSyncClient:
             else:
                 summary["created"] = int(summary["created"]) + 1
             future = executor.submit(self._deliver, batch, options)
-            in_flight[future] = sequence
+            in_flight[future] = (sequence, batch.batch_id)
             sequence += 1
 
         def process_completed(done: set[Future[DeliveryResult]]) -> None:
             nonlocal interrupted, unexpected
-            for future in sorted(done, key=in_flight.__getitem__):
-                in_flight.pop(future)
+            for future in sorted(done, key=lambda item: in_flight[item][0]):
+                _sequence, batch_id = in_flight.pop(future)
                 try:
                     delivery = future.result()
-                except SyncPermanentError:
+                except SyncPermanentError as exc:
                     # A permanently rejected batch is terminal for that batch
                     # only; it must not poison the rest of the run, or a single
                     # undeliverable batch would block the queue forever.
                     summary["failed"] = int(summary["failed"]) + 1
-                except SyncTransientError:
+                    log_progress(batch_id, f"failed:{exc.code}")
+                except SyncTransientError as exc:
                     summary["pending"] = int(summary["pending"]) + 1
                     interrupted = True
+                    log_progress(batch_id, f"pending:{exc.code}")
                 except BaseException as exc:
                     # Preserve the existing propagation behavior for unexpected
                     # failures, while allowing already-claimed batches to finish
@@ -297,8 +331,10 @@ class IngestionSyncClient:
                     if unexpected is None:
                         unexpected = exc
                     interrupted = True
+                    log_progress(batch_id, f"error:{type(exc).__name__}")
                 else:
                     self._record_delivery(summary, delivery)
+                    log_progress(batch_id, delivery.status)
 
         try:
             pending_replays = self.outbox.pending_batches()
@@ -322,14 +358,26 @@ class IngestionSyncClient:
                     ):
                         pending = pending_replays[replay_index]
                         replay_index += 1
-                        batch = self.outbox.build_batch(
-                            run_id=client_run_id,
-                            batch_id=pending.id,
-                            producer_version=options.producer_version,
-                            observed_at=datetime.now().astimezone().isoformat(timespec="seconds"),
-                            limit=options.batch_size,
-                            max_payload_bytes=options.max_payload_bytes,
-                        )
+                        try:
+                            batch = self.outbox.build_batch(
+                                run_id=client_run_id,
+                                batch_id=pending.id,
+                                producer_version=options.producer_version,
+                                observed_at=datetime.now()
+                                .astimezone()
+                                .isoformat(timespec="seconds"),
+                                limit=options.batch_size,
+                                max_payload_bytes=options.max_payload_bytes,
+                            )
+                        except Exception:
+                            # One unrebuildable persisted batch (e.g. a legacy
+                            # batch above the protocol item limit) must not
+                            # abort the run and wedge every later replay.
+                            self.outbox.mark_batch(pending.id, status="failed")
+                            self.outbox.mark_batch_error(pending.id, "batch_rebuild_error")
+                            summary["failed"] = int(summary["failed"]) + 1
+                            log_progress(pending.id, "failed:batch_rebuild_error")
+                            continue
                         if batch is not None:
                             record_claim(batch, replayed=True)
                     if in_flight:
@@ -345,22 +393,16 @@ class IngestionSyncClient:
                         and can_claim()
                         and len(in_flight) < options.batch_concurrency
                     ):
-                        try:
-                            batch = self.outbox.build_batch(
-                                run_id=client_run_id,
-                                batch_id=uuid.uuid4().hex,
-                                producer_version=options.producer_version,
-                                observed_at=datetime.now()
-                                .astimezone()
-                                .isoformat(timespec="seconds"),
-                                limit=options.batch_size,
-                                max_payload_bytes=options.max_payload_bytes,
-                            )
-                        except BatchTooLargeError:
-                            summary["failed"] = int(summary["failed"]) + 1
-                            summary["pending"] = int(summary["pending"]) + 1
-                            interrupted = True
-                            break
+                        batch = self.outbox.build_batch(
+                            run_id=client_run_id,
+                            batch_id=uuid.uuid4().hex,
+                            producer_version=options.producer_version,
+                            observed_at=datetime.now()
+                            .astimezone()
+                            .isoformat(timespec="seconds"),
+                            limit=options.batch_size,
+                            max_payload_bytes=options.max_payload_bytes,
+                        )
                         if batch is None:
                             new_batches_exhausted = True
                             break
@@ -383,6 +425,8 @@ class IngestionSyncClient:
                 unexpected = exc
             interrupted = True
         finally:
+            if previous_sigterm is not None:
+                signal.signal(signal.SIGTERM, previous_sigterm)
             summary["status"] = "partial" if interrupted else "completed"
             self._finish_run(
                 client_run_id,
@@ -567,13 +611,15 @@ class IngestionSyncClient:
                         )
 
                     ordered = sorted(planned.items())
+                    bodies: dict[tuple[str, str], bytes] = {}
                     for key, item in ordered:
                         if item.status != "upload_required":
                             continue
                         if item.upload_url is None:
                             raise SyncProtocolError("object_upload_url_missing")
                         for manifest in manifest_groups[key]:
-                            self._object_bytes(manifest)
+                            body = self._object_bytes(manifest)
+                            bodies.setdefault(key, body)
 
                     pending: dict[tuple[str, str], Future[None]] = {
                         key: executor.submit(
@@ -582,6 +628,7 @@ class IngestionSyncClient:
                             item,
                             manifests[key],
                             options,
+                            bodies.get(key),
                         )
                         for key, item in ordered
                     }
@@ -631,6 +678,7 @@ class IngestionSyncClient:
         item: PublicationObjectPlanItem,
         manifest: LocalObjectManifest,
         options: SyncOptions,
+        body: bytes | None = None,
     ) -> None:
         if item.status == "already_present":
             return
@@ -647,7 +695,8 @@ class IngestionSyncClient:
         expected_upload_url = f"{self.server}{upload_path}"
         if item.upload_url != expected_upload_url:
             raise SyncProtocolError("object_upload_url_mismatch")
-        body = self._object_bytes(manifest)
+        if body is None:
+            body = self._object_bytes(manifest)
         upload = self._api_request(
             "PUT",
             upload_path,
@@ -696,32 +745,44 @@ class IngestionSyncClient:
         object spool).  Article ``body_html``/``body_markdown`` columns hold
         the same sanitized bytes the manifest was hashed from.  Media and
         asset objects have no archived copy and still fail permanently.
+
+        Rows are queried on demand and pre-filtered by stored byte length
+        (sanitization only ever removes characters), and only objects that
+        actually matched a manifest digest are cached, so a large archive
+        is never materialized as a whole-table sha->bytes snapshot.
         """
         if manifest.kind not in ("body_html", "body_markdown"):
             raise ImmutableObjectChangedError("immutable_object_changed")
-        cache = self._archive_object_cache.get(manifest.kind)
-        if cache is None:
-            from sqlalchemy import text
+        with self._archive_object_lock:
+            body = self._archive_object_cache.get(manifest.kind, {}).get(manifest.sha256)
+        if body is not None:
+            return body
+        from sqlalchemy import text
 
-            from ..models import sanitize_text
+        from ..models import sanitize_text
 
-            cache = {}
-            column = manifest.kind
-            with self.database.session_factory() as session:
-                rows = session.execute(
-                    text(
-                        f"SELECT {column} FROM articles"
-                        f" WHERE {column} IS NOT NULL AND {column} != ''"
-                    )
-                )
-                for (value,) in rows:
-                    body = sanitize_text(str(value)).encode("utf-8")
-                    cache.setdefault(hashlib.sha256(body).hexdigest(), body)
-            self._archive_object_cache[manifest.kind] = cache
-        body = cache.get(manifest.sha256)
-        if body is None:
-            raise ImmutableObjectChangedError("immutable_object_changed")
-        return body
+        column = manifest.kind
+        with self.database.session_factory() as session:
+            rows = session.execute(
+                text(
+                    f"SELECT {column} FROM articles"
+                    f" WHERE {column} IS NOT NULL AND {column} != ''"
+                    f" AND length(CAST({column} AS BLOB)) >= :size"
+                ),
+                {"size": manifest.size},
+            )
+            for (value,) in rows:
+                candidate = sanitize_text(str(value)).encode("utf-8")
+                if len(candidate) != manifest.size:
+                    continue
+                if hashlib.sha256(candidate).hexdigest() != manifest.sha256:
+                    continue
+                with self._archive_object_lock:
+                    self._archive_object_cache.setdefault(manifest.kind, {})[
+                        manifest.sha256
+                    ] = candidate
+                return candidate
+        raise ImmutableObjectChangedError("immutable_object_changed")
 
     def _api_request(
         self,
@@ -756,7 +817,7 @@ class IngestionSyncClient:
         for attempt in range(options.max_retries + 1):
             try:
                 response = self.http.request(method, url, headers=headers, **kwargs)
-            except httpx.HTTPError as exc:
+            except RETRYABLE_HTTP_ERRORS as exc:
                 if attempt >= options.max_retries:
                     raise SyncTransientError("network_error") from exc
                 self._sleep(min(options.max_backoff, 2**attempt))
@@ -768,12 +829,16 @@ class IngestionSyncClient:
                 self._sleep(min(options.max_backoff, delay if delay is not None else 2**attempt))
                 continue
             return response
-        raise SyncTransientError("network_error")
 
     @staticmethod
     def _require_success(response: httpx.Response) -> None:
         if 200 <= response.status_code < 300:
             return
+        if 300 <= response.status_code < 400:
+            # follow_redirects=False: a redirect means the endpoint moved
+            # (or an auth gateway intercepted). Spinning on it retried the
+            # same batch forever, so fail it terminally with a safe code.
+            raise SyncPermanentError("http_redirect")
         if 400 <= response.status_code < 500:
             raise SyncPermanentError(_error_code(response))
         raise SyncTransientError(f"http_{response.status_code}")

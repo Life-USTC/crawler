@@ -8,7 +8,7 @@ from collections.abc import Iterable
 from datetime import date, datetime
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..db.engine import Database
@@ -34,10 +34,61 @@ from .models import (
 type LocalObjectInput = str | Path | tuple[str | Path, str]
 MAX_OBJECT_SIZE = 32 * 1024 * 1024
 DEFAULT_MAX_BATCH_BYTES = 2 * 1024 * 1024
+BATCH_STATUSES = frozenset(
+    {"pending", "uploading", "acked", "partial", "failed", "superseded"}
+)
+RELEASABLE_ITEM_STATUSES = frozenset({"pending", "uploading", "failed"})
+RELEASABLE_OUTBOX_STATUSES = frozenset({"pending", "batched", "uploading", "failed"})
 
 
-class BatchTooLargeError(ValueError):
-    """Raised when one immutable event cannot fit the wire batch limit."""
+def _release_batch_events(
+    session: Session,
+    batch: SyncBatch,
+    *,
+    error: str,
+) -> tuple[list[SyncBatchItem], list[SyncOutbox]]:
+    """Supersede a batch and return its events to the pending outbox.
+
+    The batch and item rows stay as an immutable audit record; only events
+    whose membership and unfinished statuses validate exactly are released.
+    """
+
+    batch_items = list(
+        session.scalars(
+            select(SyncBatchItem)
+            .where(SyncBatchItem.batch_id == batch.id)
+            .order_by(SyncBatchItem.item_key)
+        ).all()
+    )
+    outbox_rows = list(
+        session.scalars(
+            select(SyncOutbox)
+            .where(SyncOutbox.batch_id == batch.id)
+            .order_by(SyncOutbox.event_id)
+        ).all()
+    )
+    if {item.item_key for item in batch_items} != {row.event_id for row in outbox_rows}:
+        raise ValueError("batch item and outbox membership mismatch")
+    if any(item.status not in RELEASABLE_ITEM_STATUSES for item in batch_items):
+        raise ValueError("batch contains completed or rejected items")
+    if any(row.status not in RELEASABLE_OUTBOX_STATUSES for row in outbox_rows):
+        raise ValueError("batch contains completed outbox events")
+
+    now = datetime.now().astimezone().isoformat(timespec="seconds")
+    batch.status = "superseded"
+    batch.next_attempt_at = None
+    batch.locked_until = None
+    batch.last_error = error
+    batch.updated_at = now
+    for row in outbox_rows:
+        row.batch_id = None
+        row.status = "pending"
+        row.next_attempt_at = None
+        row.locked_until = None
+        row.response_json = None
+        row.last_error = None
+        row.updated_at = now
+    return batch_items, outbox_rows
 
 
 def _sha256_file(path: Path) -> tuple[str, int]:
@@ -576,6 +627,7 @@ class IngestionOutbox:
             if batch is None:
                 raise KeyError(batch_id)
             batch.last_error = error_code
+            batch.attempts += 1
             batch.updated_at = now
             for row in session.scalars(select(SyncOutbox).where(SyncOutbox.batch_id == batch_id)):
                 row.last_error = error_code
@@ -647,9 +699,15 @@ class IngestionOutbox:
                 )
                 if len(candidate_batch.payload_bytes()) > max_payload_bytes:
                     if not rows:
-                        raise BatchTooLargeError(
-                            f"event {candidate.event_id} exceeds {max_payload_bytes} byte batch limit"
+                        # Poison pill isolation: an event that can never fit
+                        # an empty batch would wedge the queue forever, so
+                        # fail it terminally and skip to the next candidate.
+                        candidate.status = "failed"
+                        candidate.last_error = "event_too_large"
+                        candidate.updated_at = (
+                            datetime.now().astimezone().isoformat(timespec="seconds")
                         )
+                        continue
                     break
                 rows = candidate_rows_for_batch
                 publications = candidate_publications
@@ -708,10 +766,6 @@ class IngestionOutbox:
         """
 
         recoverable_batch_statuses = {"failed", "uploading", "pending"}
-        recoverable_item_statuses = {"pending", "uploading", "failed"}
-        recoverable_outbox_statuses = {"pending", "batched", "uploading", "failed"}
-        recovery_error = "oversized_batch_superseded"
-        now = datetime.now().astimezone().isoformat(timespec="seconds")
         with transaction(self.database) as session:
             batch = session.get(SyncBatch, batch_id)
             if batch is None:
@@ -719,30 +773,22 @@ class IngestionOutbox:
             if batch.status not in recoverable_batch_statuses:
                 raise ValueError(f"batch status cannot be recovered: {batch.status}")
 
-            batch_items = session.scalars(
-                select(SyncBatchItem)
+            item_count = session.scalar(
+                select(func.count())
+                .select_from(SyncBatchItem)
                 .where(SyncBatchItem.batch_id == batch_id)
-                .order_by(SyncBatchItem.item_key)
-            ).all()
-            if len(batch_items) <= MAX_PUBLICATION_BATCH_ITEMS:
+            )
+            if item_count is None or item_count <= MAX_PUBLICATION_BATCH_ITEMS:
                 raise ValueError(
                     "batch is not oversized: "
-                    f"{len(batch_items)} items (maximum {MAX_PUBLICATION_BATCH_ITEMS})"
+                    f"{item_count} items (maximum {MAX_PUBLICATION_BATCH_ITEMS})"
                 )
 
-            outbox_rows = session.scalars(
-                select(SyncOutbox)
-                .where(SyncOutbox.batch_id == batch_id)
-                .order_by(SyncOutbox.event_id)
-            ).all()
-            item_keys = {item.item_key for item in batch_items}
-            outbox_keys = {row.event_id for row in outbox_rows}
-            if item_keys != outbox_keys:
-                raise ValueError("batch item and outbox membership mismatch")
-            if any(item.status not in recoverable_item_statuses for item in batch_items):
-                raise ValueError("batch contains completed or rejected items")
-            if any(row.status not in recoverable_outbox_statuses for row in outbox_rows):
-                raise ValueError("batch contains completed outbox events")
+            batch_items, outbox_rows = _release_batch_events(
+                session,
+                batch,
+                error="oversized_batch_superseded",
+            )
 
             outbox_by_id = {row.event_id: row for row in outbox_rows}
             for item in batch_items:
@@ -755,80 +801,49 @@ class IngestionOutbox:
                     or publication.revision_hash != item.revision_hash
                 ):
                     raise ValueError("batch item and outbox identity mismatch")
-
-            batch.status = "superseded"
-            batch.next_attempt_at = None
-            batch.locked_until = None
-            batch.last_error = recovery_error
-            batch.updated_at = now
-            for row in outbox_rows:
-                row.batch_id = None
-                row.status = "pending"
-                row.next_attempt_at = None
-                row.locked_until = None
-                row.response_json = None
-                row.last_error = None
-                row.updated_at = now
             return len(outbox_rows)
 
-    def requeue_failed_batches(self, *, errors: set[str]) -> dict[str, int]:
+    def requeue_failed_batches(
+        self,
+        *,
+        errors: set[str],
+        max_attempts: int = 5,
+        force: bool = False,
+    ) -> dict[str, int]:
         """Release events from locally-failed batches back to the pending outbox.
 
         Batches that failed for local reasons (e.g. ``immutable_object_changed``
         when the runner had no spool files) never reached the server, so their
         events can be redelivered safely: the server deduplicates by revision
         hash.  Batches the server itself rejected keep their terminal state.
-        The original batch and item rows remain as an immutable audit record.
+        Batches whose delivery already failed ``max_attempts`` times stay
+        terminal unless ``force`` is set.  The original batch and item rows
+        remain as an immutable audit record.
         """
 
-        recoverable_item_statuses = {"pending", "uploading", "failed"}
-        recoverable_outbox_statuses = {"pending", "batched", "uploading", "failed"}
-        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        if max_attempts < 1:
+            raise ValueError("max attempts must be positive")
         result = {"batches": 0, "events": 0}
         with transaction(self.database) as session:
-            batches = session.scalars(
-                select(SyncBatch).where(
-                    SyncBatch.status == "failed", SyncBatch.last_error.in_(errors)
-                )
-            ).all()
+            query = select(SyncBatch).where(
+                SyncBatch.status == "failed", SyncBatch.last_error.in_(errors)
+            )
+            if not force:
+                query = query.where(SyncBatch.attempts < max_attempts)
+            batches = session.scalars(query).all()
             for batch in batches:
-                batch_items = session.scalars(
-                    select(SyncBatchItem)
-                    .where(SyncBatchItem.batch_id == batch.id)
-                    .order_by(SyncBatchItem.item_key)
-                ).all()
-                outbox_rows = session.scalars(
-                    select(SyncOutbox)
-                    .where(SyncOutbox.batch_id == batch.id)
-                    .order_by(SyncOutbox.event_id)
-                ).all()
-                if {item.item_key for item in batch_items} != {
-                    row.event_id for row in outbox_rows
-                }:
-                    raise ValueError("batch item and outbox membership mismatch")
-                if any(item.status not in recoverable_item_statuses for item in batch_items):
-                    raise ValueError("batch contains completed or rejected items")
-                if any(row.status not in recoverable_outbox_statuses for row in outbox_rows):
-                    raise ValueError("batch contains completed outbox events")
-
-                batch.status = "superseded"
-                batch.next_attempt_at = None
-                batch.locked_until = None
-                batch.last_error = f"requeued_failed_batch:{batch.last_error}"
-                batch.updated_at = now
-                for row in outbox_rows:
-                    row.batch_id = None
-                    row.status = "pending"
-                    row.next_attempt_at = None
-                    row.locked_until = None
-                    row.response_json = None
-                    row.last_error = None
-                    row.updated_at = now
+                _batch_items, outbox_rows = _release_batch_events(
+                    session,
+                    batch,
+                    error=f"requeued_failed_batch:{batch.last_error}",
+                )
                 result["batches"] += 1
                 result["events"] += len(outbox_rows)
         return result
 
     def mark_batch(self, batch_id: str, *, status: str, response_json: str = "") -> None:
+        if status not in BATCH_STATUSES:
+            raise ValueError(f"unknown batch status: {status}")
         now = datetime.now().astimezone().isoformat(timespec="seconds")
         with transaction(self.database) as session:
             batch = session.get(SyncBatch, batch_id)
@@ -852,7 +867,6 @@ class IngestionOutbox:
 
 
 __all__ = [
-    "BatchTooLargeError",
     "DEFAULT_MAX_BATCH_BYTES",
     "IngestionOutbox",
     "spool_article_objects",

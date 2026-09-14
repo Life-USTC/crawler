@@ -43,7 +43,6 @@ from .models import (
 )
 from .outbox import (
     DEFAULT_MAX_BATCH_BYTES,
-    BatchTooLargeError,
     IngestionOutbox,
     spool_bytes,
 )
@@ -54,7 +53,6 @@ __all__ = [
     "MAX_PUBLICATION_BATCH_ITEMS",
     "IngestionBatch",
     "IngestionBatchResponse",
-    "BatchTooLargeError",
     "DEFAULT_BATCH_CONCURRENCY",
     "DEFAULT_MAX_BATCH_BYTES",
     "DEFAULT_OBJECT_CONCURRENCY",
