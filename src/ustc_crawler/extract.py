@@ -17,7 +17,17 @@ from .models import ArticleDocument, ImageRef, PageDocument
 
 logger = logging.getLogger(__name__)
 
-warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
+
+def _parse_html(html: str) -> BeautifulSoup:
+    """Parse article HTML, muting only BeautifulSoup's XML-as-HTML warning.
+
+    The suppression is scoped to the parse call; installing a process-wide
+    filter at import time would hide the warning for every other consumer
+    of the interpreter as well.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", XMLParsedAsHTMLWarning)
+        return BeautifulSoup(html, "html.parser")
 
 DATE_PATTERNS = (
     re.compile(
@@ -390,9 +400,11 @@ def _jsonld_values(soup: BeautifulSoup) -> list[dict[str, Any]]:
         except (json.JSONDecodeError, TypeError):
             continue
         values = parsed if isinstance(parsed, list) else [parsed]
-        for item in values:
+        queue = list(values)
+        while queue:
+            item = queue.pop(0)
             if isinstance(item, dict) and isinstance(item.get("@graph"), list):
-                values.extend(x for x in item["@graph"] if isinstance(x, dict))
+                queue.extend(x for x in item["@graph"] if isinstance(x, dict))
             elif isinstance(item, dict):
                 result.append(item)
     return result
@@ -583,7 +595,7 @@ def _trailing_publication_signature(body_text: str) -> str:
 
     # 6. Source: 来源：XXX (skip ``素材来源`` and ``文章来源``; prefer the last source)
     for match in re.finditer(
-        rf"(?<![素材文章])来源\s*[:：]\s*([^{stop}\d]+)(?=(?:{label_stop})|$|[{stop}])",
+        rf"(?<!素材)(?<!文章)来源\s*[:：]\s*([^{stop}\d]+)(?=(?:{label_stop})|$|[{stop}])",
         tail,
     ):
         source = _clean_signature_value(match.group(1))
@@ -1011,7 +1023,7 @@ def _visual_sitebuilder_player_urls(soup: BeautifulSoup, page_url: str) -> tuple
 def extract_page(
     url: str, html: str, content_type: str = "text/html", source_id: str = ""
 ) -> PageDocument:
-    soup = BeautifulSoup(html, "html.parser")
+    soup = _parse_html(html)
     canonical = _first_meta(soup, "og:url")
     canonical = normalize_url(canonical, url) if canonical else normalize_url(url)
     link = soup.find("link", rel=lambda value: value and "canonical" in value)
@@ -1321,7 +1333,7 @@ def extract_page(
             if article is not None:
                 article.raw_metadata["adapter_error"] = adapter.name
         if fields is not None and fields.title.strip():
-            body_text = _block_text(BeautifulSoup(fields.body_html, "html.parser"))
+            body_text = _block_text(_parse_html(fields.body_html))
             article = ArticleDocument(
                 url=canonical or url,
                 source_id=source_id,

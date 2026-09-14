@@ -452,6 +452,20 @@ class ExtractTests(unittest.TestCase):
         self.assertIn("姓名 张三", lines)
         self.assertIn("学号 PB20000001", lines)
 
+    def test_module_import_does_not_install_global_warning_filter(self) -> None:
+        import importlib
+        import warnings
+
+        import ustc_crawler.extract as extract_module
+
+        before = list(warnings.filters)
+        importlib.reload(extract_module)
+        self.assertEqual(
+            before,
+            warnings.filters,
+            "extract must suppress XMLParsedAsHTMLWarning locally, not globally",
+        )
+
     def test_nested_footer_class_is_removed_from_article_container(self) -> None:
         html = """
         <html><head><title>研究生会活动报道</title></head><body>
