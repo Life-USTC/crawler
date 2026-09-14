@@ -35,6 +35,7 @@ from ustc_crawler.sync.models import (
     MAX_OBJECT_PLAN_OBJECTS,
     IngestionBatch,
     IngestionBatchResponse,
+    IngestionItemResult,
     LocalObjectManifest,
     PublicationSourceDescriptor,
     build_ingestion_batch,
@@ -1428,6 +1429,255 @@ class SyncClientTests(unittest.TestCase):
                     sync.close()
                 self.assertEqual(summary["failed"], 0)
                 self.assertEqual(summary["acked"], 1)
+            finally:
+                store.close()
+
+    def test_item_result_parses_optional_objects_needing_upload(self) -> None:
+        base = {
+            "sourceId": "source",
+            "canonicalUrl": "https://example.edu/news/1",
+            "revisionHash": "a" * 64,
+            "status": "unchanged",
+            "publicationId": "publication-id",
+            "revisionId": "revision-id",
+        }
+        without = IngestionItemResult.model_validate(base)
+        self.assertIsNone(without.objects_needing_upload)
+        with_field = IngestionItemResult.model_validate(
+            base
+            | {
+                "objectsNeedingUpload": [
+                    {"kind": "body_html", "sha256": "b" * 64},
+                    {"kind": "media", "sha256": "c" * 64},
+                ]
+            }
+        )
+        self.assertEqual(
+            [(item.kind, item.sha256) for item in with_field.objects_needing_upload],
+            [("body_html", "b" * 64), ("media", "c" * 64)],
+        )
+
+    def _manifest_shas(self, store: Store) -> dict[str, str]:
+        with store.database.session_factory() as session:
+            rows = session.scalars(select(SyncOutbox)).all()
+        shas: dict[str, str] = {}
+        for row in rows:
+            for manifest in json.loads(row.object_manifest_json):
+                shas.setdefault(manifest["kind"], manifest["sha256"])
+        return shas
+
+    def test_unchanged_item_objects_needing_upload_are_planned_and_uploaded(self) -> None:
+        plan_requests: list[dict] = []
+        upload_requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/ingestion/publications/batches":
+                payload = json.loads(request.content)
+                item = payload["items"][0]
+                return httpx.Response(
+                    200,
+                    json={
+                        "batchId": payload["batchId"],
+                        "clientRunId": payload["clientRunId"],
+                        "payloadDigest": hashlib.sha256(request.content).hexdigest(),
+                        "results": [
+                            {
+                                "sourceId": item["sourceId"],
+                                "canonicalUrl": item["canonicalUrl"],
+                                "revisionHash": item["revisionHash"],
+                                "status": "unchanged",
+                                "publicationId": "publication-id",
+                                "revisionId": "revision-id",
+                                "objectsNeedingUpload": [
+                                    {"kind": "body_html", "sha256": body_html_sha}
+                                ],
+                            }
+                        ],
+                    },
+                    request=request,
+                )
+            if request.url.path == "/api/ingestion/publications/objects/plan":
+                plan_requests.append(json.loads(request.content))
+                return httpx.Response(
+                    200, json=self._plan_response(request, upload=True), request=request
+                )
+            if request.url.path.startswith("/api/ingestion/publications/objects/"):
+                upload_requests.append(request)
+                return httpx.Response(200, json=self._upload_response(request), request=request)
+            raise AssertionError(f"unexpected sync request: {request.url}")
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            try:
+                store.enqueue_article_for_sync(self._article(1))
+                body_html_sha = self._manifest_shas(store)["body_html"]
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=client,
+                )
+                try:
+                    summary = sync.sync()
+                finally:
+                    sync.close()
+
+                self.assertEqual(summary["acked"], 1)
+                self.assertEqual(summary["failed"], 0)
+                self.assertEqual(
+                    [(o["kind"], o["sha256"]) for o in plan_requests[0]["objects"]],
+                    [("body_html", body_html_sha)],
+                )
+                self.assertEqual(len(upload_requests), 1)
+                self.assertIn(body_html_sha, upload_requests[0].url.path)
+                with store.database.session_factory() as session:
+                    batch = session.scalar(select(SyncBatch))
+                    self.assertEqual(batch.status, "acked")
+            finally:
+                store.close()
+
+    def test_objects_needing_upload_dedupes_with_normal_uploads(self) -> None:
+        plan_requests: list[dict] = []
+        upload_requests: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/ingestion/publications/batches":
+                payload = json.loads(request.content)
+                results = []
+                for item in payload["items"]:
+                    result = {
+                        "sourceId": item["sourceId"],
+                        "canonicalUrl": item["canonicalUrl"],
+                        "revisionHash": item["revisionHash"],
+                        "status": "created",
+                        "publicationId": "publication-id",
+                        "revisionId": "revision-id",
+                    }
+                    if item["canonicalUrl"].endswith("/2"):
+                        result["status"] = "unchanged"
+                        result["objectsNeedingUpload"] = [
+                            {"kind": "body_html", "sha256": shared["body_html"]},
+                            {"kind": "body_markdown", "sha256": shared["body_markdown"]},
+                        ]
+                    results.append(result)
+                return httpx.Response(
+                    200,
+                    json={
+                        "batchId": payload["batchId"],
+                        "clientRunId": payload["clientRunId"],
+                        "payloadDigest": hashlib.sha256(request.content).hexdigest(),
+                        "results": results,
+                    },
+                    request=request,
+                )
+            if request.url.path == "/api/ingestion/publications/objects/plan":
+                plan_requests.append(json.loads(request.content))
+                return httpx.Response(
+                    200, json=self._plan_response(request, upload=True), request=request
+                )
+            if request.url.path.startswith("/api/ingestion/publications/objects/"):
+                upload_requests.append(request)
+                return httpx.Response(200, json=self._upload_response(request), request=request)
+            raise AssertionError(f"unexpected sync request: {request.url}")
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            try:
+                first = self._article(1)
+                second = self._article(2)
+                second.body_html = first.body_html
+                second.body_markdown = first.body_markdown
+                store.enqueue_article_for_sync(first)
+                store.enqueue_article_for_sync(second)
+                shared = self._manifest_shas(store)
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=client,
+                )
+                try:
+                    summary = sync.sync(options=SyncOptions(batch_size=2))
+                finally:
+                    sync.close()
+
+                self.assertEqual(summary["acked"], 1)
+                self.assertEqual(summary["failed"], 0)
+                planned = [
+                    (o["kind"], o["sha256"]) for r in plan_requests for o in r["objects"]
+                ]
+                self.assertEqual(len(planned), len(set(planned)))
+                self.assertEqual(len(planned), 2)
+                self.assertEqual(len(upload_requests), 2)
+            finally:
+                store.close()
+
+    def test_objects_needing_upload_unknown_object_fails_closed(self) -> None:
+        plan_requests: list[dict] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/ingestion/publications/batches":
+                payload = json.loads(request.content)
+                item = payload["items"][0]
+                return httpx.Response(
+                    200,
+                    json={
+                        "batchId": payload["batchId"],
+                        "clientRunId": payload["clientRunId"],
+                        "payloadDigest": hashlib.sha256(request.content).hexdigest(),
+                        "results": [
+                            {
+                                "sourceId": item["sourceId"],
+                                "canonicalUrl": item["canonicalUrl"],
+                                "revisionHash": item["revisionHash"],
+                                "status": "unchanged",
+                                "publicationId": "publication-id",
+                                "revisionId": "revision-id",
+                                "objectsNeedingUpload": [
+                                    {"kind": "media", "sha256": "f" * 64}
+                                ],
+                            }
+                        ],
+                    },
+                    request=request,
+                )
+            if request.url.path == "/api/ingestion/publications/objects/plan":
+                plan_requests.append(json.loads(request.content))
+                return httpx.Response(
+                    200, json=self._plan_response(request, upload=True), request=request
+                )
+            raise AssertionError(f"unexpected sync request: {request.url}")
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            try:
+                store.enqueue_article_for_sync(self._article(1))
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=client,
+                )
+                try:
+                    summary = sync.sync()
+                finally:
+                    sync.close()
+
+                self.assertEqual(summary["failed"], 1)
+                self.assertEqual(plan_requests, [])
+                with store.database.session_factory() as session:
+                    batch = session.scalar(select(SyncBatch))
+                    self.assertEqual(batch.status, "failed")
+                    self.assertEqual(batch.last_error, "objects_needing_upload_mismatch")
             finally:
                 store.close()
 

@@ -275,6 +275,13 @@ class PublicationObjectPlanRequest(ProtocolModel):
     )
 
 
+class ObjectNeedingUpload(ProtocolModel):
+    """An object whose bytes the server is missing for an unchanged item."""
+
+    kind: ObjectKind
+    sha256: Sha256
+
+
 class IngestionItemResult(ProtocolModel):
     """One result returned by the batch ingestion endpoint."""
 
@@ -285,6 +292,10 @@ class IngestionItemResult(ProtocolModel):
     publication_id: str | None = Field(alias="publicationId")
     revision_id: str | None = Field(alias="revisionId")
     error: str = Field(default="")
+    objects_needing_upload: list[ObjectNeedingUpload] | None = Field(
+        default=None,
+        alias="objectsNeedingUpload",
+    )
 
     _validate_canonical_url = field_validator("canonical_url")(_validate_url)
 
