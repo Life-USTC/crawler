@@ -1,8 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
+import signal
+import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 from .crawl import CrawlOptions, run_crawl
@@ -27,6 +31,28 @@ from .web import serve_dashboard
 
 def _path(value: str) -> str:
     return str(Path(value))
+
+
+@contextlib.contextmanager
+def _sigterm_as_keyboard_interrupt() -> Iterator[None]:
+    """Translate SIGTERM into KeyboardInterrupt so loops can shut down cleanly.
+
+    Signal handlers only run in the main thread; outside it the wrapper is a
+    no-op.  The previous disposition is always restored.
+    """
+
+    def _interrupt(_signum: int, _frame: object) -> None:
+        raise KeyboardInterrupt
+
+    try:
+        previous = signal.signal(signal.SIGTERM, _interrupt)
+    except ValueError:
+        yield
+        return
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def _sync_connection_args(parser: argparse.ArgumentParser) -> None:
@@ -306,6 +332,21 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="last_error code to requeue (repeatable; default: immutable_object_changed)",
     )
+    requeue.add_argument(
+        "--force",
+        action="store_true",
+        help="also requeue batches that already exhausted the attempt threshold",
+    )
+
+    recover = sub.add_parser(
+        "sync-recover-oversized",
+        help="release events from one oversized in-flight batch back to the pending outbox",
+    )
+    _sync_storage_args(recover)
+    recover.add_argument(
+        "batch_id",
+        help="id of the oversized batch to supersede and release",
+    )
     return parser
 
 
@@ -365,8 +406,24 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 json.dumps(
                     outbox.requeue_failed_batches(
-                        errors=set(args.error) or {"immutable_object_changed"}
+                        errors=set(args.error) or {"immutable_object_changed"},
+                        force=args.force,
                     ),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        finally:
+            store.close()
+        return 0
+    if args.command == "sync-recover-oversized":
+        store = Store(args.db, args.data_dir)
+        try:
+            outbox = IngestionOutbox(store.database)
+            released = outbox.recover_oversized_batch(args.batch_id)
+            print(
+                json.dumps(
+                    {"batch": args.batch_id, "events": released},
                     ensure_ascii=False,
                     indent=2,
                 )
@@ -414,7 +471,13 @@ def main(argv: list[str] | None = None) -> int:
             incremental=args.incremental,
             source_ids=args.source,
         )
-        print(json.dumps(run_crawl(options), ensure_ascii=False, indent=2))
+        try:
+            with _sigterm_as_keyboard_interrupt():
+                result = run_crawl(options)
+        except KeyboardInterrupt:
+            print("crawl interrupted by SIGTERM; shutting down", file=sys.stderr)
+            return 130
+        print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     if args.command == "stats":
         store = Store(args.db, args.data_dir)

@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
+import threading
 import time
 import uuid
 from collections import Counter
@@ -35,7 +37,6 @@ from .models import (
 )
 from .outbox import (
     DEFAULT_MAX_BATCH_BYTES,
-    BatchTooLargeError,
     IngestionOutbox,
 )
 
@@ -210,6 +211,7 @@ class IngestionSyncClient:
         self._now = now
         self.outbox = IngestionOutbox(database)
         self._archive_object_cache: dict[str, dict[str, bytes]] = {}
+        self._archive_object_lock = threading.Lock()
 
     def close(self) -> None:
         if self._owns_http:
@@ -263,6 +265,17 @@ class IngestionSyncClient:
 
         def can_claim() -> bool:
             return not options.max_batches or int(summary["batches"]) < options.max_batches
+
+        previous_sigterm: Any = None
+        if threading.current_thread() is threading.main_thread():
+            # SIGTERM (e.g. `timeout --signal=TERM`) flips the same interrupted
+            # flag a transient failure uses, so the run drains in-flight
+            # batches and records its summary instead of dying mid-flight.
+            def _sigterm_interrupt(_signum: int, _frame: Any) -> None:
+                nonlocal interrupted
+                interrupted = True
+
+            previous_sigterm = signal.signal(signal.SIGTERM, _sigterm_interrupt)
 
         def record_claim(batch: IngestionBatch, *, replayed: bool) -> None:
             nonlocal sequence
@@ -322,14 +335,25 @@ class IngestionSyncClient:
                     ):
                         pending = pending_replays[replay_index]
                         replay_index += 1
-                        batch = self.outbox.build_batch(
-                            run_id=client_run_id,
-                            batch_id=pending.id,
-                            producer_version=options.producer_version,
-                            observed_at=datetime.now().astimezone().isoformat(timespec="seconds"),
-                            limit=options.batch_size,
-                            max_payload_bytes=options.max_payload_bytes,
-                        )
+                        try:
+                            batch = self.outbox.build_batch(
+                                run_id=client_run_id,
+                                batch_id=pending.id,
+                                producer_version=options.producer_version,
+                                observed_at=datetime.now()
+                                .astimezone()
+                                .isoformat(timespec="seconds"),
+                                limit=options.batch_size,
+                                max_payload_bytes=options.max_payload_bytes,
+                            )
+                        except Exception:
+                            # One unrebuildable persisted batch (e.g. a legacy
+                            # batch above the protocol item limit) must not
+                            # abort the run and wedge every later replay.
+                            self.outbox.mark_batch(pending.id, status="failed")
+                            self.outbox.mark_batch_error(pending.id, "batch_rebuild_error")
+                            summary["failed"] = int(summary["failed"]) + 1
+                            continue
                         if batch is not None:
                             record_claim(batch, replayed=True)
                     if in_flight:
@@ -345,22 +369,16 @@ class IngestionSyncClient:
                         and can_claim()
                         and len(in_flight) < options.batch_concurrency
                     ):
-                        try:
-                            batch = self.outbox.build_batch(
-                                run_id=client_run_id,
-                                batch_id=uuid.uuid4().hex,
-                                producer_version=options.producer_version,
-                                observed_at=datetime.now()
-                                .astimezone()
-                                .isoformat(timespec="seconds"),
-                                limit=options.batch_size,
-                                max_payload_bytes=options.max_payload_bytes,
-                            )
-                        except BatchTooLargeError:
-                            summary["failed"] = int(summary["failed"]) + 1
-                            summary["pending"] = int(summary["pending"]) + 1
-                            interrupted = True
-                            break
+                        batch = self.outbox.build_batch(
+                            run_id=client_run_id,
+                            batch_id=uuid.uuid4().hex,
+                            producer_version=options.producer_version,
+                            observed_at=datetime.now()
+                            .astimezone()
+                            .isoformat(timespec="seconds"),
+                            limit=options.batch_size,
+                            max_payload_bytes=options.max_payload_bytes,
+                        )
                         if batch is None:
                             new_batches_exhausted = True
                             break
@@ -383,6 +401,8 @@ class IngestionSyncClient:
                 unexpected = exc
             interrupted = True
         finally:
+            if previous_sigterm is not None:
+                signal.signal(signal.SIGTERM, previous_sigterm)
             summary["status"] = "partial" if interrupted else "completed"
             self._finish_run(
                 client_run_id,
@@ -696,32 +716,44 @@ class IngestionSyncClient:
         object spool).  Article ``body_html``/``body_markdown`` columns hold
         the same sanitized bytes the manifest was hashed from.  Media and
         asset objects have no archived copy and still fail permanently.
+
+        Rows are queried on demand and pre-filtered by stored byte length
+        (sanitization only ever removes characters), and only objects that
+        actually matched a manifest digest are cached, so a large archive
+        is never materialized as a whole-table sha->bytes snapshot.
         """
         if manifest.kind not in ("body_html", "body_markdown"):
             raise ImmutableObjectChangedError("immutable_object_changed")
-        cache = self._archive_object_cache.get(manifest.kind)
-        if cache is None:
-            from sqlalchemy import text
+        with self._archive_object_lock:
+            body = self._archive_object_cache.get(manifest.kind, {}).get(manifest.sha256)
+        if body is not None:
+            return body
+        from sqlalchemy import text
 
-            from ..models import sanitize_text
+        from ..models import sanitize_text
 
-            cache = {}
-            column = manifest.kind
-            with self.database.session_factory() as session:
-                rows = session.execute(
-                    text(
-                        f"SELECT {column} FROM articles"
-                        f" WHERE {column} IS NOT NULL AND {column} != ''"
-                    )
-                )
-                for (value,) in rows:
-                    body = sanitize_text(str(value)).encode("utf-8")
-                    cache.setdefault(hashlib.sha256(body).hexdigest(), body)
-            self._archive_object_cache[manifest.kind] = cache
-        body = cache.get(manifest.sha256)
-        if body is None:
-            raise ImmutableObjectChangedError("immutable_object_changed")
-        return body
+        column = manifest.kind
+        with self.database.session_factory() as session:
+            rows = session.execute(
+                text(
+                    f"SELECT {column} FROM articles"
+                    f" WHERE {column} IS NOT NULL AND {column} != ''"
+                    f" AND length(CAST({column} AS BLOB)) >= :size"
+                ),
+                {"size": manifest.size},
+            )
+            for (value,) in rows:
+                candidate = sanitize_text(str(value)).encode("utf-8")
+                if len(candidate) != manifest.size:
+                    continue
+                if hashlib.sha256(candidate).hexdigest() != manifest.sha256:
+                    continue
+                with self._archive_object_lock:
+                    self._archive_object_cache.setdefault(manifest.kind, {})[
+                        manifest.sha256
+                    ] = candidate
+                return candidate
+        raise ImmutableObjectChangedError("immutable_object_changed")
 
     def _api_request(
         self,

@@ -34,10 +34,9 @@ from .models import (
 type LocalObjectInput = str | Path | tuple[str | Path, str]
 MAX_OBJECT_SIZE = 32 * 1024 * 1024
 DEFAULT_MAX_BATCH_BYTES = 2 * 1024 * 1024
-
-
-class BatchTooLargeError(ValueError):
-    """Raised when one immutable event cannot fit the wire batch limit."""
+BATCH_STATUSES = frozenset(
+    {"pending", "uploading", "acked", "partial", "failed", "superseded"}
+)
 
 
 def _sha256_file(path: Path) -> tuple[str, int]:
@@ -576,6 +575,7 @@ class IngestionOutbox:
             if batch is None:
                 raise KeyError(batch_id)
             batch.last_error = error_code
+            batch.attempts += 1
             batch.updated_at = now
             for row in session.scalars(select(SyncOutbox).where(SyncOutbox.batch_id == batch_id)):
                 row.last_error = error_code
@@ -647,9 +647,15 @@ class IngestionOutbox:
                 )
                 if len(candidate_batch.payload_bytes()) > max_payload_bytes:
                     if not rows:
-                        raise BatchTooLargeError(
-                            f"event {candidate.event_id} exceeds {max_payload_bytes} byte batch limit"
+                        # Poison pill isolation: an event that can never fit
+                        # an empty batch would wedge the queue forever, so
+                        # fail it terminally and skip to the next candidate.
+                        candidate.status = "failed"
+                        candidate.last_error = "event_too_large"
+                        candidate.updated_at = (
+                            datetime.now().astimezone().isoformat(timespec="seconds")
                         )
+                        continue
                     break
                 rows = candidate_rows_for_batch
                 publications = candidate_publications
@@ -771,26 +777,37 @@ class IngestionOutbox:
                 row.updated_at = now
             return len(outbox_rows)
 
-    def requeue_failed_batches(self, *, errors: set[str]) -> dict[str, int]:
+    def requeue_failed_batches(
+        self,
+        *,
+        errors: set[str],
+        max_attempts: int = 5,
+        force: bool = False,
+    ) -> dict[str, int]:
         """Release events from locally-failed batches back to the pending outbox.
 
         Batches that failed for local reasons (e.g. ``immutable_object_changed``
         when the runner had no spool files) never reached the server, so their
         events can be redelivered safely: the server deduplicates by revision
         hash.  Batches the server itself rejected keep their terminal state.
-        The original batch and item rows remain as an immutable audit record.
+        Batches whose delivery already failed ``max_attempts`` times stay
+        terminal unless ``force`` is set.  The original batch and item rows
+        remain as an immutable audit record.
         """
 
+        if max_attempts < 1:
+            raise ValueError("max attempts must be positive")
         recoverable_item_statuses = {"pending", "uploading", "failed"}
         recoverable_outbox_statuses = {"pending", "batched", "uploading", "failed"}
         now = datetime.now().astimezone().isoformat(timespec="seconds")
         result = {"batches": 0, "events": 0}
         with transaction(self.database) as session:
-            batches = session.scalars(
-                select(SyncBatch).where(
-                    SyncBatch.status == "failed", SyncBatch.last_error.in_(errors)
-                )
-            ).all()
+            query = select(SyncBatch).where(
+                SyncBatch.status == "failed", SyncBatch.last_error.in_(errors)
+            )
+            if not force:
+                query = query.where(SyncBatch.attempts < max_attempts)
+            batches = session.scalars(query).all()
             for batch in batches:
                 batch_items = session.scalars(
                     select(SyncBatchItem)
@@ -829,6 +846,8 @@ class IngestionOutbox:
         return result
 
     def mark_batch(self, batch_id: str, *, status: str, response_json: str = "") -> None:
+        if status not in BATCH_STATUSES:
+            raise ValueError(f"unknown batch status: {status}")
         now = datetime.now().astimezone().isoformat(timespec="seconds")
         with transaction(self.database) as session:
             batch = session.get(SyncBatch, batch_id)
@@ -852,7 +871,6 @@ class IngestionOutbox:
 
 
 __all__ = [
-    "BatchTooLargeError",
     "DEFAULT_MAX_BATCH_BYTES",
     "IngestionOutbox",
     "spool_article_objects",
