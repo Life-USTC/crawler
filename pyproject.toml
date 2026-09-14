@@ -32,7 +32,13 @@ build-backend = "hatchling.build"
 packages = ["src/ustc_crawler"]
 
 [dependency-groups]
-dev = ["ruff>=0.16.0", "pytest>=8.0"]
+dev = ["ruff>=0.16.0", "pytest>=8.0", "pytest-timeout>=2.3"]
+
+[tool.pytest.ini_options]
+# test_web.py drives a real HTTP server with urlopen() calls that carry no
+# per-request timeout; a hung handler would otherwise burn the whole 6h job
+# timeout. Fail any single test after 5 minutes instead.
+timeout = 300
 
 [tool.uv]
 package = true

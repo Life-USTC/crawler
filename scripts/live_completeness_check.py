@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sqlite3
 import subprocess
 import urllib.parse
 from pathlib import Path
 
+import yaml
 from bs4 import BeautifulSoup
 
 from ustc_crawler.canonicalize import normalize_url as canonical_url
@@ -26,6 +28,23 @@ DEFAULT_SOURCES = [
     ("unit-scms-ustc-edu-cn", "https://scms.ustc.edu.cn/17973/list.htm", "化学与材料科学学院"),
     ("unit-www-nsrl-ustc-edu-cn", "https://www.nsrl.ustc.edu.cn/", "国家同步辐射实验室"),
 ]
+
+
+def configured_source_ids(sources_yaml: Path, units_json: Path | None = None) -> set[str]:
+    """Return source ids resolvable from the curated config plus discovered units.
+
+    Mirrors the id derivation in ustc_crawler.discover.unit_sources so a
+    DEFAULT_SOURCES entry is valid only if crawl configuration can produce it.
+    """
+    raw = yaml.safe_load(sources_yaml.read_text(encoding="utf-8")) or {}
+    ids = {str(item["id"]) for item in raw.get("sources", [])}
+    if units_json is not None and units_json.exists():
+        discovered = json.loads(units_json.read_text(encoding="utf-8"))
+        for item in discovered.get("units", []):
+            host = str(item.get("host", "")).lower()
+            if host:
+                ids.add("unit-" + re.sub(r"[^a-z0-9]+", "-", host).strip("-"))
+    return ids
 
 
 def fetch(url: str) -> str:

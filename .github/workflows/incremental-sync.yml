@@ -52,16 +52,36 @@ jobs:
           restore-keys: crawler-state-
 
       - name: Download seed state on cache miss
+        id: seed
         if: steps.restore.outputs.cache-matched-key == ''
+        # Failure must not kill the job: the bootstrap step below turns a
+        # missing seed into an empty database instead of a dead pipeline.
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release download "$SEED_RELEASE_TAG" --pattern "$SEED_ASSET" --output "$DB_ARCHIVE" --clobber
 
-      - name: Decompress state
+      - name: Bootstrap empty state when no seed is available
+        # Cache entries are evicted after 7 days of no access and the seed
+        # release can be deleted by hand; with both gone the pipeline would be
+        # hard-dead. Store builds the schema itself, so falling back to an
+        # empty database keeps the pipeline alive at the cost of a full
+        # re-crawl of every source.
+        if: steps.restore.outputs.cache-matched-key == '' && steps.seed.outcome == 'failure'
         run: |
+          echo "::warning::cache miss and seed release $SEED_RELEASE_TAG/$SEED_ASSET unavailable; bootstrapping an empty database, this run is a FULL re-crawl"
           mkdir -p data
-          zstd -d "$DB_ARCHIVE" -o "$DB_PATH"
-          rm "$DB_ARCHIVE"
+          rm -f "$DB_ARCHIVE"
+
+      - name: Decompress state
+        # Skipped entirely when neither cache nor seed produced an archive;
+        # the db-upgrade in "Crawl and sync" then creates a fresh schema.
+        run: |
+          if [ -f "$DB_ARCHIVE" ]; then
+            mkdir -p data
+            zstd -d "$DB_ARCHIVE" -o "$DB_PATH"
+            rm "$DB_ARCHIVE"
+          fi
 
       - name: Reindex adapter-covered sources
         if: inputs.reindex
@@ -102,6 +122,12 @@ jobs:
           # let the job timeout kill a writing sync process (run 34787144606).
           SYNC_BUDGET_MINUTES: ${{ (inputs.reindex || inputs.retext || inputs.requeue_failed) && 160 || 30 }}
         run: |
+          # Fail fast when the ingestion endpoint is not configured instead of
+          # burning the full crawl budget before sync notices the empty var.
+          if [ -z "${{ vars.CRAWLER_SERVER }}" ]; then
+            echo "::error::vars.CRAWLER_SERVER is not set; configure it under Settings > Secrets and variables > Actions > Variables"
+            exit 1
+          fi
           uv run ustc-crawler db-upgrade 2>&1 | tee db-upgrade.log
           test "${PIPESTATUS[0]}" = 0
           uv run ustc-crawler crawl --incremental 2>&1 | tee crawl.log
@@ -111,49 +137,55 @@ jobs:
           test "${PIPESTATUS[0]}" = 0 -o "${PIPESTATUS[0]}" = 124
 
       - name: Report non-terminal sync state
+        # Diagnose through a read-only stdlib sqlite3 connection, not Store:
+        # Store.__init__ asserts the alembic head, so a db-upgrade that died
+        # halfway (the exact moment diagnostics matter most) would crash this
+        # step and produce no artifacts at all. continue-on-error keeps one
+        # broken query from costing the rest of the report.
         if: always()
+        continue-on-error: true
         run: |
           if [ -f "$DB_PATH" ]; then
-            sqlite3 -header -column "$DB_PATH" \
-              "SELECT substr(created_at,1,16) AS created, status, last_error, attempts FROM sync_batches WHERE status NOT IN ('acked','superseded') ORDER BY created_at DESC LIMIT 20;"
+            sqlite3 -header -column "file:$DB_PATH?mode=ro" \
+              "SELECT substr(created_at,1,16) AS created, status, last_error, attempts FROM sync_batches WHERE status NOT IN ('acked','superseded') ORDER BY created_at DESC LIMIT 20;" || true
             mkdir -p diag
-            uv run python - <<'PY'
+            uv run python - "$DB_PATH" <<'PY'
           import json
+          import sqlite3
+          import sys
           from pathlib import Path
-          from sqlalchemy import select
-          from ustc_crawler.db.models import SyncBatch
-          from ustc_crawler.store import Store
-          from ustc_crawler.sync.outbox import IngestionOutbox
 
-          store = Store("data/crawler.sqlite", "data")
-          outbox = IngestionOutbox(store.database)
-          with store.database.session_factory() as session:
-              batches = session.scalars(
-                  select(SyncBatch).where(SyncBatch.status.notin_(("acked", "superseded")))
-              ).all()
-              meta = [
-                  {"id": b.id, "status": b.status, "last_error": b.last_error}
-                  for b in batches
-              ]
-          Path("diag/batches.json").write_text(json.dumps(meta, indent=2))
-          for b in meta:
-              try:
-                  batch = outbox.build_batch(
-                      run_id="diag",
-                      batch_id=b["id"],
-                      producer_version="diag",
-                      observed_at="2026-01-01T00:00:00+08:00",
+          db_path = sys.argv[1]
+          conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+          Path("diag").mkdir(exist_ok=True)
+          try:
+              rows = conn.execute(
+                  """SELECT id, status, last_error, attempts FROM sync_batches
+                     WHERE status NOT IN ('acked','superseded')
+                     ORDER BY created_at DESC"""
+              ).fetchall()
+              Path("diag/batches.json").write_text(
+                  json.dumps(
+                      [
+                          {"id": r[0], "status": r[1], "last_error": r[2], "attempts": r[3]}
+                          for r in rows
+                      ],
+                      indent=2,
+                      ensure_ascii=False,
                   )
-              except Exception as exc:
-                  Path(f"diag/{b['id']}.error.txt").write_text(
-                      f"{type(exc).__name__}: {exc}"
-                  )
-                  continue
-              if batch is None:
-                  Path(f"diag/{b['id']}.error.txt").write_text("batch rebuild returned None")
-                  continue
-              Path(f"diag/{b['id']}.json").write_bytes(batch.payload_bytes())
-          store.close()
+              )
+          except Exception as exc:
+              Path("diag/batches.error.txt").write_text(f"{type(exc).__name__}: {exc}")
+          try:
+              counts = conn.execute(
+                  "SELECT status, COUNT(*) FROM sync_outbox GROUP BY status"
+              ).fetchall()
+              Path("diag/outbox-counts.json").write_text(
+                  json.dumps({status: count for status, count in counts}, indent=2)
+              )
+          except Exception as exc:
+              Path("diag/outbox-counts.error.txt").write_text(f"{type(exc).__name__}: {exc}")
+          conn.close()
           PY
           fi
 
@@ -168,21 +200,36 @@ jobs:
 
       - name: Save crawler state
         id: compress
-        # Skip when the job was cancelled/timed out: saving mid-crash state is
-        # how run 34802169939 restored, crashed on, and re-saved a malformed
-        # DB, spreading the corruption into a fresh cache entry.
-        if: always() && ! cancelled()
+        # Skip on cancel/timeout (saving mid-crash state is how run
+        # 34802169939 restored, crashed on, and re-saved a malformed DB,
+        # spreading the corruption into a fresh cache entry) and also on any
+        # earlier step failure: a failed crawl/sync leaves the DB in an
+        # unknown state, so the last known-good cache entry must win. The
+        # integrity_check below is the second line of defense — a torn DB
+        # that still exits the earlier steps green gets skipped here too.
+        if: always() && ! failure() && ! cancelled()
         run: |
           if [ -f "$DB_PATH" ]; then
-            sqlite3 "$DB_PATH" "PRAGMA wal_checkpoint(TRUNCATE);"
-            cp --reflink=auto "$DB_PATH" state-snapshot.sqlite
-            zstd -f state-snapshot.sqlite -o "$DB_ARCHIVE"
-            rm -f state-snapshot.sqlite
+            # wal_checkpoint returns exit 0 even when busy, so check the row:
+            # only 0|0|0 (not busy, fully checkpointed, truncated) is safe.
+            checkpoint="$(sqlite3 "$DB_PATH" "PRAGMA wal_checkpoint(TRUNCATE);")"
+            if [ "$checkpoint" != "0|0|0" ]; then
+              echo "::error::wal_checkpoint(TRUNCATE) returned '$checkpoint', refusing to save a live database"
+              exit 1
+            fi
+            integrity="$(sqlite3 "$DB_PATH" "PRAGMA integrity_check;")"
+            if [ "$integrity" != "ok" ]; then
+              echo "::warning::integrity_check reported '$integrity'; skipping state save to keep the last good cache entry"
+            else
+              cp --reflink=auto "$DB_PATH" state-snapshot.sqlite
+              zstd -f state-snapshot.sqlite -o "$DB_ARCHIVE"
+              rm -f state-snapshot.sqlite
+            fi
           fi
           echo "exists=$([ -f "$DB_ARCHIVE" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
       - name: Upload state to cache
-        if: always() && ! cancelled() && steps.compress.outputs.exists == 'true'
+        if: always() && ! failure() && ! cancelled() && steps.compress.outputs.exists == 'true'
         uses: actions/cache/save@v4
         with:
           path: ${{ env.DB_ARCHIVE }}
