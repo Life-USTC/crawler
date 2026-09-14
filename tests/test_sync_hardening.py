@@ -588,5 +588,151 @@ class SigtermTests(SyncHardeningTestCase):
             signal.signal(signal.SIGTERM, previous)
 
 
+class ProgressLogTests(SyncHardeningTestCase):
+    def test_each_batch_writes_one_progress_line_to_stderr(self) -> None:
+        import contextlib
+        import io
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            try:
+                for number in range(2):
+                    store.enqueue_article_for_sync(self._article(number))
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                )
+                batch_ids: list[str] = []
+
+                def deliver(batch, _options):
+                    batch_ids.append(batch.batch_id)
+                    sync.outbox.mark_batch(batch.batch_id, status="acked")
+                    return DeliveryResult("acked", len(batch.items), 0)
+
+                sync._deliver = deliver
+                captured = io.StringIO()
+                try:
+                    with contextlib.redirect_stderr(captured):
+                        sync.sync(options=SyncOptions(batch_size=1))
+                finally:
+                    sync.close()
+
+                lines = [line for line in captured.getvalue().splitlines() if "sync batch" in line]
+                self.assertEqual(len(lines), 2)
+                for batch_id, line in zip(batch_ids, lines, strict=True):
+                    self.assertIn(batch_id, line)
+                self.assertIn("acked=1", lines[0])
+                self.assertIn("acked=2", lines[1])
+                self.assertIn("failed=0", lines[1])
+            finally:
+                store.close()
+
+
+class ObjectReadTests(SyncHardeningTestCase):
+    def test_upload_reuses_prechecked_object_bytes(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/api/ingestion/publications/batches":
+                return httpx.Response(200, json=self._batch_response(request), request=request)
+            if request.url.path == "/api/ingestion/publications/objects/plan":
+                return httpx.Response(
+                    200, json=self._plan_response(request, upload=True), request=request
+                )
+            if request.url.path.startswith("/api/ingestion/publications/objects/"):
+                return httpx.Response(200, json=self._upload_response(request), request=request)
+            raise AssertionError(f"unexpected sync request: {request.url}")
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            try:
+                store.enqueue_article_for_sync(self._article(1))
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=client,
+                )
+                reads = 0
+                original = sync._object_bytes
+
+                def counted(manifest):
+                    nonlocal reads
+                    reads += 1
+                    return original(manifest)
+
+                sync._object_bytes = counted
+                try:
+                    summary = sync.sync()
+                finally:
+                    sync.close()
+                self.assertEqual(summary["acked"], 1)
+                # body_html + body_markdown, each read exactly once (the
+                # precheck hands its bytes to the upload instead of the
+                # upload re-reading the spool).
+                self.assertEqual(reads, 2)
+            finally:
+                store.close()
+
+    @staticmethod
+    def _batch_response(request: httpx.Request) -> dict:
+        payload = json.loads(request.content)
+        return {
+            "batchId": payload["batchId"],
+            "clientRunId": payload["clientRunId"],
+            "payloadDigest": hashlib.sha256(request.content).hexdigest(),
+            "results": [
+                {
+                    "sourceId": item["sourceId"],
+                    "canonicalUrl": item["canonicalUrl"],
+                    "revisionHash": item["revisionHash"],
+                    "status": "created",
+                    "publicationId": "publication-id",
+                    "revisionId": "revision-id",
+                }
+                for item in payload["items"]
+            ],
+        }
+
+    def _plan_response(self, request: httpx.Request, *, upload: bool) -> dict:
+        payload = json.loads(request.content)
+        objects = []
+        for item in payload["objects"]:
+            objects.append(
+                {
+                    "kind": item["kind"],
+                    "sha256": item["sha256"],
+                    "r2Key": f"publications/{item['sha256']}",
+                    "status": "upload_required" if upload else "already_present",
+                    "uploadUrl": (
+                        f"{self.server}/api/ingestion/publications/objects/"
+                        f"{payload['batchId']}/{item['kind']}/{item['sha256']}"
+                        if upload
+                        else None
+                    ),
+                    "requiredHeaders": {
+                        "Content-Type": "text/html"
+                        if item["kind"] == "body_html"
+                        else "text/markdown",
+                    },
+                }
+            )
+        return {"batchId": payload["batchId"], "objects": objects}
+
+    @staticmethod
+    def _upload_response(request: httpx.Request) -> dict:
+        batch_id, kind, sha256 = request.url.path.rsplit("/", 3)[-3:]
+        return {
+            "batchId": batch_id,
+            "kind": kind,
+            "sha256": sha256,
+            "status": "linked",
+        }
+
+
 if __name__ == "__main__":
     unittest.main()

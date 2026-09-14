@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import signal
+import sys
 import threading
 import time
 import uuid
@@ -260,11 +261,20 @@ class IngestionSyncClient:
         pending_replays: list[SyncBatch] = []
         replay_index = 0
         new_batches_exhausted = False
-        in_flight: dict[Future[DeliveryResult], int] = {}
+        in_flight: dict[Future[DeliveryResult], tuple[int, str]] = {}
         sequence = 0
 
         def can_claim() -> bool:
             return not options.max_batches or int(summary["batches"]) < options.max_batches
+
+        def log_progress(batch_id: str, outcome: str) -> None:
+            print(
+                f"sync batch {batch_id}: {outcome}"
+                f" acked={summary['acked']} failed={summary['failed']}"
+                f" pending={summary['pending']}",
+                file=sys.stderr,
+                flush=True,
+            )
 
         previous_sigterm: Any = None
         if threading.current_thread() is threading.main_thread():
@@ -286,23 +296,25 @@ class IngestionSyncClient:
             else:
                 summary["created"] = int(summary["created"]) + 1
             future = executor.submit(self._deliver, batch, options)
-            in_flight[future] = sequence
+            in_flight[future] = (sequence, batch.batch_id)
             sequence += 1
 
         def process_completed(done: set[Future[DeliveryResult]]) -> None:
             nonlocal interrupted, unexpected
-            for future in sorted(done, key=in_flight.__getitem__):
-                in_flight.pop(future)
+            for future in sorted(done, key=lambda item: in_flight[item][0]):
+                _sequence, batch_id = in_flight.pop(future)
                 try:
                     delivery = future.result()
-                except SyncPermanentError:
+                except SyncPermanentError as exc:
                     # A permanently rejected batch is terminal for that batch
                     # only; it must not poison the rest of the run, or a single
                     # undeliverable batch would block the queue forever.
                     summary["failed"] = int(summary["failed"]) + 1
-                except SyncTransientError:
+                    log_progress(batch_id, f"failed:{exc.code}")
+                except SyncTransientError as exc:
                     summary["pending"] = int(summary["pending"]) + 1
                     interrupted = True
+                    log_progress(batch_id, f"pending:{exc.code}")
                 except BaseException as exc:
                     # Preserve the existing propagation behavior for unexpected
                     # failures, while allowing already-claimed batches to finish
@@ -310,8 +322,10 @@ class IngestionSyncClient:
                     if unexpected is None:
                         unexpected = exc
                     interrupted = True
+                    log_progress(batch_id, f"error:{type(exc).__name__}")
                 else:
                     self._record_delivery(summary, delivery)
+                    log_progress(batch_id, delivery.status)
 
         try:
             pending_replays = self.outbox.pending_batches()
@@ -353,6 +367,7 @@ class IngestionSyncClient:
                             self.outbox.mark_batch(pending.id, status="failed")
                             self.outbox.mark_batch_error(pending.id, "batch_rebuild_error")
                             summary["failed"] = int(summary["failed"]) + 1
+                            log_progress(pending.id, "failed:batch_rebuild_error")
                             continue
                         if batch is not None:
                             record_claim(batch, replayed=True)
@@ -587,13 +602,15 @@ class IngestionSyncClient:
                         )
 
                     ordered = sorted(planned.items())
+                    bodies: dict[tuple[str, str], bytes] = {}
                     for key, item in ordered:
                         if item.status != "upload_required":
                             continue
                         if item.upload_url is None:
                             raise SyncProtocolError("object_upload_url_missing")
                         for manifest in manifest_groups[key]:
-                            self._object_bytes(manifest)
+                            body = self._object_bytes(manifest)
+                            bodies.setdefault(key, body)
 
                     pending: dict[tuple[str, str], Future[None]] = {
                         key: executor.submit(
@@ -602,6 +619,7 @@ class IngestionSyncClient:
                             item,
                             manifests[key],
                             options,
+                            bodies.get(key),
                         )
                         for key, item in ordered
                     }
@@ -651,6 +669,7 @@ class IngestionSyncClient:
         item: PublicationObjectPlanItem,
         manifest: LocalObjectManifest,
         options: SyncOptions,
+        body: bytes | None = None,
     ) -> None:
         if item.status == "already_present":
             return
@@ -667,7 +686,8 @@ class IngestionSyncClient:
         expected_upload_url = f"{self.server}{upload_path}"
         if item.upload_url != expected_upload_url:
             raise SyncProtocolError("object_upload_url_mismatch")
-        body = self._object_bytes(manifest)
+        if body is None:
+            body = self._object_bytes(manifest)
         upload = self._api_request(
             "PUT",
             upload_path,
