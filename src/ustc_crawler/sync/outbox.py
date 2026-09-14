@@ -771,6 +771,63 @@ class IngestionOutbox:
                 row.updated_at = now
             return len(outbox_rows)
 
+    def requeue_failed_batches(self, *, errors: set[str]) -> dict[str, int]:
+        """Release events from locally-failed batches back to the pending outbox.
+
+        Batches that failed for local reasons (e.g. ``immutable_object_changed``
+        when the runner had no spool files) never reached the server, so their
+        events can be redelivered safely: the server deduplicates by revision
+        hash.  Batches the server itself rejected keep their terminal state.
+        The original batch and item rows remain as an immutable audit record.
+        """
+
+        recoverable_item_statuses = {"pending", "uploading", "failed"}
+        recoverable_outbox_statuses = {"pending", "batched", "uploading", "failed"}
+        now = datetime.now().astimezone().isoformat(timespec="seconds")
+        result = {"batches": 0, "events": 0}
+        with transaction(self.database) as session:
+            batches = session.scalars(
+                select(SyncBatch).where(
+                    SyncBatch.status == "failed", SyncBatch.last_error.in_(errors)
+                )
+            ).all()
+            for batch in batches:
+                batch_items = session.scalars(
+                    select(SyncBatchItem)
+                    .where(SyncBatchItem.batch_id == batch.id)
+                    .order_by(SyncBatchItem.item_key)
+                ).all()
+                outbox_rows = session.scalars(
+                    select(SyncOutbox)
+                    .where(SyncOutbox.batch_id == batch.id)
+                    .order_by(SyncOutbox.event_id)
+                ).all()
+                if {item.item_key for item in batch_items} != {
+                    row.event_id for row in outbox_rows
+                }:
+                    raise ValueError("batch item and outbox membership mismatch")
+                if any(item.status not in recoverable_item_statuses for item in batch_items):
+                    raise ValueError("batch contains completed or rejected items")
+                if any(row.status not in recoverable_outbox_statuses for row in outbox_rows):
+                    raise ValueError("batch contains completed outbox events")
+
+                batch.status = "superseded"
+                batch.next_attempt_at = None
+                batch.locked_until = None
+                batch.last_error = f"requeued_failed_batch:{batch.last_error}"
+                batch.updated_at = now
+                for row in outbox_rows:
+                    row.batch_id = None
+                    row.status = "pending"
+                    row.next_attempt_at = None
+                    row.locked_until = None
+                    row.response_json = None
+                    row.last_error = None
+                    row.updated_at = now
+                result["batches"] += 1
+                result["events"] += len(outbox_rows)
+        return result
+
     def mark_batch(self, batch_id: str, *, status: str, response_json: str = "") -> None:
         now = datetime.now().astimezone().isoformat(timespec="seconds")
         with transaction(self.database) as session:

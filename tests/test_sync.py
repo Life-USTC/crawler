@@ -436,11 +436,12 @@ class OrmAndOutboxTests(unittest.TestCase):
         item_status: str = "failed",
         outbox_status: str = "failed",
         count: int = 101,
+        url_prefix: str = "https://example.edu/news/",
     ) -> tuple[str, str]:
         source = store.source_descriptor("source")
         for number in range(count):
             article = self._article()
-            article.url = f"https://example.edu/news/{number}"
+            article.url = f"{url_prefix}{number}"
             article.title = f"A notice {number}"
             article.body_html = f"<p>Hello {number}</p>"
             article.body_text = f"Hello {number}"
@@ -818,6 +819,93 @@ class OrmAndOutboxTests(unittest.TestCase):
                         self.assertEqual(row.status, "failed")
                 finally:
                     store.close()
+    def test_requeue_failed_batches_releases_events_for_matching_error(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "crawler.sqlite", root / "data")
+            try:
+                store.add_source(self._source())
+                self._insert_oversized_batch(store, "local-failure", count=50)
+                self._insert_oversized_batch(
+                    store, "server-rejected", count=2, url_prefix="https://example.edu/notice/"
+                )
+                with store.database.session_factory.begin() as session:
+                    # The helper links every outbox row to the newest batch;
+                    # restore each batch's own members by canonical URL prefix.
+                    first_keys = set()
+                    for row in session.scalars(select(SyncOutbox)).all():
+                        if '"canonicalUrl":"https://example.edu/news/' in row.payload_json:
+                            row.batch_id = "local-failure"
+                            first_keys.add(row.event_id)
+                    self.assertEqual(len(first_keys), 50)
+                    for item in session.scalars(
+                        select(SyncBatchItem).where(SyncBatchItem.batch_id == "server-rejected")
+                    ):
+                        if item.item_key in first_keys:
+                            session.delete(item)
+                    session.get(SyncBatch, "local-failure").last_error = "immutable_object_changed"
+                    rejected = session.get(SyncBatch, "server-rejected")
+                    rejected.last_error = "server_rejected"
+                    rejected.status = "failed"
+
+                outbox = IngestionOutbox(store.database)
+                result = outbox.requeue_failed_batches(errors={"immutable_object_changed"})
+                self.assertEqual(result, {"batches": 1, "events": 50})
+
+                with store.database.session_factory() as session:
+                    batch = session.get(SyncBatch, "local-failure")
+                    self.assertEqual(batch.status, "superseded")
+                    self.assertEqual(
+                        batch.last_error, "requeued_failed_batch:immutable_object_changed"
+                    )
+                    rejected_batch = session.get(SyncBatch, "server-rejected")
+                    self.assertEqual(rejected_batch.status, "failed")
+                    self.assertEqual(rejected_batch.last_error, "server_rejected")
+                    rows = session.scalars(select(SyncOutbox)).all()
+                    requeued = [row for row in rows if row.status == "pending"]
+                    still_failed = [row for row in rows if row.status == "failed"]
+                    self.assertEqual(len(requeued), 50)
+                    self.assertEqual(len(still_failed), 2)
+                    self.assertTrue(all(row.batch_id is None for row in requeued))
+                    self.assertTrue(all(row.last_error is None for row in requeued))
+                    self.assertTrue(all(row.response_json is None for row in requeued))
+                    self.assertTrue(
+                        all(row.batch_id == "server-rejected" for row in still_failed)
+                    )
+
+                rebuilt = outbox.build_batch(
+                    run_id="new-run",
+                    batch_id="replacement",
+                    producer_version="new-producer",
+                    observed_at="2026-08-20T00:00:00+08:00",
+                    limit=50,
+                )
+                self.assertIsNotNone(rebuilt)
+                self.assertEqual(len(rebuilt.items), 50)
+            finally:
+                store.close()
+
+    def test_requeue_failed_batches_refuses_mixed_membership(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "crawler.sqlite", root / "data")
+            try:
+                store.add_source(self._source())
+                self._insert_oversized_batch(store, "mismatch", count=50)
+                with store.database.session_factory.begin() as session:
+                    batch = session.get(SyncBatch, "mismatch")
+                    batch.last_error = "immutable_object_changed"
+                    session.scalars(
+                        select(SyncBatchItem).where(SyncBatchItem.batch_id == "mismatch")
+                    ).first().status = "acked"
+                outbox = IngestionOutbox(store.database)
+                with self.assertRaisesRegex(ValueError, "completed or rejected items"):
+                    outbox.requeue_failed_batches(errors={"immutable_object_changed"})
+                with store.database.session_factory() as session:
+                    batch = session.get(SyncBatch, "mismatch")
+                    self.assertEqual(batch.status, "failed")
+            finally:
+                store.close()
 
 
 if __name__ == "__main__":

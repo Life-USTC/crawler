@@ -16,6 +16,7 @@ from .sync import (
     MAX_BATCH_CONCURRENCY,
     MAX_OBJECT_CONCURRENCY,
     MAX_PUBLICATION_BATCH_ITEMS,
+    IngestionOutbox,
     IngestionSyncClient,
     SyncOptions,
     ingestion_secret_from_environment,
@@ -290,6 +291,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _sync_storage_args(sync_backfill_command)
     sync_backfill_command.add_argument("--chunk-size", type=int, default=100)
+
+    requeue = sub.add_parser(
+        "sync-requeue-failed",
+        help=(
+            "release events from batches that failed for local reasons "
+            "(default: immutable_object_changed) back to the pending outbox"
+        ),
+    )
+    _sync_storage_args(requeue)
+    requeue.add_argument(
+        "--error",
+        action="append",
+        default=[],
+        help="last_error code to requeue (repeatable; default: immutable_object_changed)",
+    )
     return parser
 
 
@@ -335,6 +351,22 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 json.dumps(
                     sync_backfill(store, chunk_size=args.chunk_size),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        finally:
+            store.close()
+        return 0
+    if args.command == "sync-requeue-failed":
+        store = Store(args.db, args.data_dir)
+        try:
+            outbox = IngestionOutbox(store.database)
+            print(
+                json.dumps(
+                    outbox.requeue_failed_batches(
+                        errors=set(args.error) or {"immutable_object_changed"}
+                    ),
                     ensure_ascii=False,
                     indent=2,
                 )
