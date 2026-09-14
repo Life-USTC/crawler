@@ -7,15 +7,15 @@ import json
 import os
 import time
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import httpx
 from sqlalchemy import event, select
 
-import httpx
-
-from ustc_crawler.db.models import SyncBatch, SyncBatchItem, SyncOutbox, SyncRun
 from ustc_crawler.cli import _sigterm_as_keyboard_interrupt, build_parser, main
+from ustc_crawler.db.models import SyncBatch, SyncBatchItem, SyncOutbox, SyncRun
 from ustc_crawler.models import ArticleDocument, SourceConfig
 from ustc_crawler.store import Store
 from ustc_crawler.sync.client import (
@@ -732,6 +732,107 @@ class ObjectReadTests(SyncHardeningTestCase):
             "sha256": sha256,
             "status": "linked",
         }
+
+
+class HttpErrorClassificationTests(SyncHardeningTestCase):
+    def test_programming_httpx_errors_raise_without_retry(self) -> None:
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            raise httpx.LocalProtocolError("client misuse", request=request)
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            try:
+                store.enqueue_article_for_sync(self._article(1))
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=client,
+                    sleep=lambda _seconds: None,
+                )
+                try:
+                    with self.assertRaises(httpx.LocalProtocolError):
+                        sync.sync(options=SyncOptions(max_retries=3))
+                finally:
+                    sync.close()
+                self.assertEqual(calls, 1)
+            finally:
+                store.close()
+
+    def test_redirect_response_fails_batch_terminally(self) -> None:
+        calls = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal calls
+            calls += 1
+            return httpx.Response(
+                302,
+                headers={"Location": "https://evil.example.test/"},
+                request=request,
+            )
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            client = httpx.Client(transport=httpx.MockTransport(handler))
+            try:
+                store.enqueue_article_for_sync(self._article(1))
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=client,
+                )
+                try:
+                    summary = sync.sync(options=SyncOptions(max_retries=3))
+                finally:
+                    sync.close()
+                self.assertEqual(summary["failed"], 1)
+                self.assertEqual(summary["status"], "completed")
+                self.assertEqual(calls, 1)
+                with store.database.session_factory() as session:
+                    batch = session.scalar(select(SyncBatch))
+                    self.assertEqual(batch.status, "failed")
+                    self.assertEqual(batch.last_error, "http_redirect")
+                    self.assertIsNone(batch.response_json)
+            finally:
+                store.close()
+
+    def test_retry_after_http_date_is_interpreted_as_gmt(self) -> None:
+        import time as time_module
+
+        from ustc_crawler.sync.client import _retry_after
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                429,
+                headers={"Retry-After": "Wed, 01 Jan 2030 00:00:10 -0000"},
+                request=request,
+            )
+
+        request = httpx.Request("GET", "https://ingest.example.test/")
+        transport = httpx.MockTransport(handler)
+        response = transport.handle_request(request)
+        now = datetime(2030, 1, 1, 0, 0, 0, tzinfo=UTC).timestamp()
+        previous_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "America/New_York"
+        time_module.tzset()
+        try:
+            self.assertEqual(_retry_after(response, lambda: now), 10.0)
+        finally:
+            if previous_tz is None:
+                del os.environ["TZ"]
+            else:
+                os.environ["TZ"] = previous_tz
+            time_module.tzset()
 
 
 if __name__ == "__main__":

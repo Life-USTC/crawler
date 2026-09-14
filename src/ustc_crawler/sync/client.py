@@ -14,7 +14,7 @@ from collections import Counter
 from collections.abc import Callable, Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -50,6 +50,13 @@ OBJECT_UPLOAD_PREFIX = "/api/ingestion/publications/objects"
 INGESTION_SECRET_ENV = "USTC_CRAWLER_INGESTION_SECRET"
 INGESTION_SECRET_HEADER = "X-Publication-Ingestion-Secret"
 RETRY_STATUS_CODES = frozenset({408, 429})
+RETRYABLE_HTTP_ERRORS = (
+    httpx.ConnectError,
+    httpx.ReadError,
+    httpx.WriteError,
+    httpx.TimeoutException,
+    httpx.RemoteProtocolError,
+)
 DEFAULT_OBJECT_CONCURRENCY = 8
 MAX_OBJECT_CONCURRENCY = 64
 DEFAULT_BATCH_CONCURRENCY = 1
@@ -157,7 +164,7 @@ def _json_bytes(value: object) -> bytes:
 def _error_code(response: httpx.Response) -> str:
     try:
         value = response.json()
-    except (ValueError, json.JSONDecodeError):
+    except ValueError:
         value = None
     if isinstance(value, dict):
         error = value.get("error")
@@ -176,7 +183,9 @@ def _retry_after(response: httpx.Response, now: Callable[[], float]) -> float | 
         try:
             target = parsedate_to_datetime(value)
             if target.tzinfo is None:
-                target = target.astimezone()
+                # HTTP-dates are always GMT; a naive parse must be read as
+                # UTC, not as local time.
+                target = target.replace(tzinfo=UTC)
             return max(0.0, target.timestamp() - now())
         except (TypeError, ValueError, OverflowError):
             return None
@@ -808,7 +817,7 @@ class IngestionSyncClient:
         for attempt in range(options.max_retries + 1):
             try:
                 response = self.http.request(method, url, headers=headers, **kwargs)
-            except httpx.HTTPError as exc:
+            except RETRYABLE_HTTP_ERRORS as exc:
                 if attempt >= options.max_retries:
                     raise SyncTransientError("network_error") from exc
                 self._sleep(min(options.max_backoff, 2**attempt))
@@ -820,12 +829,16 @@ class IngestionSyncClient:
                 self._sleep(min(options.max_backoff, delay if delay is not None else 2**attempt))
                 continue
             return response
-        raise SyncTransientError("network_error")
 
     @staticmethod
     def _require_success(response: httpx.Response) -> None:
         if 200 <= response.status_code < 300:
             return
+        if 300 <= response.status_code < 400:
+            # follow_redirects=False: a redirect means the endpoint moved
+            # (or an auth gateway intercepted). Spinning on it retried the
+            # same batch forever, so fail it terminally with a safe code.
+            raise SyncPermanentError("http_redirect")
         if 400 <= response.status_code < 500:
             raise SyncPermanentError(_error_code(response))
         raise SyncTransientError(f"http_{response.status_code}")
