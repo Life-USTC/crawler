@@ -418,6 +418,22 @@ class ExtractTests(unittest.TestCase):
         )
         self.assertIn("62283555-800或802。", page.article.body_text)
 
+    def test_body_markdown_absolutizes_relative_image_urls(self) -> None:
+        html = """
+        <html><head><title>校园活动图片报道</title></head><body>
+        <div class='v_news_content'>
+        <p>学校举办年度校园开放日活动，吸引了众多师生和访客前来参观交流。</p>
+        <p><img src='/__local/open-day.jpg' alt='开放日现场'></p>
+        </div></body></html>
+        """
+        page = extract_page("https://www.ustc.edu.cn/info/1055/1234.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertIn(
+            "![开放日现场](https://www.ustc.edu.cn/__local/open-day.jpg)",
+            page.article.body_markdown,
+        )
+
     def test_table_cells_and_rows_are_separated_in_body_text(self) -> None:
         html = """
         <html><head><title>奖学金评选结果公示</title></head><body>
