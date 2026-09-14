@@ -14,6 +14,7 @@ from tempfile import TemporaryDirectory
 import httpx
 from sqlalchemy import event, select
 
+from ustc_crawler import cli
 from ustc_crawler.cli import _sigterm_as_keyboard_interrupt, build_parser, main
 from ustc_crawler.db.models import SyncBatch, SyncBatchItem, SyncOutbox, SyncRun
 from ustc_crawler.models import ArticleDocument, SourceConfig
@@ -833,6 +834,68 @@ class HttpErrorClassificationTests(SyncHardeningTestCase):
             else:
                 os.environ["TZ"] = previous_tz
             time_module.tzset()
+
+
+class ExitCodeTests(SyncHardeningTestCase):
+    def test_sync_exit_code_reflects_failed_batches(self) -> None:
+        import unittest.mock
+
+        class FakeClient:
+            summary: dict = {}
+
+            def __init__(self, *_args, **_kwargs) -> None:
+                pass
+
+            def sync(self, **_kwargs) -> dict:
+                return dict(self.summary)
+
+            def close(self) -> None:
+                pass
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            argv = [
+                "sync",
+                "--server",
+                self.server,
+                "--db",
+                str(root / "crawler.sqlite"),
+                "--data-dir",
+                str(root / "data"),
+            ]
+            env = {"USTC_CRAWLER_INGESTION_SECRET": self.ingestion_secret}
+            with (
+                unittest.mock.patch.dict(os.environ, env),
+                unittest.mock.patch.object(cli, "IngestionSyncClient", FakeClient),
+            ):
+                FakeClient.summary = {"failed": 0}
+                self.assertEqual(main(argv), 0)
+                FakeClient.summary = {"failed": 2}
+                self.assertEqual(main(argv), 2)
+
+    def test_sync_without_server_exits_cleanly_with_usage_error(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            with self.assertRaises(SystemExit) as raised:
+                main(
+                    [
+                        "sync",
+                        "--db",
+                        str(root / "crawler.sqlite"),
+                        "--data-dir",
+                        str(root / "data"),
+                    ]
+                )
+            self.assertEqual(raised.exception.code, 2)
+
+    def test_crawl_exit_code_reflects_errors(self) -> None:
+        import unittest.mock
+
+        with unittest.mock.patch.object(cli, "run_crawl") as run_crawl:
+            run_crawl.return_value = {"processed": 1, "errors": 0}
+            self.assertEqual(main(["crawl"]), 0)
+            run_crawl.return_value = {"processed": 1, "errors": 3}
+            self.assertEqual(main(["crawl"]), 2)
 
 
 if __name__ == "__main__":

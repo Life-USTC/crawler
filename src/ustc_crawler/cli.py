@@ -91,6 +91,14 @@ def _source_image_caps(config_path: str) -> dict[str, int]:
     }
 
 
+def _failure_exit_code(result: dict) -> int:
+    """Exit code 2 when a command result reports failed/error counts."""
+
+    failed = int(result.get("failed", 0) or 0)
+    errors = int(result.get("errors", 0) or 0)
+    return 2 if failed > 0 or errors > 0 else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="ustc-crawler", description="Crawl public USTC news and unit sites locally"
@@ -270,12 +278,15 @@ def build_parser() -> argparse.ArgumentParser:
         "sync",
         help=(
             "upload persisted publication batches using the machine ingestion secret "
-            "(USTC_CRAWLER_INGESTION_SECRET)"
+            "(USTC_CRAWLER_INGESTION_SECRET); exits 2 when any batch failed"
         ),
         description=(
             "Upload persisted publication batches. Set "
             "USTC_CRAWLER_INGESTION_SECRET in the process environment; "
-            "the secret is never accepted as a command-line argument."
+            "the secret is never accepted as a command-line argument. "
+            "Exit code is 2 when the summary reports failed batches, so "
+            "wrappers must treat 2 (like 124 from timeout) as a non-crash "
+            "stop."
         ),
     )
     _sync_connection_args(sync)
@@ -350,33 +361,35 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _ingestion_server(args: argparse.Namespace) -> str:
+def _ingestion_server(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str:
     if not args.server:
-        raise ValueError("--server is required for ingestion commands")
+        parser.error("--server is required for ingestion commands")
     return args.server
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args = parser.parse_args(argv)
     if args.command == "sync":
-        server = _ingestion_server(args)
+        server = _ingestion_server(parser, args)
         secret = ingestion_secret_from_environment()
         store = Store(args.db, args.data_dir)
         try:
             client = IngestionSyncClient(store.database, args.data_dir, server, secret)
             try:
+                summary = client.sync(
+                    options=SyncOptions(
+                        batch_size=args.batch_size,
+                        max_payload_bytes=args.max_payload_bytes,
+                        max_batches=args.max_batches,
+                        max_retries=args.max_retries,
+                        object_concurrency=args.object_concurrency,
+                        batch_concurrency=args.batch_concurrency,
+                    )
+                )
                 print(
                     json.dumps(
-                        client.sync(
-                            options=SyncOptions(
-                                batch_size=args.batch_size,
-                                max_payload_bytes=args.max_payload_bytes,
-                                max_batches=args.max_batches,
-                                max_retries=args.max_retries,
-                                object_concurrency=args.object_concurrency,
-                                batch_concurrency=args.batch_concurrency,
-                            )
-                        ),
+                        summary,
                         ensure_ascii=False,
                         indent=2,
                     )
@@ -385,7 +398,7 @@ def main(argv: list[str] | None = None) -> int:
                 client.close()
         finally:
             store.close()
-        return 0
+        return _failure_exit_code(summary)
     if args.command == "sync-backfill":
         store = Store(args.db, args.data_dir)
         try:
@@ -478,7 +491,7 @@ def main(argv: list[str] | None = None) -> int:
             print("crawl interrupted by SIGTERM; shutting down", file=sys.stderr)
             return 130
         print(json.dumps(result, ensure_ascii=False, indent=2))
-        return 0
+        return _failure_exit_code(result)
     if args.command == "stats":
         store = Store(args.db, args.data_dir)
         try:
@@ -496,32 +509,34 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "reindex":
         store = Store(args.db, args.data_dir)
         try:
+            result = store.reindex_extractions(
+                set(args.source) or None,
+                _source_image_caps(args.config),
+            )
             print(
                 json.dumps(
-                    store.reindex_extractions(
-                        set(args.source) or None,
-                        _source_image_caps(args.config),
-                    ),
+                    result,
                     ensure_ascii=False,
                     indent=2,
                 )
             )
         finally:
             store.close()
-        return 0
+        return _failure_exit_code(result)
     if args.command == "retext":
         store = Store(args.db, args.data_dir)
         try:
+            result = store.retext_article_bodies(set(args.source) or None)
             print(
                 json.dumps(
-                    store.retext_article_bodies(set(args.source) or None),
+                    result,
                     ensure_ascii=False,
                     indent=2,
                 )
             )
         finally:
             store.close()
-        return 0
+        return _failure_exit_code(result)
     if args.command == "rebuild-bundles":
         store = Store(args.db, args.data_dir)
         try:
