@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-import re
-
 from bs4 import BeautifulSoup
 
-from .base import ArticleFields, SiteAdapter
-
-_ISO_DATE = re.compile(r"(20\d{2})-(\d{2})-(\d{2})")
+from .base import ISO_DATE, ArticleFields, SiteAdapter, iso_date_text
 
 
 class YzAdapter(SiteAdapter):
@@ -27,9 +23,9 @@ class YzAdapter(SiteAdapter):
         published = ""
         provenance = soup.select_one("div.provenance")
         if provenance is not None:
-            match = _ISO_DATE.search(provenance.get_text(" ", strip=True))
+            match = ISO_DATE.search(provenance.get_text(" ", strip=True))
             if match:
-                published = match.group(0)
+                published = iso_date_text(match)
         return ArticleFields(title=title, published_at=published, body_html=str(body))
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import warnings
 from datetime import datetime, timedelta
@@ -14,7 +15,19 @@ from .canonicalize import normalize_url
 from .markdown import html_to_markdown
 from .models import ArticleDocument, ImageRef, PageDocument
 
-warnings.filterwarnings("ignore", category=XMLParsedAsHTMLWarning)
+logger = logging.getLogger(__name__)
+
+
+def _parse_html(html: str) -> BeautifulSoup:
+    """Parse article HTML, muting only BeautifulSoup's XML-as-HTML warning.
+
+    The suppression is scoped to the parse call; installing a process-wide
+    filter at import time would hide the warning for every other consumer
+    of the interpreter as well.
+    """
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", XMLParsedAsHTMLWarning)
+        return BeautifulSoup(html, "html.parser")
 
 DATE_PATTERNS = (
     re.compile(
@@ -345,7 +358,7 @@ _BLOCK_TAGS = (
     "address", "article", "aside", "blockquote", "dd", "details", "div", "dl",
     "dt", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4",
     "h5", "h6", "header", "hr", "li", "main", "nav", "ol", "p", "pre",
-    "section", "table", "ul",
+    "section", "table", "tr", "ul",
 )
 
 
@@ -354,10 +367,20 @@ def _block_text(root: Tag) -> str:
 
     ``get_text("\\n")`` explodes Word-exported pages that wrap each text run
     in its own inline ``<span>``; joining at block level keeps paragraphs and
-    phone numbers on one line.
+    phone numbers on one line.  Table rows (``tr``) count as block boundaries
+    and their cells are padded below so adjacent ``td``/``th`` text does not
+    glue together.
+
+    This function mutates ``root`` in place (``br`` elements are replaced by
+    newlines and cells gain a padding space).  Callers that still need the
+    original markup must serialize it before calling, as ``extract_page``
+    does for ``body_html``.
     """
     for br in root.find_all("br"):
         br.replace_with("\n")
+    for cell in root.find_all(["td", "th"]):
+        # Separate adjacent cells when a row is flattened with get_text("").
+        cell.append(" ")
     lines: list[str] = []
     for node in root.find_all(_BLOCK_TAGS):
         if node.find(_BLOCK_TAGS):
@@ -377,9 +400,11 @@ def _jsonld_values(soup: BeautifulSoup) -> list[dict[str, Any]]:
         except (json.JSONDecodeError, TypeError):
             continue
         values = parsed if isinstance(parsed, list) else [parsed]
-        for item in values:
+        queue = list(values)
+        while queue:
+            item = queue.pop(0)
             if isinstance(item, dict) and isinstance(item.get("@graph"), list):
-                values.extend(x for x in item["@graph"] if isinstance(x, dict))
+                queue.extend(x for x in item["@graph"] if isinstance(x, dict))
             elif isinstance(item, dict):
                 result.append(item)
     return result
@@ -570,7 +595,7 @@ def _trailing_publication_signature(body_text: str) -> str:
 
     # 6. Source: 来源：XXX (skip ``素材来源`` and ``文章来源``; prefer the last source)
     for match in re.finditer(
-        rf"(?<![素材文章])来源\s*[:：]\s*([^{stop}\d]+)(?=(?:{label_stop})|$|[{stop}])",
+        rf"(?<!素材)(?<!文章)来源\s*[:：]\s*([^{stop}\d]+)(?=(?:{label_stop})|$|[{stop}])",
         tail,
     ):
         source = _clean_signature_value(match.group(1))
@@ -998,7 +1023,7 @@ def _visual_sitebuilder_player_urls(soup: BeautifulSoup, page_url: str) -> tuple
 def extract_page(
     url: str, html: str, content_type: str = "text/html", source_id: str = ""
 ) -> PageDocument:
-    soup = BeautifulSoup(html, "html.parser")
+    soup = _parse_html(html)
     canonical = _first_meta(soup, "og:url")
     canonical = normalize_url(canonical, url) if canonical else normalize_url(url)
     link = soup.find("link", rel=lambda value: value and "canonical" in value)
@@ -1290,7 +1315,7 @@ def extract_page(
             summary=summary,
             body_html=body_html,
             body_text=body_text,
-            body_markdown=html_to_markdown(body_html),
+            body_markdown=html_to_markdown(body_html, base_url=url),
             extraction_method="jsonld+meta+heuristic",
             source_page_url=url,
             raw_metadata={"jsonld": metadata},
@@ -1301,21 +1326,28 @@ def extract_page(
         try:
             fields = adapter.extract(url, html)
         except Exception:
+            # A broken adapter must not lose the page: keep the generic
+            # result, but make the failure visible in logs and raw_metadata.
+            logger.warning("adapter %s failed on %s", adapter.name, url, exc_info=True)
             fields = None
+            if article is not None:
+                article.raw_metadata["adapter_error"] = adapter.name
         if fields is not None and fields.title.strip():
-            body_text = _block_text(BeautifulSoup(fields.body_html, "html.parser"))
+            body_text = _block_text(_parse_html(fields.body_html))
             article = ArticleDocument(
                 url=canonical or url,
                 source_id=source_id,
                 title=fields.title,
-                author=fields.author,
-                published_at=fields.published_at,
+                # Fields an adapter leaves empty fall back to the generic
+                # jsonld/meta extraction instead of being wiped out.
+                author=fields.author or author,
+                published_at=fields.published_at or published,
                 updated_at=updated,
-                category=fields.category,
-                summary=fields.summary,
+                category=fields.category or category,
+                summary=fields.summary or summary,
                 body_html=fields.body_html,
                 body_text=body_text,
-                body_markdown=html_to_markdown(fields.body_html),
+                body_markdown=html_to_markdown(fields.body_html, base_url=url),
                 extraction_method=f"adapter:{adapter.name}",
                 source_page_url=url,
                 raw_metadata={"jsonld": metadata},

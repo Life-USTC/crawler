@@ -372,6 +372,73 @@ class DashboardTests(unittest.TestCase):
         )
         self.assertEqual(rendered, "<p>keep me</p>")
 
+    def test_sanitizer_unwraps_unsafe_href_schemes(self) -> None:
+        rendered = _safe_article_html(
+            {
+                "url": "https://news.example.test/article/1",
+                "body_html": (
+                    "<p><a href='javascript:alert(1)'>点击</a>"
+                    "<a href='data:text/html,<script>1</script>'>下载</a></p>"
+                ),
+                "images": [],
+            }
+        )
+        self.assertNotIn("javascript:", rendered)
+        self.assertNotIn("data:text/html", rendered)
+        self.assertNotIn("<a", rendered)
+        self.assertIn("点击", rendered)
+        self.assertIn("下载", rendered)
+
+    def test_sanitizer_strips_event_handler_attributes(self) -> None:
+        rendered = _safe_article_html(
+            {
+                "url": "https://news.example.test/article/1",
+                "body_html": "<p onclick='evil()' onmouseover='evil()'>内容</p>",
+                "images": [],
+            }
+        )
+        self.assertNotIn("onclick", rendered)
+        self.assertNotIn("onmouseover", rendered)
+        self.assertIn("内容", rendered)
+
+    def test_sanitizer_drops_image_without_local_copy(self) -> None:
+        rendered = _safe_article_html(
+            {
+                "url": "https://news.example.test/article/1",
+                "body_html": "<p>前文<img src='https://evil.example.test/x.png'>后文</p>",
+                "images": [],
+            }
+        )
+        self.assertNotIn("<img", rendered)
+        self.assertIn("前文", rendered)
+        self.assertIn("后文", rendered)
+
+    def test_sanitizer_unwraps_non_whitelist_tags(self) -> None:
+        rendered = _safe_article_html(
+            {
+                "url": "https://news.example.test/article/1",
+                "body_html": "<p><marquee>滚动</marquee><font color='red'>红字</font></p>",
+                "images": [],
+            }
+        )
+        self.assertNotIn("marquee", rendered)
+        self.assertNotIn("font", rendered)
+        self.assertIn("滚动", rendered)
+        self.assertIn("红字", rendered)
+
+    def test_sanitizer_forces_anchor_target_and_rel(self) -> None:
+        rendered = _safe_article_html(
+            {
+                "url": "https://news.example.test/article/1",
+                "body_html": "<p><a href='/info/2/3.htm' rel='opener'>链接</a></p>",
+                "images": [],
+            }
+        )
+        self.assertIn('href="https://news.example.test/info/2/3.htm"', rendered)
+        self.assertIn('target="_blank"', rendered)
+        self.assertIn('rel="noreferrer"', rendered)
+        self.assertNotIn("opener", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -23,6 +23,18 @@ class YzAdapterTests(unittest.TestCase):
             )
         )
 
+    def test_single_digit_month_is_zero_padded(self) -> None:
+        html = (
+            "<html><body><p class='zkd-title'>招生通知标题</p>"
+            "<div class='provenance'>发布时间：2026-3-5</div>"
+            "<div class='txt-new'><p>正文内容</p></div>"
+            "</body></html>"
+        )
+        fields = YzAdapter().extract("https://yz.ustc.edu.cn/article/2827/181", html)
+        self.assertIsNotNone(fields)
+        assert fields is not None
+        self.assertEqual(fields.published_at, "2026-03-05")
+
 
 if __name__ == "__main__":
     unittest.main()

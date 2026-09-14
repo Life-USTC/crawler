@@ -418,6 +418,54 @@ class ExtractTests(unittest.TestCase):
         )
         self.assertIn("62283555-800或802。", page.article.body_text)
 
+    def test_body_markdown_absolutizes_relative_image_urls(self) -> None:
+        html = """
+        <html><head><title>校园活动图片报道</title></head><body>
+        <div class='v_news_content'>
+        <p>学校举办年度校园开放日活动，吸引了众多师生和访客前来参观交流。</p>
+        <p><img src='/__local/open-day.jpg' alt='开放日现场'></p>
+        </div></body></html>
+        """
+        page = extract_page("https://www.ustc.edu.cn/info/1055/1234.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertIn(
+            "![开放日现场](https://www.ustc.edu.cn/__local/open-day.jpg)",
+            page.article.body_markdown,
+        )
+
+    def test_table_cells_and_rows_are_separated_in_body_text(self) -> None:
+        html = """
+        <html><head><title>奖学金评选结果公示</title></head><body>
+        <div class='v_news_content'>
+        <p>现将本年度奖学金评选结果公示如下，公示期为一周，如有异议请联系教务办公室。</p>
+        <table><tr><th>项目</th><th>获奖人</th></tr>
+        <tr><td>姓名</td><td>张三</td></tr>
+        <tr><td>学号</td><td>PB20000001</td></tr></table>
+        </div></body></html>
+        """
+        page = extract_page("https://www.ustc.edu.cn/info/1055/1234.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        lines = page.article.body_text.split("\n")
+        self.assertIn("项目 获奖人", lines)
+        self.assertIn("姓名 张三", lines)
+        self.assertIn("学号 PB20000001", lines)
+
+    def test_module_import_does_not_install_global_warning_filter(self) -> None:
+        import importlib
+        import warnings
+
+        import ustc_crawler.extract as extract_module
+
+        before = list(warnings.filters)
+        importlib.reload(extract_module)
+        self.assertEqual(
+            before,
+            warnings.filters,
+            "extract must suppress XMLParsedAsHTMLWarning locally, not globally",
+        )
+
     def test_nested_footer_class_is_removed_from_article_container(self) -> None:
         html = """
         <html><head><title>研究生会活动报道</title></head><body>

@@ -34,6 +34,27 @@ class HtmlToMarkdownTests(unittest.TestCase):
     def test_empty_input(self) -> None:
         self.assertEqual(html_to_markdown(""), "")
 
+    def test_relative_image_src_is_absolutized_with_base_url(self) -> None:
+        html = "<div><p><img src='/__local/a.jpg' alt='图'></p></div>"
+        md = html_to_markdown(html, base_url="https://www.ustc.edu.cn/info/1/2.htm")
+        self.assertIn("![图](https://www.ustc.edu.cn/__local/a.jpg)", md)
+
+    def test_lazy_data_src_is_absolutized_with_base_url(self) -> None:
+        html = "<div><p><img data-src='/__local/b.jpg' alt='懒加载'></p></div>"
+        md = html_to_markdown(html, base_url="https://www.ustc.edu.cn/info/1/2.htm")
+        self.assertIn("![懒加载](https://www.ustc.edu.cn/__local/b.jpg)", md)
+
+    def test_srcset_candidates_are_absolutized_with_base_url(self) -> None:
+        html = "<div><p><img src='/a.jpg' srcset='/a.jpg 1x, /a@2x.jpg 2x' alt='图'></p></div>"
+        md = html_to_markdown(html, base_url="https://www.ustc.edu.cn/info/1/2.htm")
+        self.assertIn("https://www.ustc.edu.cn/a.jpg", md)
+        self.assertNotIn("srcset='/", md)
+
+    def test_relative_src_kept_without_base_url(self) -> None:
+        html = "<div><p><img src='/__local/a.jpg' alt='图'></p></div>"
+        md = html_to_markdown(html)
+        self.assertIn("![图](/__local/a.jpg)", md)
+
 
 if __name__ == "__main__":
     unittest.main()
