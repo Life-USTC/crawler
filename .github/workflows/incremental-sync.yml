@@ -13,6 +13,10 @@ on:
         description: "Recompute article body_text from stored body_html and enqueue changed articles before sync"
         type: boolean
         default: false
+      requeue_failed:
+        description: "Release events from locally failed batches (e.g. immutable_object_changed) back to the pending outbox before sync"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -30,7 +34,7 @@ env:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ (inputs.reindex || inputs.retext) && 240 || 45 }}
+    timeout-minutes: ${{ (inputs.reindex || inputs.retext || inputs.requeue_failed) && 240 || 45 }}
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.0.1
@@ -77,12 +81,16 @@ jobs:
           uv run ustc-crawler retext 2>&1 | tee retext.log
           uv run ustc-crawler sync-backfill 2>&1 | tee backfill.log
 
+      - name: Requeue locally failed batches
+        if: inputs.requeue_failed
+        run: uv run ustc-crawler sync-requeue-failed 2>&1 | tee requeue.log
+
       - name: Crawl and sync
         env:
           USTC_CRAWLER_INGESTION_SECRET: ${{ secrets.USTC_CRAWLER_INGESTION_SECRET }}
           # End sync on its own before the job timeout so the always() state
           # save below runs against a quiet database instead of a live writer.
-          SYNC_BUDGET_MINUTES: ${{ (inputs.reindex || inputs.retext) && 190 || 30 }}
+          SYNC_BUDGET_MINUTES: ${{ (inputs.reindex || inputs.retext || inputs.requeue_failed) && 190 || 30 }}
         run: |
           uv run ustc-crawler db-upgrade 2>&1 | tee db-upgrade.log
           uv run ustc-crawler crawl --incremental 2>&1 | tee crawl.log
