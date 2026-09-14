@@ -45,10 +45,10 @@ class Frontier(Base):
         ),
         Index(
             "frontier_pending_idx",
-            "status",
             text("priority DESC"),
             "depth",
             "discovered_at",
+            sqlite_where=text("status = 'pending'"),
         ),
     )
 
@@ -81,6 +81,7 @@ class Page(Base):
     __table_args__ = (
         Index("pages_source_idx", "source_id", "fetched_at"),
         Index("pages_value_idx", text("value_score DESC"), "fetched_at"),
+        Index("pages_sha256_idx", "sha256"),
     )
 
 
@@ -146,6 +147,8 @@ class Media(Base):
     error: Mapped[str | None] = mapped_column(Text)
     fetched_at: Mapped[str | None] = mapped_column(Text)
 
+    __table_args__ = (Index("media_article_url_idx", "article_url"),)
+
 
 class ArticleMedia(Base):
     __tablename__ = "article_media"
@@ -157,6 +160,8 @@ class ArticleMedia(Base):
     title: Mapped[str | None] = mapped_column(Text)
     caption: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (Index("article_media_image_idx", "image_url"),)
 
 
 class Asset(Base):
@@ -200,6 +205,8 @@ class Failure(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
     last_seen: Mapped[str] = mapped_column(Text, nullable=False)
 
+    __table_args__ = (Index("failures_url_idx", "url", unique=True),)
+
 
 class SyncRun(Base):
     __tablename__ = "sync_runs"
@@ -237,6 +244,8 @@ class SyncBatch(Base):
     last_error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[str] = mapped_column(Text, nullable=False)
+
+    __table_args__ = (Index("sync_batches_status_idx", "status", "created_at"),)
 
 
 class SyncOutbox(Base):

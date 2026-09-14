@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from datetime import date, timedelta
 from pathlib import Path
@@ -11,7 +12,7 @@ from ustc_crawler.crawl import (
     _is_html,
     _parse_since,
 )
-from ustc_crawler.models import ArticleDocument, FetchResponse, PageDocument, SourceConfig
+from ustc_crawler.models import ArticleDocument, FetchResponse, ImageRef, PageDocument, SourceConfig
 from ustc_crawler.store import Store
 
 
@@ -19,6 +20,16 @@ class SinceHelpersTests(unittest.TestCase):
     def test_parse_since_rejects_invalid_date(self) -> None:
         self.assertIsNone(_parse_since("not-a-date"))
         self.assertIsNone(_parse_since(""))
+
+    def test_parse_since_keeps_explicit_timezone(self) -> None:
+        parsed = _parse_since("2026-01-01T00:00:00+05:00")
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed.utcoffset(), timedelta(hours=5))
+
+    def test_parse_since_fills_local_timezone_only_when_naive(self) -> None:
+        parsed = _parse_since("2026-01-01")
+        self.assertIsNotNone(parsed)
+        self.assertIsNotNone(parsed.tzinfo)
 
     def test_is_after_since_handles_missing_or_invalid_dates(self) -> None:
         since = _parse_since("2025-01-01")
@@ -558,6 +569,366 @@ class CrawlSinceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(article["published_at"], "2026-08-30")
         self.assertEqual(page["published_at"], "2026-08-30")
         store.close()
+
+
+    async def test_process_resolves_duplicate_digest_once_per_page(self) -> None:
+        html = """<html><body><article>
+          <h1>查重计数新闻</h1>
+          <p>这是足够长的正文内容，用来验证每页只进行一次内容查重查询。</p>
+          <p>第二段正文确保页面得分可以达到索引阈值。</p>
+        </article></body></html>"""
+        crawler = self._crawler()
+
+        async def fake_fetch(url: str, *, max_bytes: int | None = None) -> FetchResponse:
+            return FetchResponse(
+                requested_url=url,
+                final_url=url,
+                status=200,
+                content_type="text/html",
+                headers={"content-type": "text/html"},
+                body=html.encode("utf-8"),
+            )
+
+        crawler.fetcher.fetch = fake_fetch
+        calls = 0
+        original = crawler.store.duplicate_page_url
+
+        def counting(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            return original(*args, **kwargs)
+
+        crawler.store.duplicate_page_url = counting
+        await crawler._process("https://news.example.test/article/dup-count", "news", 0, "")
+        await crawler.close()
+
+        self.assertEqual(calls, 1)
+
+    async def test_new_article_bundle_is_written_once(self) -> None:
+        html = """<html><body><article>
+          <h1>单次落盘新闻</h1>
+          <p>这是足够长的正文内容，用来验证新文章的本地归档 bundle 只写入一次。</p>
+          <p>第二段正文确保页面得分可以达到索引阈值。</p>
+        </article></body></html>"""
+        crawler = self._crawler()
+
+        async def fake_fetch(url: str, *, max_bytes: int | None = None) -> FetchResponse:
+            return FetchResponse(
+                requested_url=url,
+                final_url=url,
+                status=200,
+                content_type="text/html",
+                headers={"content-type": "text/html"},
+                body=html.encode("utf-8"),
+            )
+
+        crawler.fetcher.fetch = fake_fetch
+        writes = 0
+        original = crawler.store.write_article_bundle
+
+        def counting(article, content_hash=None):
+            nonlocal writes
+            writes += 1
+            return original(article, content_hash)
+
+        crawler.store.write_article_bundle = counting
+        await crawler._process("https://news.example.test/article/once", "news", 0, "")
+        await crawler.close()
+
+        store = Store(self.db_path, self.data_dir)
+        article = store_core(store).execute(
+            "SELECT url FROM articles WHERE url=?",
+            ("https://news.example.test/article/once",),
+        ).fetchone()
+        store.close()
+
+        self.assertIsNotNone(article)
+        self.assertEqual(writes, 1)
+
+    async def test_download_images_skips_already_downloaded_media(self) -> None:
+        url = "https://news.example.test/article/shared-image"
+        image_url = "https://news.example.test/img/shared.jpg"
+        store = Store(self.db_path, self.data_dir)
+        store.save_article(
+            ArticleDocument(
+                url="https://news.example.test/article/original",
+                source_id="news",
+                title="原始文章",
+                author="",
+                published_at="",
+                updated_at="",
+                category="",
+                summary="",
+                body_html="<p>正文</p>",
+                body_text="正文",
+                body_markdown="正文",
+                extraction_method="test",
+                source_page_url="https://news.example.test/article/original",
+            )
+        )
+        store.save_media(
+            ImageRef(url=image_url, alt="", title="", caption=""),
+            b"shared-image-bytes",
+            "image/jpeg",
+            "https://news.example.test/article/original",
+            "",
+        )
+        store.close()
+
+        html = f"""<html><body><article>
+          <h1>共享图片新闻</h1>
+          <p>这是足够长的正文内容，用来验证已经下载过的共享图片不会被重复请求。</p>
+          <p>第二段正文确保页面得分可以达到索引阈值。</p>
+          <img src="{image_url}" />
+        </article></body></html>"""
+        crawler = self._crawler()
+        fetched: list[str] = []
+
+        async def fake_fetch(requested: str, *, max_bytes: int | None = None) -> FetchResponse:
+            fetched.append(requested)
+            return FetchResponse(
+                requested_url=requested,
+                final_url=requested,
+                status=200,
+                content_type="text/html",
+                headers={"content-type": "text/html"},
+                body=html.encode("utf-8"),
+            )
+
+        crawler.fetcher.fetch = fake_fetch
+        await crawler._process(url, "news", 1, "")
+        await crawler.close()
+
+        store = Store(self.db_path, self.data_dir)
+        link = store_core(store).execute(
+            "SELECT local_path FROM article_media WHERE article_url=? AND image_url=?",
+            (url, image_url),
+        ).fetchone()
+        store.close()
+
+        self.assertNotIn(image_url, fetched)
+        self.assertIsNotNone(link)
+        self.assertTrue(link["local_path"])
+
+    async def test_download_images_trusts_ok_record_with_unknown_size(self) -> None:
+        # Legacy rows may carry size=0: an intact file behind such a record is
+        # linked without a refetch, matching media._job_priority semantics.
+        url = "https://news.example.test/article/legacy-image"
+        image_url = "https://news.example.test/img/legacy.jpg"
+        store = Store(self.db_path, self.data_dir)
+        store.save_article(
+            ArticleDocument(
+                url="https://news.example.test/article/original",
+                source_id="news",
+                title="原始文章",
+                author="",
+                published_at="",
+                updated_at="",
+                category="",
+                summary="",
+                body_html="<p>正文</p>",
+                body_text="正文",
+                body_markdown="正文",
+                extraction_method="test",
+                source_page_url="https://news.example.test/article/original",
+            )
+        )
+        store.save_media(
+            ImageRef(url=image_url, alt="", title="", caption=""),
+            b"legacy-image-bytes",
+            "image/jpeg",
+            "https://news.example.test/article/original",
+            "",
+        )
+        store_core(store).execute("UPDATE media SET size=0 WHERE url=?", (image_url,))
+        store_core(store).commit()
+        store.close()
+
+        html = f"""<html><body><article>
+          <h1>旧记录图片新闻</h1>
+          <p>这是足够长的正文内容，用来验证 size 未知的旧 ok 记录不会触发重复下载。</p>
+          <p>第二段正文确保页面得分可以达到索引阈值。</p>
+          <img src="{image_url}" />
+        </article></body></html>"""
+        crawler = self._crawler()
+        fetched: list[str] = []
+
+        async def fake_fetch(requested: str, *, max_bytes: int | None = None) -> FetchResponse:
+            fetched.append(requested)
+            return FetchResponse(
+                requested_url=requested,
+                final_url=requested,
+                status=200,
+                content_type="text/html",
+                headers={"content-type": "text/html"},
+                body=html.encode("utf-8"),
+            )
+
+        crawler.fetcher.fetch = fake_fetch
+        await crawler._process(url, "news", 1, "")
+        await crawler.close()
+
+        self.assertNotIn(image_url, fetched)
+
+    async def test_incremental_article_page_still_enqueues_document_attachments(self) -> None:
+        url = "https://news.example.test/article/with-attachment"
+        attachment = "https://news.example.test/files/notice.pdf"
+        archive_link = "https://news.example.test/archive/old.htm"
+        html = f"""<html><body><article>
+          <h1>带附件的新文章</h1>
+          <p>这是足够长的正文内容，用来验证增量模式下新文章的附件出链仍然会被抓取。</p>
+          <p>第二段正文确保页面得分可以达到索引阈值。</p>
+          <a href="{attachment}">附件</a>
+          <a href="{archive_link}">历史归档</a>
+        </article></body></html>"""
+        crawler = self._crawler()
+        crawler.options.incremental = True
+        crawler.source_since = {"news": _parse_since("2020-01-01")}
+
+        async def fake_fetch(requested: str, *, max_bytes: int | None = None) -> FetchResponse:
+            return FetchResponse(
+                requested_url=requested,
+                final_url=requested,
+                status=200,
+                content_type="text/html",
+                headers={"content-type": "text/html"},
+                body=html.encode("utf-8"),
+            )
+
+        crawler.fetcher.fetch = fake_fetch
+        await crawler._process(url, "news", 1, "")
+        await crawler.close()
+
+        store = Store(self.db_path, self.data_dir)
+        rows = {
+            row["url"]: row["status"]
+            for row in store_core(store).execute(
+                "SELECT url, status FROM frontier WHERE url IN (?, ?)",
+                (attachment, archive_link),
+            ).fetchall()
+        }
+        store.close()
+
+        self.assertEqual(rows.get(attachment), "pending")
+        self.assertIsNone(rows.get(archive_link))
+
+
+class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        root = Path(self.temp_dir.name)
+        self.data_dir = root / "data"
+        self.db_path = self.data_dir / "crawler.sqlite"
+        store = Store(self.db_path, self.data_dir)
+        store.add_source(
+            SourceConfig(
+                id="news",
+                name="测试新闻",
+                organization_level="university",
+                seed_urls=["https://news.example.test/"],
+                allowed_hosts=["news.example.test"],
+            )
+        )
+        store.close()
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def _crawler(self, concurrency: int = 4) -> AsyncCrawler:
+        crawler = AsyncCrawler(
+            CrawlOptions(
+                db_path=str(self.db_path),
+                data_dir=str(self.data_dir),
+                concurrency=concurrency,
+            )
+        )
+        crawler.prepare = lambda: None  # keep the worker lifecycle tests offline
+        crawler.store.start_sync_run(crawler.sync_run_id, mode="full")
+        crawler.sync_run_started = True
+
+        async def _no_seed() -> None:
+            return None
+
+        crawler._seed_queue = _no_seed
+        return crawler
+
+    async def test_workers_process_queue_concurrently(self) -> None:
+        crawler = self._crawler(concurrency=4)
+        in_flight = 0
+        peak = 0
+        done: list[str] = []
+
+        async def fake_process(url: str, source_id: str, depth: int, parent: str) -> None:
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0.05)
+            done.append(url)
+            in_flight -= 1
+
+        crawler._process = fake_process
+        for index in range(8):
+            await crawler.queue.put((0, index + 1, f"https://news.example.test/{index}", "news", 0, ""))
+
+        await crawler.run()
+        await crawler.close()
+
+        self.assertEqual(len(done), 8)
+        self.assertGreaterEqual(peak, 2)
+
+    async def test_workers_survive_idle_gap_for_late_enqueued_items(self) -> None:
+        crawler = self._crawler(concurrency=4)
+        in_flight = 0
+        peak = 0
+
+        async def fake_process(url: str, source_id: str, depth: int, parent: str) -> None:
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            if url.endswith("/first"):
+                # A slow page that discovers new links after the old one
+                # second idle timeout: sibling workers must still be alive
+                # to pick the late items up concurrently.
+                await asyncio.sleep(1.3)
+                for index in range(3):
+                    await crawler.queue.put(
+                        (0, 10 + index, f"https://news.example.test/late{index}", "news", 0, "")
+                    )
+            else:
+                await asyncio.sleep(0.2)
+            in_flight -= 1
+
+        crawler._process = fake_process
+        await crawler.queue.put((0, 1, "https://news.example.test/first", "news", 0, ""))
+
+        await crawler.run()
+        await crawler.close()
+
+        self.assertGreaterEqual(peak, 2)
+
+    async def test_cancel_marks_sync_run_interrupted(self) -> None:
+        crawler = self._crawler(concurrency=1)
+
+        async def blocking_process(url: str, source_id: str, depth: int, parent: str) -> None:
+            await asyncio.sleep(30)
+
+        crawler._process = blocking_process
+        await crawler.queue.put((0, 1, "https://news.example.test/stuck", "news", 0, ""))
+
+        task = asyncio.create_task(crawler.run())
+        await asyncio.sleep(0.1)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
+        store = Store(self.db_path, self.data_dir)
+        row = store_core(store).execute(
+            "SELECT status FROM sync_runs WHERE id=?", (crawler.sync_run_id,)
+        ).fetchone()
+        store.close()
+        await crawler.close()
+
+        self.assertEqual(row["status"], "interrupted")
 
 
 if __name__ == "__main__":

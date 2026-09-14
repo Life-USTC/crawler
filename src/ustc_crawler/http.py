@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import time
 from collections import defaultdict
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from urllib.parse import urlsplit
 
 import httpx
@@ -14,6 +16,24 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
+
+
+def _retry_after_seconds(value: str | None) -> float:
+    """Parse a Retry-After header (delay-seconds or HTTP-date), clamped to 30s."""
+
+    if not value:
+        return 0.0
+    try:
+        return min(max(float(value), 0.0), 30.0)
+    except ValueError:
+        pass
+    try:
+        date = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if date.tzinfo is None:
+        date = date.replace(tzinfo=UTC)
+    return min(max((date - datetime.now(UTC)).total_seconds(), 0.0), 30.0)
 
 
 class HostRateLimiter:
@@ -43,6 +63,7 @@ class Fetcher:
         user_agent: str = USER_AGENT,
         ignore_robots: bool = False,
         max_connections: int = 64,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         connection_limit = max(1, max_connections)
         limits = httpx.Limits(
@@ -53,6 +74,7 @@ class Fetcher:
             follow_redirects=True,
             timeout=httpx.Timeout(timeout, connect=min(timeout, 15.0)),
             limits=limits,
+            transport=transport,
             headers={
                 "User-Agent": user_agent,
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -89,11 +111,7 @@ class Fetcher:
                 async with self.client.stream("GET", url) as response:
                     content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
                     if response.status_code in {429, 500, 502, 503, 504} and attempt < self.retries:
-                        retry_after = response.headers.get("retry-after")
-                        try:
-                            wait_for = min(float(retry_after or 0), 30.0)
-                        except ValueError:
-                            wait_for = 0.0
+                        wait_for = _retry_after_seconds(response.headers.get("retry-after"))
                         await asyncio.sleep(wait_for or 2**attempt)
                         continue
                     chunks: list[bytes] = []

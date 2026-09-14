@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import os
+import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -36,6 +38,25 @@ def sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def _atomic_write_bytes(target: Path, body: bytes) -> None:
+    """Write bytes to a temp file, fsync, then atomically replace the target.
+
+    A killed process must never leave a half-written file at the final path;
+    torn files previously poisoned the content-addressed media/page stores.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(body)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def article_bundle_key(url: str) -> str:
     """Return the stable archive identity for one article URL."""
     return sha256_bytes(url.encode("utf-8", errors="replace"))
@@ -47,6 +68,12 @@ def article_bundle_path(data_dir: str | Path, url: str, suffix: str = ".json") -
 
 def utc_now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+# A frontier row that failed transiently (503, robots outage, body limit on a
+# restarted server) used to stay 'error' forever.  Rediscovery revives it a
+# bounded number of times before the failure is treated as permanent.
+MAX_FRONTIER_ATTEMPTS = 5
 
 
 @dataclass(slots=True)
@@ -143,15 +170,18 @@ class Store:
             (url, source_id, depth, discovered_from, utc_now(), priority),
         )
         inserted = cursor.rowcount > 0
-        if not inserted and revive_current:
+        if not inserted:
             revived = self._core.execute(
                 """UPDATE frontier SET source_id=?,depth=?,discovered_from=?,status='pending',
                    last_error='',priority=MAX(priority, ?)
                    WHERE url=? AND (
-                       status='done'
-                       OR (status='filtered' AND last_error LIKE '%incremental cutoff%')
+                       status='error' AND attempts < ?
+                       OR (? AND (
+                           status='done'
+                           OR (status='filtered' AND last_error LIKE '%incremental cutoff%')
+                       ))
                    )""",
-                (source_id, depth, discovered_from, priority, url),
+                (source_id, depth, discovered_from, priority, url, MAX_FRONTIER_ATTEMPTS, revive_current),
             )
             inserted = revived.rowcount > 0
         if not inserted:
@@ -245,6 +275,7 @@ class Store:
                 "source_page_url": row.source_page_url or "",
                 "local_path": row.local_path or "",
                 "status": row.status,
+                "size": row.size,
             }
 
     def start_sync_run(
@@ -431,23 +462,33 @@ class Store:
         self._core.commit()
 
     def save_page(
-        self, page: PageDocument, source_id: str, depth: int, discovered_from: str = ""
+        self,
+        page: PageDocument,
+        source_id: str,
+        depth: int,
+        discovered_from: str = "",
+        *,
+        digest: str | None = None,
+        duplicate_resolved: bool = False,
     ) -> Path | None:
         raw_path: Path | None = None
-        digest = ""
         if page.html:
             content = page.raw_body or page.html.encode("utf-8", errors="replace")
-            digest = sha256_bytes(content)
+            if digest is None:
+                digest = sha256_bytes(content)
             raw_path = self.data_dir / "pages" / f"{digest}.html"
             if not raw_path.exists():
-                raw_path.write_bytes(content)
-            duplicate = self.duplicate_page_url(
-                digest,
-                page.requested_url,
-                prefer_article=page.article is not None,
-            )
-            if duplicate and not page.duplicate_of:
-                page.duplicate_of = duplicate
+                _atomic_write_bytes(raw_path, content)
+            if not duplicate_resolved:
+                duplicate = self.duplicate_page_url(
+                    digest,
+                    page.requested_url,
+                    prefer_article=page.article is not None,
+                )
+                if duplicate and not page.duplicate_of:
+                    page.duplicate_of = duplicate
+        elif digest is None:
+            digest = ""
         if page.status == 200 and page.html and page.article is None:
             old_urls = {page.requested_url, page.final_url, page.canonical_url}
             for old_url in filter(None, old_urls):
@@ -466,7 +507,9 @@ class Store:
                blocked_by_robots=excluded.blocked_by_robots,page_kind=excluded.page_kind,
                access_mode=excluded.access_mode,value_score=excluded.value_score,
                value_tier=excluded.value_tier,score_reasons=excluded.score_reasons,
-               published_at=excluded.published_at,duplicate_of=excluded.duplicate_of""",
+               published_at=CASE WHEN excluded.published_at IS NOT NULL AND excluded.published_at != ''
+                            THEN excluded.published_at ELSE pages.published_at END,
+               duplicate_of=excluded.duplicate_of""",
             (
                 page.requested_url,
                 source_id,
@@ -540,7 +583,7 @@ class Store:
             local_path = self.data_dir / "assets" / digest[:2] / f"{digest}{extension}"
             local_path.parent.mkdir(parents=True, exist_ok=True)
             if not local_path.exists():
-                local_path.write_bytes(body)
+                _atomic_write_bytes(local_path, body)
         self._core.execute(
             """INSERT INTO assets(url,source_url,local_path,mime_type,sha256,size,status,error,fetched_at,
                page_kind,access_mode,value_score,score_reasons)
@@ -640,7 +683,7 @@ class Store:
             and str(page["page_kind"] or "unknown") in {"news_article", "article"}
         )
 
-    def save_article(self, article: ArticleDocument) -> str:
+    def save_article(self, article: ArticleDocument, *, write_bundle: bool = True) -> str:
         # Reindexing can stage Core deletes before replacing the ORM row.  End
         # that Core transaction before the single pooled engine connection is
         # borrowed by the ORM session.
@@ -659,7 +702,8 @@ class Store:
         article.classifier_version = CLASSIFIER_VERSION
         with self.database.session_factory.begin() as session:
             self._save_article_record(session, article, content_hash, now)
-        self.write_article_bundle(article, content_hash)
+        if write_bundle:
+            self.write_article_bundle(article, content_hash)
         return content_hash
 
     @staticmethod
@@ -1066,10 +1110,11 @@ class Store:
                 for image in article.images
             ],
         }
-        (base.with_suffix(".json")).write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        _atomic_write_bytes(
+            base.with_suffix(".json"),
+            json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8"),
         )
-        (base.with_suffix(".html")).write_text(article.body_html, encoding="utf-8")
+        _atomic_write_bytes(base.with_suffix(".html"), article.body_html.encode("utf-8"))
 
     def rebuild_article_bundles(self) -> dict[str, int]:
         """Rebuild every URL-specific JSON/HTML article archive from SQLite."""
@@ -1136,13 +1181,18 @@ class Store:
             local_path = self.data_dir / "media" / digest[:2] / f"{digest}{extension}"
             local_path.parent.mkdir(parents=True, exist_ok=True)
             if not local_path.exists():
-                local_path.write_bytes(body)
+                _atomic_write_bytes(local_path, body)
         self._core.execute(
             """INSERT INTO media(url,article_url,source_page_url,local_path,mime_type,sha256,size,alt,title,caption,status,error,fetched_at)
                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(url) DO UPDATE SET article_url=excluded.article_url,source_page_url=excluded.source_page_url,
-               local_path=excluded.local_path,mime_type=excluded.mime_type,sha256=excluded.sha256,size=excluded.size,
-               alt=excluded.alt,title=excluded.title,caption=excluded.caption,status=excluded.status,error=excluded.error,
+               local_path=CASE WHEN excluded.local_path != '' THEN excluded.local_path ELSE media.local_path END,
+               mime_type=CASE WHEN excluded.status != 'error' THEN excluded.mime_type ELSE media.mime_type END,
+               sha256=CASE WHEN excluded.sha256 != '' THEN excluded.sha256 ELSE media.sha256 END,
+               size=CASE WHEN excluded.status != 'error' THEN excluded.size ELSE media.size END,
+               alt=excluded.alt,title=excluded.title,caption=excluded.caption,
+               status=CASE WHEN media.status='ok' AND excluded.status='error' THEN media.status ELSE excluded.status END,
+               error=CASE WHEN media.status='ok' AND excluded.status='error' THEN media.error ELSE excluded.error END,
                fetched_at=excluded.fetched_at""",
             (
                 image.url,
@@ -1163,7 +1213,9 @@ class Store:
         self._core.execute(
             """INSERT INTO article_media(article_url,image_url,local_path,alt,title,caption,created_at)
                VALUES(?,?,?,?,?,?,?) ON CONFLICT(article_url,image_url) DO UPDATE SET
-               local_path=excluded.local_path,alt=excluded.alt,title=excluded.title,
+               local_path=CASE WHEN excluded.local_path != '' THEN excluded.local_path
+                          ELSE article_media.local_path END,
+               alt=excluded.alt,title=excluded.title,
                caption=excluded.caption""",
             (
                 article_url,
@@ -1533,8 +1585,13 @@ class Store:
         }
 
     def failure(self, url: str, source_id: str, error: str, status: int | None = None) -> None:
+        # One row per URL keeps the table bounded on hosts with persistent
+        # failures; attempts still records how often the URL has failed.
         self._core.execute(
-            "INSERT INTO failures(url,source_id,error,status,last_seen) VALUES(?,?,?,?,?)",
+            """INSERT INTO failures(url,source_id,error,status,last_seen) VALUES(?,?,?,?,?)
+               ON CONFLICT(url) DO UPDATE SET source_id=excluded.source_id,
+               error=excluded.error,status=excluded.status,
+               attempts=failures.attempts+1,last_seen=excluded.last_seen""",
             (url, source_id, error, status, utc_now()),
         )
         self._core.commit()
@@ -1566,16 +1623,30 @@ class Store:
         target = Path(output)
         target.parent.mkdir(parents=True, exist_ok=True)
         rows = self._core.execute("SELECT * FROM articles ORDER BY published_at DESC, url").fetchall()
+        images_by_article: dict[str, list[dict[str, Any]]] = {}
+        urls = [str(row["url"]) for row in rows]
+        for offset in range(0, len(urls), 500):
+            chunk = urls[offset : offset + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            for image in self._core.execute(
+                f"""SELECT article_url,image_url AS url,local_path,alt,title,caption
+                    FROM article_media WHERE article_url IN ({placeholders})
+                    ORDER BY article_url,image_url""",
+                chunk,
+            ).fetchall():
+                images_by_article.setdefault(str(image["article_url"]), []).append(
+                    {
+                        "url": image["url"],
+                        "local_path": image["local_path"],
+                        "alt": image["alt"],
+                        "title": image["title"],
+                        "caption": image["caption"],
+                    }
+                )
         with target.open("w", encoding="utf-8") as handle:
             for row in rows:
                 item = dict(row)
-                item["images"] = [
-                    dict(image)
-                    for image in self._core.execute(
-                        "SELECT image_url AS url,local_path,alt,title,caption FROM article_media WHERE article_url=? ORDER BY image_url",
-                        (row["url"],),
-                    ).fetchall()
-                ]
+                item["images"] = images_by_article.get(str(row["url"]), [])
                 handle.write(json.dumps(item, ensure_ascii=False) + "\n")
         return target
 
@@ -1587,30 +1658,36 @@ class Store:
         """
         if not source_ids:
             return {}
-        placeholders = ",".join("?" for _ in source_ids)
-        rows = self._core.execute(
-            f"""SELECT source_id, MAX(published_at) AS newest
-                FROM articles
-                WHERE source_id IN ({placeholders}) AND published_at IS NOT NULL AND published_at != ''
-                GROUP BY source_id""",
-            tuple(sorted(source_ids)),
-        ).fetchall()
         result: dict[str, datetime] = {}
         now = datetime.now().astimezone()
-        for row in rows:
-            value = str(row["newest"])
-            try:
-                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-            except ValueError:
-                continue
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=now.tzinfo)
-            # Future-dated articles (parsing artifacts or scheduled posts) must
-            # not push the incremental cutoff past now, or we would skip current
-            # content that should be refreshed.
-            if parsed > now:
-                parsed = now
-            result[str(row["source_id"])] = parsed
+        for source_id in sorted(source_ids):
+            # Published timestamps are ISO strings with mixed UTC offsets, so
+            # a textual MAX() picks the wrong row.  Sample the most recently
+            # seen articles and compare parsed aware datetimes instead.
+            rows = self._core.execute(
+                """SELECT published_at FROM articles
+                   WHERE source_id=? AND published_at IS NOT NULL AND published_at != ''
+                   ORDER BY last_seen DESC LIMIT 50""",
+                (source_id,),
+            ).fetchall()
+            newest: datetime | None = None
+            for row in rows:
+                value = str(row["published_at"])
+                try:
+                    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=now.tzinfo)
+                # Future-dated articles (parsing artifacts or scheduled posts)
+                # must not push the incremental cutoff past now, or we would
+                # skip current content that should be refreshed.
+                if parsed > now:
+                    parsed = now
+                if newest is None or parsed > newest:
+                    newest = parsed
+            if newest is not None:
+                result[source_id] = newest
         return result
 
     def source_report(self, output: str | Path | None = None) -> list[dict[str, Any]]:
@@ -1821,30 +1898,44 @@ class Store:
 
         scanned = 0
         changed = 0
-        query = "SELECT url,body_html,body_text FROM articles"
-        params: tuple[str, ...] = ()
-        if source_ids:
-            placeholders = ",".join("?" for _ in source_ids)
-            query += f" WHERE source_id IN ({placeholders})"
-            params = tuple(sorted(source_ids))
-        for row in self._core.execute(query, params):
-            scanned += 1
-            body_html = str(row["body_html"] or "")
-            if not body_html:
-                continue
-            new_text = _block_text(BeautifulSoup(body_html, "html.parser"))
-            if new_text != str(row["body_text"] or ""):
-                self._core.execute(
-                    "UPDATE articles SET body_text=?,content_hash=? WHERE url=?",
-                    (
-                        new_text,
-                        sha256_bytes(new_text.encode("utf-8", errors="replace")),
-                        row["url"],
-                    ),
-                )
-                changed += 1
-            if scanned % 1000 == 0:
-                self._core.commit()
+        # Keyset pagination keeps memory bounded: iterating a Core result is a
+        # fetchall, so walking the whole table in one query would buffer every
+        # body_html/body_text pair at once.
+        last_url = ""
+        batch_size = 500
+        while True:
+            clauses = ["url > ?"]
+            params: list[Any] = [last_url]
+            if source_ids:
+                placeholders = ",".join("?" for _ in source_ids)
+                clauses.append(f"source_id IN ({placeholders})")
+                params.extend(sorted(source_ids))
+            params.append(batch_size)
+            rows = self._core.execute(
+                f"""SELECT url,body_html,body_text FROM articles
+                    WHERE {' AND '.join(clauses)} ORDER BY url LIMIT ?""",
+                params,
+            ).fetchall()
+            if not rows:
+                break
+            for row in rows:
+                scanned += 1
+                body_html = str(row["body_html"] or "")
+                if not body_html:
+                    continue
+                new_text = _block_text(BeautifulSoup(body_html, "html.parser"))
+                if new_text != str(row["body_text"] or ""):
+                    self._core.execute(
+                        "UPDATE articles SET body_text=?,content_hash=? WHERE url=?",
+                        (
+                            new_text,
+                            sha256_bytes(new_text.encode("utf-8", errors="replace")),
+                            row["url"],
+                        ),
+                    )
+                    changed += 1
+            last_url = str(rows[-1]["url"])
+            self._core.commit()
         self._core.commit()
         return {"scanned": scanned, "changed": changed}
 

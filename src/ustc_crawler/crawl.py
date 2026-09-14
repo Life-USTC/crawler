@@ -36,9 +36,12 @@ def _parse_since(value: str) -> datetime | None:
     if not value:
         return None
     try:
-        return datetime.fromisoformat(value).replace(tzinfo=datetime.now().astimezone().tzinfo)
+        parsed = datetime.fromisoformat(value)
     except ValueError:
         return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    return parsed
 
 
 def _published_datetime(value: str) -> datetime | None:
@@ -179,6 +182,10 @@ class AsyncCrawler:
         self.source_since: dict[str, datetime] = {}
         self.sync_run_id = uuid.uuid4().hex
         self.sync_run_started = False
+        # Unique stop sentinel: workers exit only after the queue has been
+        # fully drained and one sentinel per worker is delivered, so idle
+        # workers survive quiet periods while slow pages discover new links.
+        self._stop_item = (0, 0, "", "", -1, "")
 
     async def close(self) -> None:
         await self.fetcher.close()
@@ -303,6 +310,8 @@ class AsyncCrawler:
         depth: int,
         parent: str,
         published_at: str = "",
+        *,
+        fresh_attachment: bool = False,
     ) -> None:
         url = normalize_url(url)
         source = self._source_for_url(url) if url else None
@@ -338,7 +347,7 @@ class AsyncCrawler:
         # were discovered from listing pages.  PDF/Word/etc. notices without a
         # date hint are assumed to be legacy attachments; new attachments are
         # still downloaded when linked from freshly published articles.
-        if self.options.incremental and is_document and not published_at:
+        if self.options.incremental and is_document and not published_at and not fresh_attachment:
             self.store.mark_filtered(url, "incremental skip: document without date hint")
             return
         priority = (
@@ -463,6 +472,15 @@ class AsyncCrawler:
         cap = per_source_cap if per_source_cap > 0 else 0
         images = article.images if cap <= 0 else article.images[:cap]
         for image in images:
+            existing = self.store.media_snapshot(image.url)
+            if existing and existing["status"] == "ok" and existing["local_path"]:
+                local_file = Path(existing["local_path"])
+                recorded_size = existing.get("size") or 0
+                # A shared image that is already intact on disk only needs a
+                # new relationship row; a torn file falls through to a refetch.
+                if local_file.is_file() and (not recorded_size or local_file.stat().st_size == recorded_size):
+                    self.store.link_media(image, article.url, source_page_url)
+                    continue
             response = await self.fetcher.fetch(image.url, max_bytes=self.options.max_image_bytes)
             if response.status == 200 and response.body:
                 self.store.save_media(
@@ -628,8 +646,9 @@ class AsyncCrawler:
         if page.article and requested_published_at:
             page.article.published_at = requested_published_at
         document_link_count = sum(1 for target in page.links if document_asset_url(target))
+        body_digest = hashlib.sha256(response.body).hexdigest()
         duplicate_of = self.store.duplicate_page_url(
-            hashlib.sha256(response.body).hexdigest(),
+            body_digest,
             url,
             prefer_article=page.article is not None,
         )
@@ -680,24 +699,30 @@ class AsyncCrawler:
             # existing record so its fields and bundle remain an exact view of
             # the archived raw HTML, but do not redownload historical media.
             refresh_existing_before_cutoff = True
-        self.store.save_page(page, source_id, depth, parent)
+        self.store.save_page(
+            page, source_id, depth, parent, digest=body_digest, duplicate_resolved=True
+        )
         links = [(target, "asset" if looks_like_asset(target) else "page") for target in page.links]
         self.store.save_links(url, source_id, links)
         for target, published_at in page.link_dates.items():
             self.store.save_article_hint(target, published_at, url)
+        saved_fresh_article = False
         if article and result.value_score >= self.options.min_value_score and not duplicate_of:
             hint = self.store.article_hint(article.url) or self.store.article_hint(url)
             if hint and not article.published_at:
                 article.published_at = hint
-            self.store.save_article(article)
+            # The article row must exist before media rows reference it, but
+            # the archive bundle is written exactly once, after the images are
+            # downloaded and included in the sync snapshot.
+            self.store.save_article(article, write_bundle=False)
             self.articles += 1
             if not refresh_existing_before_cutoff:
                 await self._download_images(article, response.final_url)
-            if not source.discovery_only:
-                self.store.save_article_and_enqueue_for_sync(
-                    article,
-                    run_id=self.sync_run_id if self.sync_run_started else None,
-                )
+            self.store.save_article_and_enqueue_for_sync(
+                article,
+                run_id=self.sync_run_id if self.sync_run_started else None,
+            )
+            saved_fresh_article = not refresh_existing_before_cutoff
         should_follow = (
             depth == 0
             or result.value_score >= self.options.min_value_score
@@ -709,36 +734,53 @@ class AsyncCrawler:
             # pages contain archive navigation and related-content links that
             # otherwise expand back through the full historical site.
             should_follow = False
+        fresh_attachment_links: set[str] = set()
         if should_follow and not duplicate_of:
-            for target in page.links:
-                await self._enqueue(
-                    target, source, depth + 1, url, page.link_dates.get(target, "")
-                )
+            follow_targets = list(page.links)
+        elif self.options.incremental and saved_fresh_article and not duplicate_of:
+            # Attachments of a freshly published article are still downloaded
+            # in incremental mode; only generic page links are suppressed.
+            follow_targets = [target for target in page.links if document_asset_url(target)]
+            fresh_attachment_links = set(follow_targets)
+        else:
+            follow_targets = []
+        for target in follow_targets:
+            await self._enqueue(
+                target,
+                source,
+                depth + 1,
+                url,
+                page.link_dates.get(target, ""),
+                fresh_attachment=target in fresh_attachment_links,
+            )
         self.store.mark_done(url)
 
     async def _worker(self) -> None:
         while True:
+            item = await self.queue.get()
             try:
-                item = await asyncio.wait_for(self.queue.get(), timeout=1.0)
-            except TimeoutError:
-                return
-            try:
-                await self._process(item[2], item[3], item[4], item[5])
-            except Exception as exc:  # keep one malformed page from stopping a whole host
-                self.errors += 1
-                self.store.mark_done(item[2], f"{type(exc).__name__}: {exc}")
-                self.store.failure(item[2], item[3], f"{type(exc).__name__}: {exc}")
+                if item is self._stop_item:
+                    return
+                try:
+                    await self._process(item[2], item[3], item[4], item[5])
+                except Exception as exc:  # keep one malformed page from stopping a whole host
+                    self.errors += 1
+                    self.store.mark_done(item[2], f"{type(exc).__name__}: {exc}")
+                    self.store.failure(item[2], item[3], f"{type(exc).__name__}: {exc}")
             finally:
                 self.queue.task_done()
 
     async def run(self) -> dict[str, int]:
-        self.prepare()
+        workers: list[asyncio.Task[None]] = []
         try:
+            self.prepare()
             await self._seed_queue()
             workers = [
                 asyncio.create_task(self._worker()) for _ in range(max(1, self.options.concurrency))
             ]
             await self.queue.join()
+            for _ in workers:
+                await self.queue.put(self._stop_item)
             await asyncio.gather(*workers)
             result = {
                 "processed": self.processed,
@@ -756,16 +798,22 @@ class AsyncCrawler:
                 errors=self.errors,
             )
             return result
-        except Exception as exc:
-            self.store.finish_sync_run(
-                self.sync_run_id,
-                status="failed",
-                pages=self.processed,
-                articles=self.articles,
-                media=self.media,
-                errors=self.errors + 1,
-                last_error=f"{type(exc).__name__}: {exc}",
-            )
+        except BaseException as exc:
+            for worker in workers:
+                worker.cancel()
+            if workers:
+                await asyncio.gather(*workers, return_exceptions=True)
+            if self.sync_run_started:
+                interrupted = isinstance(exc, asyncio.CancelledError)
+                self.store.finish_sync_run(
+                    self.sync_run_id,
+                    status="interrupted" if interrupted else "failed",
+                    pages=self.processed,
+                    articles=self.articles,
+                    media=self.media,
+                    errors=self.errors if interrupted else self.errors + 1,
+                    last_error=f"{type(exc).__name__}: {exc}",
+                )
             raise
 
 

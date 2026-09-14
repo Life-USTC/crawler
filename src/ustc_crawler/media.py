@@ -28,12 +28,16 @@ def _job_priority(existing: Any) -> int:
 
     if existing is None:
         return 0
-    if (
-        existing["status"] == "ok"
-        and existing["local_path"]
-        and Path(existing["local_path"]).is_file()
-    ):
-        return 2
+    if existing["status"] == "ok" and existing["local_path"]:
+        path = Path(existing["local_path"])
+        if path.is_file():
+            size = existing.get("size")
+            # A killed download can leave a truncated file behind an 'ok'
+            # record.  A size mismatch means the object is not really local
+            # and must be downloaded again; a missing/zero size is a legacy
+            # row we cannot verify, so the file is trusted.
+            if not size or path.stat().st_size == size:
+                return 2
     return 1
 
 
@@ -109,50 +113,62 @@ def _image_jobs(store: Store, source_ids: set[str] | None = None) -> dict[str, l
 
 async def _run(options: MediaOptions) -> dict[str, int]:
     store = Store(options.db_path, options.data_dir)
+    # The connection pool only needs to cover the worker semaphore; a larger
+    # pool idles unused connections for the whole run.
     fetcher = Fetcher(
         delay=options.delay,
-        max_connections=max(64, options.concurrency),
+        max_connections=options.concurrency,
     )
-    jobs = _image_jobs(store, set(options.source_ids) or None)
-    semaphore = asyncio.Semaphore(max(1, options.concurrency))
     fetched = 0
     skipped = 0
     errors = 0
 
-    async def one(url: str, refs: list[ImageRef], existing: Any) -> None:
-        nonlocal fetched, skipped, errors
-        if _job_priority(existing) == 2:
-            for ref in refs:
-                store.link_media(ref, ref.article_url, existing["source_page_url"] or "")
-            skipped += 1
-            return
-        async with semaphore:
-            response = await fetcher.fetch(url, max_bytes=options.max_image_bytes)
-        if response.status == 200 and response.body:
-            store.save_media(
-                refs[0],
-                response.body,
-                response.content_type,
-                refs[0].article_url,
-                existing["source_page_url"] if existing else "",
-            )
-            for ref in refs[1:]:
-                store.link_media(ref, ref.article_url, refs[0].article_url)
-            fetched += 1
-            return
-        error = response.error or f"http {response.status}"
-        for ref in refs:
-            store.save_media(
-                ref,
-                b"",
-                response.content_type,
-                ref.article_url,
-                ref.article_url,
-                error,
-            )
-        errors += 1
-
     try:
+        jobs = _image_jobs(store, set(options.source_ids) or None)
+        semaphore = asyncio.Semaphore(max(1, options.concurrency))
+
+        async def one(priority: int, url: str, refs: list[ImageRef], existing: Any) -> None:
+            nonlocal fetched, skipped, errors
+            if priority == 2:
+                for ref in refs:
+                    await asyncio.to_thread(
+                        store.link_media, ref, ref.article_url, existing["source_page_url"] or ""
+                    )
+                skipped += 1
+                return
+            async with semaphore:
+                response = await fetcher.fetch(url, max_bytes=options.max_image_bytes)
+            if response.status == 200 and response.body:
+                await asyncio.to_thread(
+                    store.save_media,
+                    refs[0],
+                    response.body,
+                    response.content_type,
+                    refs[0].article_url,
+                    existing["source_page_url"] if existing else "",
+                )
+                for ref in refs[1:]:
+                    await asyncio.to_thread(store.link_media, ref, ref.article_url, refs[0].article_url)
+                fetched += 1
+                return
+            if response.error:
+                error = response.error
+            elif response.status == 200:
+                error = "empty body"
+            else:
+                error = f"http {response.status}"
+            for ref in refs:
+                await asyncio.to_thread(
+                    store.save_media,
+                    ref,
+                    b"",
+                    response.content_type,
+                    ref.article_url,
+                    existing["source_page_url"] if existing else "",
+                    error,
+                )
+            errors += 1
+
         planned = [
             (_job_priority(existing), url, refs, existing)
             for url, refs in jobs.items()
@@ -160,7 +176,7 @@ async def _run(options: MediaOptions) -> dict[str, int]:
         ]
         planned = _interleave_jobs_by_host(planned)
         await asyncio.gather(
-            *(one(url, refs, existing) for _, url, refs, existing in planned)
+            *(one(priority, url, refs, existing) for priority, url, refs, existing in planned)
         )
     finally:
         await fetcher.close()
