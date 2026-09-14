@@ -66,6 +66,7 @@ jobs:
       - name: Reindex adapter-covered sources
         if: inputs.reindex
         run: |
+          set -o pipefail
           uv run ustc-crawler reindex \
             --source library \
             --source unit-mech-ustc-edu-cn \
@@ -78,22 +79,33 @@ jobs:
       - name: Retext article bodies
         if: inputs.retext
         run: |
+          set -o pipefail
           uv run ustc-crawler retext 2>&1 | tee retext.log
           uv run ustc-crawler sync-backfill 2>&1 | tee backfill.log
 
       - name: Requeue locally failed batches
         if: inputs.requeue_failed
-        run: uv run ustc-crawler sync-requeue-failed 2>&1 | tee requeue.log
+        # pipefail matters here: without it a crashing requeue (e.g. malformed
+        # DB in run 34802169939) still exits green because tee swallows the
+        # status, and the run proceeds to save the broken state back to cache.
+        run: |
+          set -o pipefail
+          uv run ustc-crawler sync-requeue-failed 2>&1 | tee requeue.log
 
       - name: Crawl and sync
         env:
           USTC_CRAWLER_INGESTION_SECRET: ${{ secrets.USTC_CRAWLER_INGESTION_SECRET }}
           # End sync on its own before the job timeout so the always() state
           # save below runs against a quiet database instead of a live writer.
-          SYNC_BUDGET_MINUTES: ${{ (inputs.reindex || inputs.retext || inputs.requeue_failed) && 190 || 30 }}
+          # Long runs spend up to ~55 min on retext/reindex first, so the sync
+          # budget must leave room: 240 - 55 - overhead < 190 was too tight and
+          # let the job timeout kill a writing sync process (run 34787144606).
+          SYNC_BUDGET_MINUTES: ${{ (inputs.reindex || inputs.retext || inputs.requeue_failed) && 160 || 30 }}
         run: |
           uv run ustc-crawler db-upgrade 2>&1 | tee db-upgrade.log
+          test "${PIPESTATUS[0]}" = 0
           uv run ustc-crawler crawl --incremental 2>&1 | tee crawl.log
+          test "${PIPESTATUS[0]}" = 0
           timeout --signal=TERM --kill-after=60s "${SYNC_BUDGET_MINUTES}m" \
             uv run ustc-crawler sync --server "${{ vars.CRAWLER_SERVER }}" 2>&1 | tee sync.log
           test "${PIPESTATUS[0]}" = 0 -o "${PIPESTATUS[0]}" = 124
@@ -156,7 +168,10 @@ jobs:
 
       - name: Save crawler state
         id: compress
-        if: always()
+        # Skip when the job was cancelled/timed out: saving mid-crash state is
+        # how run 34802169939 restored, crashed on, and re-saved a malformed
+        # DB, spreading the corruption into a fresh cache entry.
+        if: always() && ! cancelled()
         run: |
           if [ -f "$DB_PATH" ]; then
             sqlite3 "$DB_PATH" "PRAGMA wal_checkpoint(TRUNCATE);"
@@ -167,7 +182,7 @@ jobs:
           echo "exists=$([ -f "$DB_ARCHIVE" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
 
       - name: Upload state to cache
-        if: always() && steps.compress.outputs.exists == 'true'
+        if: always() && ! cancelled() && steps.compress.outputs.exists == 'true'
         uses: actions/cache/save@v4
         with:
           path: ${{ env.DB_ARCHIVE }}
