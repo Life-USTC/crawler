@@ -55,6 +55,182 @@ class HtmlToMarkdownTests(unittest.TestCase):
         md = html_to_markdown(html)
         self.assertIn("![图](/__local/a.jpg)", md)
 
+    def test_relative_link_href_is_absolutized_with_base_url(self) -> None:
+        html = (
+            "<div><p><a href='/_upload/article/files/ab/cd/x.docx'>附件下载</a>"
+            "<a href='../../0901/c1a2/page.htm'>相关文章</a></p></div>"
+        )
+        md = html_to_markdown(html, base_url="https://mba.ustc.edu.cn/2026/0729/c20772a748934/page.htm")
+        self.assertIn(
+            "[附件下载](https://mba.ustc.edu.cn/_upload/article/files/ab/cd/x.docx)", md
+        )
+        self.assertIn("[相关文章](https://mba.ustc.edu.cn/2026/0901/c1a2/page.htm)", md)
+
+    def test_non_http_links_are_left_untouched(self) -> None:
+        html = (
+            "<div><p><a href='mailto:a@ustc.edu.cn'>邮箱</a>"
+            "<a href='javascript:void(0)'>按钮</a>"
+            "<a href='#section'>锚点</a></p></div>"
+        )
+        md = html_to_markdown(html, base_url="https://x.ustc.edu.cn/info/1/2.htm")
+        self.assertIn("[邮箱](mailto:a@ustc.edu.cn)", md)
+        self.assertIn("[按钮](javascript:void(0))", md)
+        self.assertIn("[锚点](#section)", md)
+
+    def test_relative_link_kept_without_base_url(self) -> None:
+        html = "<div><p><a href='/_upload/x.docx'>附件</a></p></div>"
+        md = html_to_markdown(html)
+        self.assertIn("[附件](/_upload/x.docx)", md)
+
+    def test_video_player_renders_link_to_media(self) -> None:
+        html = (
+            "<div class='wp_articlecontent'><p>"
+            "<div class='wp_video_player' "
+            "sudy-wp-src='/_upload/article/videos/f0/2f/1c19876f.mp4' "
+            "sudyfile-attr=\"{'title':'2021032539014229.mp4'}\"></div>"
+            "</p></div>"
+        )
+        md = html_to_markdown(html, base_url="https://biotraining.ustc.edu.cn/2022/0303/c26359a547647/page.htm")
+        self.assertIn(
+            "[视频: 2021032539014229.mp4]"
+            "(https://biotraining.ustc.edu.cn/_upload/article/videos/f0/2f/1c19876f.mp4)",
+            md,
+        )
+
+    def test_pdf_player_renders_attachment_link(self) -> None:
+        html = (
+            "<div class='wp_articlecontent'><p>"
+            "<span id='第十八届全国大学生数学竞赛报名的通知-科大版.pdf' class='wp_pdf_player' "
+            "pdfsrc='/_upload/article/files/fe/65/9d1f6318.pdf' "
+            "sudyfile-attr=\"{'title':'第十八届全国大学生数学竞赛报名的通知-科大版.pdf'}\"></span>"
+            "</p></div>"
+        )
+        md = html_to_markdown(html, base_url="https://math.ustc.edu.cn/2026/0901/c18650a751735/page.htm")
+        self.assertIn(
+            "[附件: 第十八届全国大学生数学竞赛报名的通知-科大版.pdf]"
+            "(https://math.ustc.edu.cn/_upload/article/files/fe/65/9d1f6318.pdf)",
+            md,
+        )
+
+    def test_player_without_url_hint_uses_generic_label(self) -> None:
+        html = (
+            "<div><p><div class='wp_video_player' sudy-wp-src='/v/a.mp4'></div></p></div>"
+        )
+        md = html_to_markdown(html, base_url="https://x.ustc.edu.cn/info/1/2.htm")
+        self.assertIn("[视频](https://x.ustc.edu.cn/v/a.mp4)", md)
+
+    def test_vsb_pdf_image_data_script_becomes_images(self) -> None:
+        html = (
+            "<div class='v_news_content'><p style='text-indent: 0'>"
+            "<script>var vsb_pdf_image_data = "
+            "[\"/__local/0/13/5F/a.jpg\",\"/__local/4/98/0F/b.jpg\"];</script>"
+            "</p></div>"
+        )
+        md = html_to_markdown(html, base_url="https://ef.ustc.edu.cn/info/1022/2374.htm")
+        self.assertIn("![](https://ef.ustc.edu.cn/__local/0/13/5F/a.jpg)", md)
+        self.assertIn("![](https://ef.ustc.edu.cn/__local/4/98/0F/b.jpg)", md)
+        self.assertNotIn("vsb_pdf_image_data", md)
+
+    def test_escaped_fckeditor_tags_are_restored_when_frequent(self) -> None:
+        html = (
+            "<div class='wp_articlecontent'><p>交流会活动。</p>"
+            "&lt;IMG border=0 src=&quot;/_upload/article/images/a.jpg&quot; /&gt;"
+            "&lt;IMG border=0 src=&quot;/_upload/article/images/b.jpg&quot; /&gt;"
+            "&lt;IMG border=0 src=&quot;/_upload/article/images/c.jpg&quot; /&gt;"
+            "</div>"
+        )
+        md = html_to_markdown(html, base_url="http://www.nsrl.ustc.edu.cn/2014/0917/c10984a121342/page.htm")
+        self.assertIn("![](http://www.nsrl.ustc.edu.cn/_upload/article/images/a.jpg)", md)
+        self.assertIn("![](http://www.nsrl.ustc.edu.cn/_upload/article/images/c.jpg)", md)
+        self.assertNotIn("&lt;IMG", md)
+
+    def test_unterminated_escaped_fckeditor_tags_are_restored(self) -> None:
+        # The real 2014-era nsrl pages never wrote the closing ``&gt;``; the
+        # escaped tag text runs straight into the enclosing paragraph end.
+        html = (
+            "<div class='wp_articlecontent'>"
+            "<p style='text-align:center;'>&lt;IMG border=0 src=&quot;/_upload/a.jpg&quot; width=500</p>"
+            "<p style='text-align:center;'>&lt;IMG border=0 src=&quot;/_upload/b.jpg&quot; width=500</p>"
+            "<p style='text-align:center;'>&lt;IMG border=0 src=&quot;/_upload/c.jpg&quot; width=500</p>"
+            "<p>参观结束。</p></div>"
+        )
+        md = html_to_markdown(html, base_url="http://www.nsrl.ustc.edu.cn/2014/0917/c10984a121342/page.htm")
+        self.assertIn("![](http://www.nsrl.ustc.edu.cn/_upload/a.jpg)", md)
+        self.assertIn("![](http://www.nsrl.ustc.edu.cn/_upload/c.jpg)", md)
+        self.assertIn("参观结束。", md)
+        self.assertNotIn("&lt;IMG", md)
+
+    def test_isolated_escaped_tag_is_left_alone(self) -> None:
+        html = (
+            "<div><p>写法示例:&lt;img src=&quot;x.png&quot;&gt; 是图片标签。</p>"
+            "<p>正文内容保持不变。</p></div>"
+        )
+        md = html_to_markdown(html, base_url="https://x.ustc.edu.cn/info/1/2.htm")
+        self.assertIn('<img src="x.png">', md)
+        self.assertNotIn("![", md)
+        self.assertIn("正文内容保持不变。", md)
+
+    def test_noise_elements_are_removed(self) -> None:
+        html = (
+            "<div class='wl-con wl-detail'>"
+            "<div class='wl-post'><i></i>2026-04-26<i></i>访问次数：<span class='WP_VisitCount' "
+            "url='/_visitcountdisplay?articleId=741222'>14</span>次</div>"
+            "<div class='wp_articlecontent'><p>正文内容。</p></div>"
+            "<p class='text-center'>2026-07-06 |  查看: <span class='WP_VisitCount'>15</span></p>"
+            "<div class='social-share'><span class='share_tt'>分享至:</span></div>"
+            "</div>"
+        )
+        md = html_to_markdown(html, base_url="https://nsti.ustc.edu.cn/2026/0520/c13715a741222/page.htm")
+        self.assertIn("正文内容。", md)
+        self.assertNotIn("访问次数", md)
+        self.assertNotIn("查看", md)
+        self.assertNotIn("分享至", md)
+
+    def test_smile_metadata_bar_is_removed(self) -> None:
+        html = (
+            "<div class='central_text'>"
+            "<span class='weix_time'><span>发布时间：2026-05-28</span><span>发布来源：</span></span>"
+            "<div class='center_txt'><p>心理嘉年华活动正文。</p></div>"
+            "</div>"
+        )
+        md = html_to_markdown(html, base_url="http://smile.ustc.edu.cn/index/info/5017")
+        self.assertIn("心理嘉年华活动正文。", md)
+        self.assertNotIn("发布时间", md)
+        self.assertNotIn("发布来源", md)
+
+    def test_joomla_pager_and_friend_links_are_removed(self) -> None:
+        html = (
+            "<div class='item-page'><p>通知正文。</p>"
+            "<ul class='pager pagenav'><li class='next'>"
+            "<a href='/index.php/newslists/news/116-x' rel='next'>下页 <span></span></a>"
+            "</li></ul>"
+            "<p class='linkstitle'>友情链接</p>"
+            "<p class='bottomlinks'><a href='http://www.ahedu.gov.cn/'>安徽教育网</a></p>"
+            "</div>"
+        )
+        md = html_to_markdown(html, base_url="https://utfd.ustc.edu.cn/index.php/newslists/news/117-2025-05-27-03-06-47")
+        self.assertIn("通知正文。", md)
+        self.assertNotIn("下页", md)
+        self.assertNotIn("友情链接", md)
+        self.assertNotIn("安徽教育网", md)
+
+    def test_empty_headings_are_dropped(self) -> None:
+        html = (
+            "<div class='infobox'><h2 class='arti_title'></h2>"
+            "<div class='wp_articlecontent'><p>正文内容。</p></div></div>"
+        )
+        md = html_to_markdown(html, base_url="https://lab.ustc.edu.cn/info/1/2.htm")
+        self.assertEqual(md, "正文内容。")
+
+    def test_heading_with_text_or_image_is_kept(self) -> None:
+        html = (
+            "<div><h2>真实小节标题</h2><p>内容一。</p>"
+            "<h3><img src='/a.jpg' alt='海报'></h3><p>内容二。</p></div>"
+        )
+        md = html_to_markdown(html, base_url="https://x.ustc.edu.cn/info/1/2.htm")
+        self.assertIn("## 真实小节标题", md)
+        self.assertIn("![海报](https://x.ustc.edu.cn/a.jpg)", md)
+
 
 if __name__ == "__main__":
     unittest.main()
