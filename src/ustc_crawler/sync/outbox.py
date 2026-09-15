@@ -861,12 +861,15 @@ class IngestionOutbox:
         hash.  Batches the server itself rejected keep their terminal state.
         Batches whose delivery already failed ``max_attempts`` times stay
         terminal unless ``force`` is set.  The original batch and item rows
-        remain as an immutable audit record.
+        remain as an immutable audit record.  A batch whose events have all
+        moved to newer batches already is a stale audit record: it is retired
+        as ``superseded`` and counted under ``skipped`` instead of aborting
+        the run; any other integrity violation still raises.
         """
 
         if max_attempts < 1:
             raise ValueError("max attempts must be positive")
-        result = {"batches": 0, "events": 0}
+        result = {"batches": 0, "events": 0, "skipped": 0}
         with transaction(self.database) as session:
             query = select(SyncBatch).where(
                 SyncBatch.status == "failed", SyncBatch.last_error.in_(errors)
@@ -875,14 +878,50 @@ class IngestionOutbox:
                 query = query.where(SyncBatch.attempts < max_attempts)
             batches = session.scalars(query).all()
             for batch in batches:
-                _batch_items, outbox_rows = _release_batch_events(
-                    session,
-                    batch,
-                    error=f"requeued_failed_batch:{batch.last_error}",
-                )
+                try:
+                    _batch_items, outbox_rows = _release_batch_events(
+                        session,
+                        batch,
+                        error=f"requeued_failed_batch:{batch.last_error}",
+                    )
+                except ValueError:
+                    if not self._batch_events_redelivered(session, batch):
+                        raise
+                    # Stale audit record: every event was already released by
+                    # an earlier recovery and lives under a newer batch, so
+                    # there is nothing left to release.  Retire the batch
+                    # instead of aborting the whole requeue run.
+                    batch.status = "superseded"
+                    batch.updated_at = datetime.now().astimezone().isoformat(
+                        timespec="seconds"
+                    )
+                    result["skipped"] += 1
+                    continue
                 result["batches"] += 1
                 result["events"] += len(outbox_rows)
         return result
+
+    @staticmethod
+    def _batch_events_redelivered(session: Session, batch: SyncBatch) -> bool:
+        """Every event of this batch survives in the outbox under other batches."""
+
+        item_keys = list(
+            session.scalars(
+                select(SyncBatchItem.item_key).where(
+                    SyncBatchItem.batch_id == batch.id
+                )
+            ).all()
+        )
+        if not item_keys:
+            return False
+        rows = list(
+            session.scalars(
+                select(SyncOutbox).where(SyncOutbox.event_id.in_(item_keys))
+            ).all()
+        )
+        return len(rows) == len(item_keys) and all(
+            row.batch_id != batch.id for row in rows
+        )
 
     def mark_batch(self, batch_id: str, *, status: str, response_json: str = "") -> None:
         if status not in BATCH_STATUSES:

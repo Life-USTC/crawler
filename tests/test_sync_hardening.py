@@ -442,7 +442,7 @@ class AttemptsAndRequeueTests(SyncHardeningTestCase):
                 outbox = IngestionOutbox(store.database)
 
                 result = outbox.requeue_failed_batches(errors={"immutable_object_changed"})
-                self.assertEqual(result, {"batches": 0, "events": 0})
+                self.assertEqual(result, {"batches": 0, "events": 0, "skipped": 0})
                 with store.database.session_factory() as session:
                     batch = session.get(SyncBatch, "exhausted")
                     self.assertEqual(batch.status, "failed")
@@ -453,7 +453,7 @@ class AttemptsAndRequeueTests(SyncHardeningTestCase):
                     errors={"immutable_object_changed"},
                     force=True,
                 )
-                self.assertEqual(forced, {"batches": 1, "events": 3})
+                self.assertEqual(forced, {"batches": 1, "events": 3, "skipped": 0})
                 with store.database.session_factory() as session:
                     batch = session.get(SyncBatch, "exhausted")
                     self.assertEqual(batch.status, "superseded")
@@ -479,7 +479,7 @@ class AttemptsAndRequeueTests(SyncHardeningTestCase):
                 )
                 outbox = IngestionOutbox(store.database)
                 result = outbox.requeue_failed_batches(errors={"immutable_object_changed"})
-                self.assertEqual(result, {"batches": 1, "events": 2})
+                self.assertEqual(result, {"batches": 1, "events": 2, "skipped": 0})
             finally:
                 store.close()
 
