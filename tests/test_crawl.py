@@ -1265,5 +1265,64 @@ class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["status"], "interrupted")
 
 
+class SeedRevivalTests(unittest.IsolatedAsyncioTestCase):
+    async def test_prepare_revives_errored_seed_below_attempt_cap(self) -> None:
+        # nercslip's seed once answered 404 and stayed as an error row, so the
+        # whole source went dark.  Every run must retry an errored seed until
+        # the attempt cap, but no further.
+        temp_dir = TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        root = Path(temp_dir.name)
+        retry_seed = "https://nercslip.ustc.edu.cn/main.htm"
+        capped_seed = "https://yz1.ustc.edu.cn/"
+        store = Store(root / "crawler.sqlite", root / "data")
+        for source_id, seed, host in (
+            ("supplemental-nercslip", retry_seed, "nercslip.ustc.edu.cn"),
+            ("supplemental-yz1", capped_seed, "yz1.ustc.edu.cn"),
+        ):
+            store.add_source(
+                SourceConfig(
+                    id=source_id,
+                    name=source_id,
+                    organization_level="research",
+                    seed_urls=[seed],
+                    allowed_hosts=[host],
+                    discovery_only=True,
+                )
+            )
+        store.enqueue(retry_seed, "supplemental-nercslip", 0, "", 500)
+        store.enqueue(capped_seed, "supplemental-yz1", 0, "", 500)
+        store_core(store).execute(
+            "UPDATE frontier SET status='error', attempts=1, last_error='http 404' WHERE url=?",
+            (retry_seed,),
+        )
+        store_core(store).execute(
+            "UPDATE frontier SET status='error', attempts=5, last_error='http 404' WHERE url=?",
+            (capped_seed,),
+        )
+        store_core(store).commit()
+        store.close()
+
+        crawler = AsyncCrawler(
+            CrawlOptions(
+                db_path=str(root / "crawler.sqlite"),
+                data_dir=str(root / "data"),
+                include_supplemental=True,
+            )
+        )
+        crawler.prepare()
+        statuses = {
+            row["url"]: row["status"]
+            for row in store_core(crawler.store).execute(
+                "SELECT url, status FROM frontier WHERE url IN (?, ?)",
+                (retry_seed, capped_seed),
+            ).fetchall()
+        }
+        await crawler.close()
+
+        self.assertEqual(statuses[retry_seed], "pending")
+        self.assertEqual(statuses[capped_seed], "error")
+
+
 if __name__ == "__main__":
     unittest.main()
