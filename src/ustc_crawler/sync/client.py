@@ -458,14 +458,35 @@ class IngestionSyncClient:
                 batch.batch_id,
                 accepted_identities,
             )
-            # The server registers batch object claims only when it creates or
-            # updates a revision; "unchanged" items have no claims and their
-            # bytes were delivered with the batch that first created them.
+            # The server re-registers object claims for "unchanged" items and
+            # reports which of their objects are missing bytes in R2
+            # (objectsNeedingUpload); only unchanged items without that field
+            # have all bytes delivered already.
+            unchanged_needs: dict[tuple[str, str, str], set[tuple[str, str]]] = {}
+            for item in response.results:
+                if item.status == "unchanged" and item.objects_needing_upload:
+                    identity = (item.source_id, item.canonical_url, item.revision_hash)
+                    unchanged_needs[identity] = {
+                        (obj.kind, obj.sha256) for obj in item.objects_needing_upload
+                    }
             upload_item_keys = accepted_item_keys - self.outbox.batch_item_keys(
                 batch.batch_id,
                 unchanged_identities,
             )
-            self._upload_objects(batch.batch_id, item_keys=upload_item_keys, options=options)
+            partial_item_keys = self.outbox.batch_item_keys(
+                batch.batch_id,
+                set(unchanged_needs),
+            )
+            needed_objects = (
+                set().union(*unchanged_needs.values()) if unchanged_needs else set()
+            )
+            self._upload_objects(
+                batch.batch_id,
+                item_keys=upload_item_keys,
+                partial_item_keys=partial_item_keys,
+                needed_objects=needed_objects,
+                options=options,
+            )
             status = self.outbox.mark_batch_results(
                 batch.batch_id,
                 accepted_identities=accepted_identities,
@@ -555,11 +576,32 @@ class IngestionSyncClient:
         *,
         item_keys: set[str],
         options: SyncOptions,
+        partial_item_keys: set[str] | None = None,
+        needed_objects: set[tuple[str, str]] | None = None,
     ) -> None:
-        local_manifests = self.outbox.batch_objects(
-            batch_id,
-            item_keys=item_keys,
+        local_manifests = list(
+            self.outbox.batch_objects(
+                batch_id,
+                item_keys=item_keys,
+            )
         )
+        if partial_item_keys:
+            needed = needed_objects or set()
+            # Unchanged items contribute only the objects the server reported
+            # as missing bytes; everything else is already in R2.
+            local_manifests.extend(
+                manifest
+                for manifest in self.outbox.batch_objects(
+                    batch_id,
+                    item_keys=partial_item_keys,
+                )
+                if (manifest.kind, manifest.sha256) in needed
+            )
+            available = {(manifest.kind, manifest.sha256) for manifest in local_manifests}
+            if not needed <= available:
+                # Fail closed rather than ack while the server still lacks
+                # bytes the local outbox cannot supply.
+                raise SyncProtocolError("objects_needing_upload_mismatch")
         manifest_groups: dict[tuple[str, str], list[LocalObjectManifest]] = {}
         for manifest in local_manifests:
             key = (manifest.kind, manifest.sha256)
