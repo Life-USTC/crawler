@@ -75,13 +75,23 @@ jobs:
 
       - name: Decompress state
         # Skipped entirely when neither cache nor seed produced an archive;
-        # the db-upgrade in "Crawl and sync" then creates a fresh schema.
+        # the db-upgrade below then creates a fresh schema.
         run: |
           if [ -f "$DB_ARCHIVE" ]; then
             mkdir -p data
             zstd -d "$DB_ARCHIVE" -o "$DB_PATH"
             rm "$DB_ARCHIVE"
           fi
+
+      - name: Upgrade database schema
+        # Must run before every Store consumer: Reindex/Retext/Requeue build a
+        # Store, which asserts the alembic head, so a cached DB from before a
+        # new migration crashes them (run 34939273807 hit exactly this when
+        # 0005 landed). db-upgrade is idempotent; a failure here means the
+        # schema is untrustworthy, so only exit 0 is acceptable.
+        run: |
+          uv run ustc-crawler db-upgrade 2>&1 | tee db-upgrade.log
+          test "${PIPESTATUS[0]}" = 0
 
       - name: Reindex adapter-covered sources
         if: inputs.reindex
@@ -135,9 +145,7 @@ jobs:
             exit 1
           fi
           # 退出码语义:0=干净,2=完成但有 per-item 失败,124=预算耗尽,其他=崩溃(必须红)。
-          # db-upgrade 只接受 0:升级失败意味着 schema 不可信,必须红。
-          uv run ustc-crawler db-upgrade 2>&1 | tee db-upgrade.log
-          test "${PIPESTATUS[0]}" = 0
+          # schema 升级已在上面的 Upgrade database schema 步骤完成(那里只接受 0)。
           uv run ustc-crawler crawl --incremental 2>&1 | tee crawl.log
           test "${PIPESTATUS[0]}" = 0 -o "${PIPESTATUS[0]}" = 2
           timeout --signal=TERM --kill-after=60s "${SYNC_BUDGET_MINUTES}m" \
