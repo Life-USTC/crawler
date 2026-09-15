@@ -9,6 +9,7 @@ underlying evidence.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from urllib.parse import parse_qsl, urlsplit
@@ -339,6 +340,23 @@ def score_page(
     else:
         page_kind = "page"
     return PageScore(page_kind, access_mode, score, tier, reasons, published)
+
+
+def article_link_count(page_url: str, links: Iterable[str]) -> int:
+    """Count same-host links whose URL shape looks like a publication article.
+
+    A server-rendered listing page can have almost no body text (the scorer
+    calls it a shell) while still carrying dozens of article links.  This
+    count lets the crawler keep following such pages without weakening the
+    shell verdict used for indexing.
+    """
+
+    host = (urlsplit(page_url).hostname or "").lower()
+    return sum(
+        1
+        for link in links
+        if (urlsplit(link).hostname or "").lower() == host and NEWS_RE.search(link)
+    )
 
 
 def document_asset_url(url: str) -> bool:

@@ -94,15 +94,22 @@ def normalize_url(raw_url: str, base_url: str | None = None) -> str:
         hostname = (parts.hostname or "").lower().rstrip(".")
         if not hostname:
             return ""
+        scheme = parts.scheme.lower()
         port = parts.port
     except (ValueError, UnicodeError):
         # Broken legacy links can contain non-numeric port text. Treat them
         # as undiscoverable rather than allowing one href to abort a worker.
         return ""
+    is_ustc_host = hostname == "ustc.edu.cn" or hostname.endswith(".ustc.edu.cn")
+    if is_ustc_host and scheme == "http" and port in (None, 80):
+        # USTC hosts serve the same site over http and https; keep a single
+        # canonical scheme so the two variants cannot both enter the archive.
+        scheme = "https"
+        port = None
     netloc = hostname
     if port and not (
-        (parts.scheme.lower() == "http" and port == 80)
-        or (parts.scheme.lower() == "https" and port == 443)
+        (scheme == "http" and port == 80)
+        or (scheme == "https" and port == 443)
     ):
         netloc = f"{hostname}:{port}"
     path = parts.path or "/"
@@ -112,6 +119,10 @@ def normalize_url(raw_url: str, base_url: str | None = None) -> str:
         path = "/" + path
     if parts.path.endswith("/") and not path.endswith("/"):
         path += "/"
+    if is_ustc_host:
+        # Visual SiteBuilder publishes template snapshots below /_t<N>/ that
+        # mirror the same content at the unprefixed path.
+        path = re.sub(r"/_t\d+(?=/|$)", "", path) or "/"
     query = []
     for key, val in parse_qsl(parts.query, keep_blank_values=True):
         lower_key = key.lower()
@@ -119,7 +130,7 @@ def normalize_url(raw_url: str, base_url: str | None = None) -> str:
             continue
         query.append((key, val))
     query.sort()
-    return urlunsplit((parts.scheme.lower(), netloc, path, urlencode(query), ""))
+    return urlunsplit((scheme, netloc, path, urlencode(query), ""))
 
 
 def host_matches(url: str, allowed_hosts: list[str] | set[str]) -> bool:
