@@ -1422,13 +1422,20 @@ def extract_page(
     )
     # mcip (a VSB variant) publishes each news item as a single-article
     # column page at */list.htm: the page carries a detail title and a full
-    # article body instead of a link list.  Requiring both containers keeps
-    # true listings (no article shell) excluded.
+    # article body instead of a link list.  The article shell is either the
+    # classic .arti_title detail header or the VSB single-article column
+    # container (.wp_single / #wp_column_article, the shape of most mcip
+    # pages).  Requiring a container keeps true listings (no article shell)
+    # excluded.  Photo-album posts (毕业留念, 活动图集) carry an image-only
+    # body, so images stand in for the minimum text length.
     single_article_listing_url = bool(
         listing_url
-        and soup.select_one(".arti_title")
+        and (
+            soup.select_one(".arti_title")
+            or soup.select_one(".wp_single, #wp_column_article")
+        )
         and soup.select_one(".wp_articlecontent")
-        and len(body_text) > 180
+        and (len(body_text) > 180 or images)
     )
     if single_article_listing_url:
         listing_url = False
