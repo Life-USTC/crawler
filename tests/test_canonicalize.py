@@ -51,3 +51,59 @@ class CanonicalizeTests(unittest.TestCase):
             normalize_url("https://see.ustc.edu.cn./news/1.htm"),
             "https://see.ustc.edu.cn/news/1.htm",
         )
+
+
+class UstcNormalizationTests(unittest.TestCase):
+    def test_http_is_upgraded_to_https_within_ustc_domain(self) -> None:
+        self.assertEqual(
+            normalize_url("http://gradschool.ustc.edu.cn/article/3511"),
+            "https://gradschool.ustc.edu.cn/article/3511",
+        )
+        self.assertEqual(
+            normalize_url("http://ustc.edu.cn/info/1/2.htm"),
+            "https://ustc.edu.cn/info/1/2.htm",
+        )
+
+    def test_http_scheme_is_kept_for_non_ustc_hosts(self) -> None:
+        self.assertEqual(
+            normalize_url("http://example.com/article/3511"),
+            "http://example.com/article/3511",
+        )
+
+    def test_http_with_explicit_non_default_port_is_kept(self) -> None:
+        self.assertEqual(
+            normalize_url("http://gradschool.ustc.edu.cn:8080/article/3511"),
+            "http://gradschool.ustc.edu.cn:8080/article/3511",
+        )
+
+    def test_vsb_template_snapshot_segment_is_stripped_within_ustc(self) -> None:
+        self.assertEqual(
+            normalize_url("http://sklpde.ustc.edu.cn/_t139/2026/0826/c7107a751181/page.htm"),
+            "https://sklpde.ustc.edu.cn/2026/0826/c7107a751181/page.htm",
+        )
+        self.assertEqual(
+            normalize_url("https://soe.ustc.edu.cn/_t2/main.htm"),
+            "https://soe.ustc.edu.cn/main.htm",
+        )
+
+    def test_template_segment_at_root_normalizes_to_slash(self) -> None:
+        self.assertEqual(
+            normalize_url("https://sklpde.ustc.edu.cn/_t139/"),
+            "https://sklpde.ustc.edu.cn/",
+        )
+        self.assertEqual(
+            normalize_url("https://sklpde.ustc.edu.cn/_t139"),
+            "https://sklpde.ustc.edu.cn/",
+        )
+
+    def test_template_like_segment_is_kept_outside_ustc(self) -> None:
+        self.assertEqual(
+            normalize_url("http://example.com/_t139/news/1.htm"),
+            "http://example.com/_t139/news/1.htm",
+        )
+
+    def test_non_numeric_t_prefix_is_kept(self) -> None:
+        self.assertEqual(
+            normalize_url("https://see.ustc.edu.cn/_tools/list.htm"),
+            "https://see.ustc.edu.cn/_tools/list.htm",
+        )
