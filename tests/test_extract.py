@@ -919,6 +919,52 @@ class ExtractTests(unittest.TestCase):
         assert page.article is not None
         self.assertIn("多模态融合框架", page.article.body_text)
 
+    def test_single_article_list_htm_wp_single_variant_is_an_article(self) -> None:
+        # Most mcip single-article list.htm pages carry no .arti_title; the
+        # title is a bare h2 under the VSB single-article column container
+        # (.wp_single #wp_column_article).  53 of 54 saved shell pages have
+        # this shape and were all excluded as listings.
+        html = """
+        <html><head><title>第48届日内瓦国际发明展金奖</title></head><body>
+        <h3 class='col_name'>新闻动态</h3>
+        <div class='col_news'><div class='col_news_con'><div class='col_news_list'>
+        <div class='wp_single wp_column_article' id='wp_column_article'>
+        <h2>第48届日内瓦国际发明展金奖</h2>
+        <div class='wp_entry'><div class='wp_articlecontent'>
+        <p>近日，第48届日内瓦国际发明展在瑞士日内瓦闭幕，并对外公布获奖名单，中国科学技术大学工程科学学院毛磊研究员团队的参展作品荣获金奖。</p>
+        <p>该作品提出了一种基于原位磁场感知的锂电池组性能一致性监测方法，显著提升了电池安全管理水平，受到评审专家的高度评价与广泛关注。</p>
+        <p>团队成员长期深耕电池管理领域，相关成果已在多个实际场景中得到应用验证，为新能源行业发展提供了有力的技术支撑。</p>
+        </div></div></div>
+        </div></div></div>
+        </body></html>
+        """
+        page = extract_page("https://mcip.ustc.edu.cn/xsjl_24996/list.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "第48届日内瓦国际发明展金奖")
+        self.assertIn("原位磁场感知", page.article.body_text)
+
+    def test_single_article_list_htm_image_only_album_is_an_article(self) -> None:
+        # mcip photo-album posts (毕业留念 / 活动图集) are single-article
+        # list.htm pages whose wp_articlecontent holds only images; the
+        # 180-char body floor must not exclude them.
+        html = """
+        <html><head><title>2023年毕业留念</title></head><body>
+        <div class='wp_single wp_column_article' id='wp_column_article'>
+        <h2>2023年毕业留念</h2>
+        <div class='wp_entry'><div class='wp_articlecontent'>
+        <p><img src='/__local/A/1.jpg' alt='合影'></p>
+        <p><img src='/__local/B/2.jpg' alt='毕业照'></p>
+        <p><img src='/__local/C/3.jpg' alt='校园'></p>
+        </div></div></div>
+        </body></html>
+        """
+        page = extract_page("https://mcip.ustc.edu.cn/2023byln/list.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "2023年毕业留念")
+        self.assertEqual(len(page.article.images), 3)
+
     def test_list_htm_listing_without_article_shell_is_not_an_article(self) -> None:
         # A true VSB listing at */list.htm (no detail title / content
         # container, just a link list) stays excluded.
