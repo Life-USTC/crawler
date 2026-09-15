@@ -1691,6 +1691,33 @@ class Wave2BodyTests(unittest.TestCase):
         self.assertEqual(page.article.title, "实验室最新研究成果发布")
         self.assertIn("认知智能方向", page.article.body_text)
 
+    def test_aside_wrapping_link_list_keeps_listing_outlinks(self) -> None:
+        # bigdata listing pages put the article link table in the same
+        # <aside class="col-md-9 sidebar"> main column (no <article> inside);
+        # decomposing the aside wiped every outlink, so class_24/class_25
+        # article pages never reached the frontier.
+        rows = "".join(
+            f"<tr><td><span><a href='../class_25/news/news_202507{i:02d}.html'>学术动态新闻标题第{i}条</a></span></td></tr>"
+            for i in range(10, 20)
+        )
+        html = f"""
+        <html><head><title>学术动态</title></head><body>
+        <section class='content-wrap'>
+        <aside class='col-sm-3 sidebar'><a href='../index.html'>首页</a></aside>
+        <aside class='col-md-9 sidebar'><div class='widget'>
+        <table>{rows}</table>
+        </div></aside>
+        </section>
+        </body></html>
+        """
+        page = extract_page("https://bigdata.ustc.edu.cn/class_4/news_list_1.html", html)
+        news_links = [link for link in page.links if "/class_25/news/" in link]
+        self.assertEqual(len(news_links), 10)
+        self.assertIn(
+            "https://bigdata.ustc.edu.cn/class_25/news/news_20250710.html",
+            news_links,
+        )
+
 
 class Wave2AuthorTests(unittest.TestCase):
     def test_author_rejects_date_time_value(self) -> None:
