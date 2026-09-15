@@ -850,7 +850,7 @@ class OrmAndOutboxTests(unittest.TestCase):
 
                 outbox = IngestionOutbox(store.database)
                 result = outbox.requeue_failed_batches(errors={"immutable_object_changed"})
-                self.assertEqual(result, {"batches": 1, "events": 50})
+                self.assertEqual(result, {"batches": 1, "events": 50, "skipped": 0})
 
                 with store.database.session_factory() as session:
                     batch = session.get(SyncBatch, "local-failure")
@@ -904,6 +904,57 @@ class OrmAndOutboxTests(unittest.TestCase):
                 with store.database.session_factory() as session:
                     batch = session.get(SyncBatch, "mismatch")
                     self.assertEqual(batch.status, "failed")
+            finally:
+                store.close()
+
+    def test_requeue_failed_batches_retires_already_redelivered_batches(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "crawler.sqlite", root / "data")
+            try:
+                store.add_source(self._source())
+                self._insert_oversized_batch(store, "stale", count=2)
+                source = store.source_descriptor("source")
+                with store.database.session_factory.begin() as session:
+                    # An earlier recovery already moved both events into a
+                    # newer batch that has since been acked; only the stale
+                    # batch's item rows still reference them.
+                    session.add(
+                        SyncBatch(
+                            id="newer",
+                            run_id=None,
+                            client_run_id="new-run",
+                            sources_json=json.dumps(
+                                [source.model_dump(by_alias=True, mode="json")],
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            ),
+                            observed_at="2026-08-21T00:00:00+08:00",
+                            payload_sha256="b" * 64,
+                            protocol_version="1",
+                            producer_version="new-producer",
+                            status="acked",
+                            attempts=1,
+                            created_at="2026-08-21T00:00:00+08:00",
+                            updated_at="2026-08-21T00:00:00+08:00",
+                        )
+                    )
+                    for row in session.scalars(select(SyncOutbox)).all():
+                        row.batch_id = "newer"
+                        row.status = "acked"
+                    stale = session.get(SyncBatch, "stale")
+                    stale.last_error = "batch_rebuild_error"
+
+                outbox = IngestionOutbox(store.database)
+                result = outbox.requeue_failed_batches(errors={"batch_rebuild_error"})
+                self.assertEqual(result, {"batches": 0, "events": 0, "skipped": 1})
+                with store.database.session_factory() as session:
+                    batch = session.get(SyncBatch, "stale")
+                    self.assertEqual(batch.status, "superseded")
+                    self.assertEqual(batch.last_error, "batch_rebuild_error")
+                    rows = session.scalars(select(SyncOutbox)).all()
+                    self.assertEqual({row.status for row in rows}, {"acked"})
+                    self.assertEqual({row.batch_id for row in rows}, {"newer"})
             finally:
                 store.close()
 
