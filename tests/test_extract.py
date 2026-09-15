@@ -1669,3 +1669,83 @@ class Wave2AuthorTests(unittest.TestCase):
         self.assertIsNotNone(page.article)
         assert page.article is not None
         self.assertEqual(page.article.author, "科研部")
+
+
+class Wave2ReviewTests(unittest.TestCase):
+    def test_update_time_label_does_not_beat_url_path_date(self) -> None:
+        # Regression pin: a page whose only label is 更新时间 must fall back
+        # to the URL path date; 更新时间 is a modification time, never the
+        # publication date, and must not outrank the path date.
+        html = """
+        <html><head><title>年度审计结果公告</title></head><body>
+        <div class='inner-news-detail'>
+        <div class='inner-news-hd'>更新时间：2025-01-15 点击率：88 次</div>
+        <p>现将年度审计结果公告如下，具体内容请参见附件说明与相关文件材料。</p>
+        </div></body></html>
+        """
+        page = extract_page("https://sjc.ustc.edu.cn/2026/0630/c32882a745899/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.published_at, "2026-06-30")
+
+    def test_sidebar_aside_teaser_not_selected_as_content(self) -> None:
+        # Counter-case for the aside relaxation: a real sidebar aside
+        # holding a small article teaser must not become the content root
+        # when the page has a genuine content container.
+        html = """
+        <html><head><title>学校召开重要工作部署会议</title></head><body>
+        <aside class='sidebar'><article class='post-preview'>
+        <h2>相关阅读：另一篇新闻</h2><p>摘要</p></article></aside>
+        <div class='v_news_content'><h1>学校召开重要工作部署会议</h1>
+        <p>学校于本周召开重要工作部署会议，研究部署下一阶段重点工作任务并提出明确要求。</p></div>
+        </body></html>
+        """
+        page = extract_page("https://www.ustc.edu.cn/info/1055/1234.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "学校召开重要工作部署会议")
+        self.assertIn("研究部署下一阶段重点工作", page.article.body_text)
+        self.assertNotIn("相关阅读", page.article.body_text)
+
+    def test_slash_joined_co_authors_are_preserved(self) -> None:
+        html = """
+        <html><head><title>联合研究成果发布</title></head><body>
+        <div class='v_news_content'>
+        <p>我校两个课题组联合完成的研究成果近日正式发表，相关工作得到同行关注。</p>
+        <p>记者：张三/李四</p>
+        </div></body></html>
+        """
+        page = extract_page("https://news.ustc.edu.cn/info/1055/9999.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.author, "张三/李四")
+
+    def test_meta_author_matching_keywords_is_preserved(self) -> None:
+        # Explicit meta/jsonld author is trusted metadata, not a signature
+        # heuristic product; the keywords slogan check must not clear it.
+        html = """
+        <html><head><title>研究中心年度工作进展</title>
+        <meta name='author' content='合肥微尺度物质科学国家研究中心'>
+        <meta name='keywords' content='中国科学技术大学,合肥微尺度物质科学国家研究中心'></head><body>
+        <div class='v_news_content'>
+        <p>研究中心发布年度工作进展报告，系统总结各研究方向取得的代表性成果。</p>
+        </div></body></html>
+        """
+        page = extract_page("https://www.ustc.edu.cn/info/1055/1235.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.author, "合肥微尺度物质科学国家研究中心")
+
+    def test_lead_title_with_early_only_space_uses_hard_cut(self) -> None:
+        # A lead whose only in-limit space sits right at the start must not
+        # shrink the title to a two-word prefix; fall back to the hard cut.
+        lead = "On " + "a" * 200
+        html = f"""
+        <html><head><title>News</title></head><body>
+        <article><p>{lead}</p></article>
+        </body></html>
+        """
+        page = extract_page("https://www.mbit.ustc.edu.cn/news/detail/55", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, lead[:160])

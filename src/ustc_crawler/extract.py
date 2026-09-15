@@ -233,7 +233,12 @@ def _truncate_lead_title(value: str, limit: int = 160) -> str:
         return value
     cut = value[:limit]
     if " " in cut:
-        cut = cut.rsplit(" ", 1)[0]
+        candidate = cut.rsplit(" ", 1)[0]
+        # Only take the word-boundary cut when it keeps a substantial
+        # prefix; a lone early space would otherwise shrink the title to a
+        # couple of words.
+        if len(candidate) >= limit // 2:
+            cut = candidate
     return cut.rstrip(" ,;，；")
 
 
@@ -605,8 +610,10 @@ def _clean_signature_value(value: str) -> str:
     ):
         return ""
     # Reject acknowledgement fragments such as "研究/成果受…基金资助" that
-    # the trailing 文/ rule can capture (oic).
-    if "/" in value or "／" in value or re.search(r"受[^，。；;]{0,30}资助", value):
+    # the trailing 文/ rule can capture (oic).  A bare "/" alone is NOT
+    # rejected: slash-joined co-authors ("张三/李四") are legitimate, and
+    # the evidenced pollution is already covered by the 资助 pattern.
+    if re.search(r"受[^，。；;]{0,30}资助", value):
         return ""
     return value
 
@@ -1327,20 +1334,23 @@ def extract_page(
     fallback_has_substantive_paragraph = any(
         len(_text(node.get_text(" ", strip=True))) >= 20 for node in root.find_all("p")
     )
-    author = (
-        _clean_signature_value(_author(article_ld.get("author")))
-        or _clean_signature_value(_first_meta(soup, "author", "article:author"))
-        or _clean_signature_value(
-            _label_value(date_text, r"作者|发布者|文章作者|来源")
-        )
-        or _trailing_publication_signature(body_text)
+    author = _clean_signature_value(_author(article_ld.get("author"))) or _clean_signature_value(
+        _first_meta(soup, "author", "article:author")
     )
-    # A "source/author" value that is literally part of the site's keywords
-    # meta is the site slogan, not a byline (qybx 文章来源：全院办校所系结合).
-    # Length-gated so short legitimate unit names are spared.
-    keywords_meta = _first_meta(soup, "keywords")
-    if author and len(author) >= 4 and keywords_meta and author in keywords_meta:
-        author = ""
+    if not author:
+        # Signature heuristics (meta-bar label / trailing body signature) can
+        # pick up the site slogan when a template stuffs it into 文章来源.
+        # A long value that is literally part of the keywords meta is the
+        # slogan, not a byline (qybx 文章来源：全院办校所系结合).  Length-gated
+        # so short legitimate unit names are spared, and deliberately NOT
+        # applied to jsonld/meta authors above — those are explicit metadata
+        # where a long organization name is a legitimate byline.
+        author = _clean_signature_value(
+            _label_value(date_text, r"作者|发布者|文章作者|来源")
+        ) or _trailing_publication_signature(body_text)
+        keywords_meta = _first_meta(soup, "keywords")
+        if author and len(author) >= 4 and keywords_meta and author in keywords_meta:
+            author = ""
     summary = _text(article_ld.get("description")) or _first_meta(
         soup, "description", "og:description"
     )
