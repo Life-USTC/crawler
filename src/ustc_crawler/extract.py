@@ -442,6 +442,11 @@ def _block_text(root: Tag) -> str:
     """
     for br in root.find_all("br"):
         br.replace_with("\n")
+    # Scripts kept for the markdown layer (vsb_pdf_image_data) would leak
+    # their source into the text of an enclosing block; drop them here.
+    # body_html is serialized before this runs, so they are not lost there.
+    for script in root.find_all("script"):
+        script.decompose()
     for cell in root.find_all(["td", "th"]):
         # Separate adjacent cells when a row is flattened with get_text("").
         cell.append(" ")
@@ -1018,6 +1023,11 @@ def _clean_root(root: Tag) -> None:
         if _is_hidden(node):
             node.decompose()
     for node in root.find_all(REMOVE_TAGS):
+        if node.name == "script" and "vsb_pdf_image_data" in node.get_text():
+            # "看图" pages carry the whole article as an image list in this
+            # script; html_to_markdown turns it into <img> tags, so it must
+            # survive into body_html.
+            continue
         node.decompose()
     for node in root.find_all(["header", "footer", "nav", "aside"]):
         # Keep an aside that wraps the article itself (Ghost-style themes).

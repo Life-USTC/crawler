@@ -875,6 +875,31 @@ class ExtractTests(unittest.TestCase):
         page = extract_page("https://sts.ustc.edu.cn/tzgg/list10.htm", html)
         self.assertIsNone(page.article)
 
+    def test_vsb_pdf_image_data_script_survives_to_markdown(self) -> None:
+        # ef "看图" pages carry the whole article as an image list inside a
+        # vsb_pdf_image_data script; the markdown layer turns it into <img>
+        # tags, so the script must survive extract-layer script stripping.
+        html = """
+        <html><head><title>实验室开放日活动图片纪实</title></head><body>
+        <div class='v_news_content'><p style='text-indent: 0'>
+        <script>var vsb_pdf_image_data = ["/__local/0/13/5F/a.jpg","/__local/4/98/0F/b.jpg"];</script>
+        </p></div>
+        </body></html>
+        """
+        page = extract_page("https://ef.ustc.edu.cn/info/1022/2374.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertIn(
+            "![](https://ef.ustc.edu.cn/__local/0/13/5F/a.jpg)",
+            page.article.body_markdown,
+        )
+        self.assertIn(
+            "![](https://ef.ustc.edu.cn/__local/4/98/0F/b.jpg)",
+            page.article.body_markdown,
+        )
+        # The script source itself must not leak into the plain-text body.
+        self.assertNotIn("vsb_pdf_image_data", page.article.body_text)
+
     def test_wordpress_attachment_shell_is_not_an_article(self) -> None:
         page = extract_page(
             "https://teach.ustc.edu.cn/?attachment_id=20483",
