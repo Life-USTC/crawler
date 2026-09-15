@@ -38,6 +38,11 @@ MIN_ARTICLE_LINK_SIGNAL = 5
 # digests collide across unrelated hosts; they never mark a page duplicate.
 MIN_DUPLICATE_BODY_BYTES = 2048
 
+# Articles carrying at least this much body text are also deduplicated by
+# content hash within their source, catching the same article republished
+# under multiple columns with distinct URLs and page chrome.
+MIN_DEDUP_BODY_TEXT_CHARS = 200
+
 
 def _parse_since(value: str) -> datetime | None:
     """Normalize the --since CLI value to a timezone-aware datetime."""
@@ -665,6 +670,19 @@ class AsyncCrawler:
             if len(response.body) >= MIN_DUPLICATE_BODY_BYTES
             else ""
         )
+        if (
+            not duplicate_of
+            and page.article is not None
+            and len(page.article.body_text.strip()) >= MIN_DEDUP_BODY_TEXT_CHARS
+        ):
+            content_hash = hashlib.sha256(
+                page.article.body_text.encode("utf-8", errors="replace")
+            ).hexdigest()
+            duplicate_of = self.store.article_content_duplicate(
+                page.article.source_id,
+                content_hash,
+                page.article.url,
+            )
         result = score_page(
             url=url,
             final_url=response.final_url,

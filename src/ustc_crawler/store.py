@@ -561,6 +561,24 @@ class Store:
         ).fetchone()
         return str(row[0]) if row and row[0] != requested_url else ""
 
+    def article_content_duplicate(
+        self,
+        source_id: str,
+        content_hash: str,
+        exclude_url: str,
+    ) -> str:
+        """Return the indexed article URL with the same body within a source."""
+
+        if not content_hash:
+            return ""
+        row = self._core.execute(
+            """SELECT url FROM articles
+               WHERE source_id=? AND content_hash=? AND url != ?
+               ORDER BY url LIMIT 1""",
+            (source_id, content_hash, exclude_url),
+        ).fetchone()
+        return str(row[0]) if row else ""
+
     def save_asset(
         self,
         *,

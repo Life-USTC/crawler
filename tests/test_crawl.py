@@ -783,6 +783,124 @@ class CrawlSinceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(frontier_row)
         self.assertEqual(frontier_row["status"], "pending")
 
+    def _dup_source(self) -> SourceConfig:
+        return SourceConfig(
+            id="dup",
+            name="重复示例站",
+            organization_level="university",
+            seed_urls=["https://dup.sample.cn/"],
+            allowed_hosts=["dup.sample.cn"],
+        )
+
+    def _article_html(self, column: str, body_text: str) -> str:
+        return f"""<html><body><nav>{column}栏目导航，用来让两个栏目的原始页面字节不同。</nav>
+          <article>
+            <h1>栏目同文标题</h1>
+            <p>{body_text}</p>
+          </article>
+        </body></html>"""
+
+    async def _process_column_pages(self, pages: dict[str, str]) -> None:
+        dup_source = self._dup_source()
+        store = Store(self.db_path, self.data_dir)
+        store.add_source(dup_source)
+        store.close()
+
+        crawler = self._crawler()
+        crawler.sources["dup"] = dup_source
+        crawler.configured_sources["dup"] = dup_source
+
+        async def fake_fetch(url: str, *, max_bytes: int | None = None) -> FetchResponse:
+            return FetchResponse(
+                requested_url=url,
+                final_url=url,
+                status=200,
+                content_type="text/html",
+                headers={"content-type": "text/html"},
+                body=pages[url].encode("utf-8"),
+            )
+
+        crawler.fetcher.fetch = fake_fetch
+        for url in pages:
+            await crawler._process(url, "dup", 1, "https://dup.sample.cn/column/1.htm")
+        await crawler.close()
+
+    async def test_same_body_articles_across_columns_are_deduplicated(self) -> None:
+        # VSB sites republish the same article under several columns with
+        # distinct URLs and page chrome; identical body text must collapse to
+        # the first indexed copy.
+        first_url = "https://dup.sample.cn/info/1055/1001.htm"
+        second_url = "https://dup.sample.cn/info/1055/1002.htm"
+        body_text = "跨栏目同文正文，用来验证按内容哈希去重。" * 20
+        await self._process_column_pages(
+            {
+                first_url: self._article_html("甲", body_text),
+                second_url: self._article_html("乙", body_text),
+            }
+        )
+
+        store = Store(self.db_path, self.data_dir)
+        articles = {
+            row["url"]
+            for row in store_core(store).execute("SELECT url FROM articles")
+        }
+        second_page = store_core(store).execute(
+            "SELECT duplicate_of FROM pages WHERE url=?", (second_url,)
+        ).fetchone()
+        store.close()
+
+        self.assertEqual(articles, {first_url})
+        self.assertEqual(second_page["duplicate_of"], first_url)
+
+    async def test_different_body_articles_are_both_indexed(self) -> None:
+        first_url = "https://dup.sample.cn/info/1055/1001.htm"
+        second_url = "https://dup.sample.cn/info/1055/1002.htm"
+        await self._process_column_pages(
+            {
+                first_url: self._article_html("甲", "第一篇文章的正文内容，足够长。" * 20),
+                second_url: self._article_html("乙", "第二篇文章写着完全不同的内容。" * 20),
+            }
+        )
+
+        store = Store(self.db_path, self.data_dir)
+        articles = {
+            row["url"]
+            for row in store_core(store).execute("SELECT url FROM articles")
+        }
+        second_page = store_core(store).execute(
+            "SELECT duplicate_of FROM pages WHERE url=?", (second_url,)
+        ).fetchone()
+        store.close()
+
+        self.assertEqual(articles, {first_url, second_url})
+        self.assertEqual(second_page["duplicate_of"], "")
+
+    async def test_short_identical_bodies_are_not_deduplicated(self) -> None:
+        # Brief notices share boilerplate-heavy bodies; below the content
+        # dedup floor they keep their own article rows.
+        first_url = "https://dup.sample.cn/info/1055/1001.htm"
+        second_url = "https://dup.sample.cn/info/1055/1002.htm"
+        body_text = "简短通知正文，不足内容判重下限。"
+        await self._process_column_pages(
+            {
+                first_url: self._article_html("甲", body_text),
+                second_url: self._article_html("乙", body_text),
+            }
+        )
+
+        store = Store(self.db_path, self.data_dir)
+        articles = {
+            row["url"]
+            for row in store_core(store).execute("SELECT url FROM articles")
+        }
+        second_page = store_core(store).execute(
+            "SELECT duplicate_of FROM pages WHERE url=?", (second_url,)
+        ).fetchone()
+        store.close()
+
+        self.assertEqual(articles, {first_url, second_url})
+        self.assertEqual(second_page["duplicate_of"], "")
+
 
     async def test_process_resolves_duplicate_digest_once_per_page(self) -> None:
         # The body must exceed the small-page duplicate floor so the digest
