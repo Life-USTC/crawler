@@ -1414,8 +1414,26 @@ def extract_page(
     listing_url = bool(
         re.search(r"/(?:list|index)(?:[-_]?\d+)?(?:/|\.[^/?]+)?$", urlsplit(url).path, re.I)
     )
+    # mcip (a VSB variant) publishes each news item as a single-article
+    # column page at */list.htm: the page carries a detail title and a full
+    # article body instead of a link list.  Requiring both containers keeps
+    # true listings (no article shell) excluded.
+    single_article_listing_url = bool(
+        listing_url
+        and soup.select_one(".arti_title")
+        and soup.select_one(".wp_articlecontent")
+        and len(body_text) > 180
+    )
+    if single_article_listing_url:
+        listing_url = False
     is_article = (
-        bool(article_ld or explicit_published or detail_url or indico_detail)
+        bool(
+            article_ld
+            or explicit_published
+            or detail_url
+            or indico_detail
+            or single_article_listing_url
+        )
         and not attachment_shell
         and not listing_url
     )

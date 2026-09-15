@@ -900,6 +900,40 @@ class ExtractTests(unittest.TestCase):
         # The script source itself must not leak into the plain-text body.
         self.assertNotIn("vsb_pdf_image_data", page.article.body_text)
 
+    def test_single_article_list_htm_page_is_an_article(self) -> None:
+        # mcip (a VSB variant) publishes each news item as a single-article
+        # column page whose URL ends in list.htm; the page carries a detail
+        # title and a full wp_articlecontent body instead of a link list.
+        html = """
+        <html><head><title>课题组在多模态数据融合方向取得新进展</title></head><body>
+        <div class='arti_title'>课题组在多模态数据融合方向取得新进展</div>
+        <div class='wp_articlecontent'>
+        <p>近日，课题组在多模态数据融合方向取得新进展，相关成果发表于国际学术期刊，受到同行广泛关注。</p>
+        <p>该研究提出了一种新的多模态融合框架，显著提升了复杂场景下的感知精度与系统鲁棒性。</p>
+        <p>研究工作得到了多个项目的支持，团队成员在数据采集、模型训练和实验验证方面付出了大量努力，并与多家单位开展了深入合作。</p>
+        <p>后续工作将围绕实际应用场景展开，持续推进相关成果的转化与落地应用，为行业发展提供有力的技术支撑。</p>
+        </div></body></html>
+        """
+        page = extract_page("https://mcip.ustc.edu.cn/xsjl/list.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertIn("多模态融合框架", page.article.body_text)
+
+    def test_list_htm_listing_without_article_shell_is_not_an_article(self) -> None:
+        # A true VSB listing at */list.htm (no detail title / content
+        # container, just a link list) stays excluded.
+        html = """
+        <html><head><title>新闻动态</title></head><body>
+        <ul class='news_list'>
+        <li><a href='/xwzx/1.htm'>学院召开年度工作总结会议</a><span>2026-09-01</span></li>
+        <li><a href='/xwzx/2.htm'>课题组参加国际学术会议并作报告</a><span>2026-08-20</span></li>
+        <li><a href='/xwzx/3.htm'>新生入学教育系列活动顺利开展</a><span>2026-08-05</span></li>
+        </ul>
+        </body></html>
+        """
+        page = extract_page("https://mcip.ustc.edu.cn/xwzx/list.htm", html)
+        self.assertIsNone(page.article)
+
     def test_wordpress_attachment_shell_is_not_an_article(self) -> None:
         page = extract_page(
             "https://teach.ustc.edu.cn/?attachment_id=20483",
