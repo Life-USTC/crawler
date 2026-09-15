@@ -898,14 +898,23 @@ def _is_hidden(node: Tag) -> bool:
     return "tz-selector" in marker or "timezone-selector" in marker
 
 
+def _is_main_column_aside(node: Tag) -> bool:
+    """Identify asides that render the main column rather than chrome.
+
+    Ghost-style themes (bigdata) put the article itself inside an
+    ``<aside class="... sidebar">`` column, and the same theme renders the
+    whole listing table (dozens of article outlinks) in that aside on index
+    pages.  An aside wrapping an ``<article>`` or a substantial link list is
+    content, not a sidebar.
+    """
+    return node.find("article") is not None or len(node.find_all("a", href=True)) >= 8
+
+
 def _is_shell_container(node: Tag) -> bool:
     if node.name in {"header", "footer", "nav"}:
         return True
     if node.name == "aside":
-        # Ghost-style themes (bigdata) put the article itself inside an
-        # <aside class="... sidebar"> column.  An aside that contains an
-        # <article> is the main column, not chrome.
-        return node.find("article") is None
+        return not _is_main_column_aside(node)
     markers = [str(node.get("id", "")), *(str(value) for value in node.get("class", []))]
     if any(
         marker.strip().casefold()
@@ -1036,8 +1045,9 @@ def _clean_root(root: Tag) -> None:
             continue
         node.decompose()
     for node in root.find_all(["header", "footer", "nav", "aside"]):
-        # Keep an aside that wraps the article itself (Ghost-style themes).
-        if node.name == "aside" and node.find("article") is not None:
+        # Keep an aside that wraps the article or the listing link table
+        # (Ghost-style main column).
+        if node.name == "aside" and _is_main_column_aside(node):
             continue
         node.decompose()
     # Metadata bars that share the chosen content container on several
