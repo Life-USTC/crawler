@@ -20,6 +20,7 @@ from .models import PageDocument, SourceConfig
 from .routing import source_id_for_url
 from .scoring import (
     _date_from_url,
+    article_link_count,
     document_asset_url,
     is_obvious_low_value_url,
     score_page,
@@ -28,6 +29,14 @@ from .scoring import (
 from .store import Store
 
 HTML_TYPES = {"text/html", "application/xhtml+xml", ""}
+
+# A page carrying at least this many same-host article-shaped links is a
+# listing worth following even when the scorer sees no text body (shell).
+MIN_ARTICLE_LINK_SIGNAL = 5
+
+# Raw bodies below this size are mostly redirect stubs and empty shells whose
+# digests collide across unrelated hosts; they never mark a page duplicate.
+MIN_DUPLICATE_BODY_BYTES = 2048
 
 
 def _parse_since(value: str) -> datetime | None:
@@ -647,10 +656,14 @@ class AsyncCrawler:
             page.article.published_at = requested_published_at
         document_link_count = sum(1 for target in page.links if document_asset_url(target))
         body_digest = hashlib.sha256(response.body).hexdigest()
-        duplicate_of = self.store.duplicate_page_url(
-            body_digest,
-            url,
-            prefer_article=page.article is not None,
+        duplicate_of = (
+            self.store.duplicate_page_url(
+                body_digest,
+                url,
+                prefer_article=page.article is not None,
+            )
+            if len(response.body) >= MIN_DUPLICATE_BODY_BYTES
+            else ""
         )
         result = score_page(
             url=url,
@@ -728,6 +741,7 @@ class AsyncCrawler:
             or result.value_score >= self.options.min_value_score
             or result.page_kind in {"news_listing", "course_resource"}
             or url_priority(url, source_id, parent) >= 400
+            or article_link_count(response.final_url or url, page.links) >= MIN_ARTICLE_LINK_SIGNAL
         )
         if (self.options.incremental and page.article is not None) or suppressed_by_cutoff:
             # Incremental discovery starts from refreshed listings. Article
@@ -735,7 +749,10 @@ class AsyncCrawler:
             # otherwise expand back through the full historical site.
             should_follow = False
         fresh_attachment_links: set[str] = set()
-        if should_follow and not duplicate_of:
+        if should_follow:
+            # A duplicate page is kept out of the article index, but its
+            # outlinks are still discovery evidence (e.g. a mirrored listing
+            # whose copy is the only copy ever fetched).
             follow_targets = list(page.links)
         elif self.options.incremental and saved_fresh_article and not duplicate_of:
             # Attachments of a freshly published article are still downloaded

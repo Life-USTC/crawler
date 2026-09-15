@@ -570,12 +570,228 @@ class CrawlSinceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page["published_at"], "2026-08-30")
         store.close()
 
+    async def test_shell_listing_with_article_links_is_followed(self) -> None:
+        # A JavaScript shell listing carries no text body, so the scorer
+        # honestly reports shell/0; the crawler must still follow it when the
+        # page exposes enough same-host article-shaped links.
+        grad_source = SourceConfig(
+            id="grad",
+            name="研究生院示例",
+            organization_level="university",
+            seed_urls=["https://yz.sample.cn/"],
+            allowed_hosts=["yz.sample.cn"],
+        )
+        store = Store(self.db_path, self.data_dir)
+        store.add_source(grad_source)
+        store.close()
+
+        links_html = "".join(
+            f"<a href='https://yz.sample.cn/info/1055/{1000 + index}.htm'>详情{index}</a>"
+            for index in range(6)
+        )
+        html = f"<html><body><div class='list'><ul>{links_html}</ul></div></body></html>"
+        crawler = self._crawler()
+        crawler.sources["grad"] = grad_source
+        crawler.configured_sources["grad"] = grad_source
+
+        async def fake_fetch(url: str, *, max_bytes: int | None = None) -> FetchResponse:
+            return FetchResponse(
+                requested_url=url,
+                final_url=url,
+                status=200,
+                content_type="text/html",
+                headers={"content-type": "text/html"},
+                body=html.encode("utf-8"),
+            )
+
+        crawler.fetcher.fetch = fake_fetch
+        await crawler._process("https://yz.sample.cn/column/181", "grad", 1, "https://yz.sample.cn/")
+        await crawler.close()
+
+        store = Store(self.db_path, self.data_dir)
+        page_row = store_core(store).execute(
+            "SELECT page_kind, value_score FROM pages WHERE url=?",
+            ("https://yz.sample.cn/column/181",),
+        ).fetchone()
+        frontier = {
+            row["url"]: row["status"]
+            for row in store_core(store).execute(
+                "SELECT url, status FROM frontier WHERE source_id='grad'"
+            ).fetchall()
+        }
+        store.close()
+
+        self.assertIsNotNone(page_row)
+        self.assertEqual(page_row["page_kind"], "shell")
+        for index in range(6):
+            article_url = f"https://yz.sample.cn/info/1055/{1000 + index}.htm"
+            self.assertEqual(frontier.get(article_url), "pending")
+
+    async def test_small_identical_bodies_across_hosts_are_not_duplicates(self) -> None:
+        # Tiny stub pages (redirect placeholders, empty shells) collide by
+        # digest across unrelated hosts; they must not suppress each other.
+        stub_sources = [
+            SourceConfig(
+                id="sta",
+                name="站点甲",
+                organization_level="university",
+                seed_urls=["https://a.sample.cn/"],
+                allowed_hosts=["a.sample.cn"],
+            ),
+            SourceConfig(
+                id="stb",
+                name="站点乙",
+                organization_level="university",
+                seed_urls=["https://b.sample.cn/"],
+                allowed_hosts=["b.sample.cn"],
+            ),
+        ]
+        store = Store(self.db_path, self.data_dir)
+        for stub_source in stub_sources:
+            store.add_source(stub_source)
+        store.close()
+
+        html = (
+            "<html><head><meta http-equiv='refresh' content='0;url=/main.htm'></head>"
+            "<body>页面跳转中</body></html>"
+        )
+        crawler = self._crawler()
+        for stub_source in stub_sources:
+            crawler.sources[stub_source.id] = stub_source
+            crawler.configured_sources[stub_source.id] = stub_source
+
+        async def fake_fetch(url: str, *, max_bytes: int | None = None) -> FetchResponse:
+            return FetchResponse(
+                requested_url=url,
+                final_url=url,
+                status=200,
+                content_type="text/html",
+                headers={"content-type": "text/html"},
+                body=html.encode("utf-8"),
+            )
+
+        crawler.fetcher.fetch = fake_fetch
+        await crawler._process("https://a.sample.cn/", "sta", 0, "")
+        await crawler._process("https://b.sample.cn/", "stb", 0, "")
+        await crawler.close()
+
+        store = Store(self.db_path, self.data_dir)
+        rows = {
+            row["url"]: row["duplicate_of"]
+            for row in store_core(store).execute("SELECT url, duplicate_of FROM pages")
+        }
+        store.close()
+
+        self.assertEqual(rows["https://a.sample.cn/"], "")
+        self.assertEqual(rows["https://b.sample.cn/"], "")
+
+    async def test_duplicate_page_still_contributes_outlinks(self) -> None:
+        # A duplicate page is suppressed from the article index, but its
+        # outlinks are still discovery evidence and must reach the frontier.
+        dup_source = SourceConfig(
+            id="dup",
+            name="重复示例站",
+            organization_level="university",
+            seed_urls=["https://dup.sample.cn/"],
+            allowed_hosts=["dup.sample.cn"],
+        )
+        keeper_url = "https://dup.sample.cn/info/1055/1001.htm"
+        duplicate_url = "https://dup.sample.cn/info/1055/1002.htm"
+        outlink = "https://dup.sample.cn/info/1055/2000.htm"
+        padding = "相同正文填充段落，用来让页面体超过小页面判重下限。" * 100
+        html = f"""<html><body><article>
+          <h1>跨栏目重复新闻</h1>
+          <p>{padding}</p>
+          <a href='{outlink}'>相关阅读</a>
+        </article></body></html>"""
+        body = html.encode("utf-8")
+        self.assertGreaterEqual(len(body), 2048)
+
+        store = Store(self.db_path, self.data_dir)
+        store.add_source(dup_source)
+        store.save_page(
+            PageDocument(
+                requested_url=keeper_url,
+                final_url=keeper_url,
+                status=200,
+                content_type="text/html",
+                fetched_at="2026-08-01T00:00:00+08:00",
+                title="跨栏目重复新闻",
+                canonical_url=keeper_url,
+                html=html,
+                links=[outlink],
+                images=[],
+            ),
+            "dup",
+            1,
+        )
+        store.save_article(
+            ArticleDocument(
+                url=keeper_url,
+                source_id="dup",
+                title="跨栏目重复新闻",
+                author="",
+                published_at="",
+                updated_at="",
+                category="",
+                summary="",
+                body_html=f"<p>{padding}</p>",
+                body_text=padding,
+                body_markdown=padding,
+                extraction_method="test",
+                source_page_url=keeper_url,
+            )
+        )
+        store.close()
+
+        crawler = self._crawler()
+        crawler.sources["dup"] = dup_source
+        crawler.configured_sources["dup"] = dup_source
+
+        async def fake_fetch(url: str, *, max_bytes: int | None = None) -> FetchResponse:
+            return FetchResponse(
+                requested_url=url,
+                final_url=url,
+                status=200,
+                content_type="text/html",
+                headers={"content-type": "text/html"},
+                body=body,
+            )
+
+        crawler.fetcher.fetch = fake_fetch
+        await crawler._process(duplicate_url, "dup", 1, "https://dup.sample.cn/column/2.htm")
+        await crawler.close()
+
+        store = Store(self.db_path, self.data_dir)
+        page_row = store_core(store).execute(
+            "SELECT duplicate_of FROM pages WHERE url=?", (duplicate_url,)
+        ).fetchone()
+        keeper_article = store_core(store).execute(
+            "SELECT url FROM articles WHERE url=?", (keeper_url,)
+        ).fetchone()
+        duplicate_article = store_core(store).execute(
+            "SELECT url FROM articles WHERE url=?", (duplicate_url,)
+        ).fetchone()
+        frontier_row = store_core(store).execute(
+            "SELECT status FROM frontier WHERE url=?", (outlink,)
+        ).fetchone()
+        store.close()
+
+        self.assertEqual(page_row["duplicate_of"], keeper_url)
+        self.assertIsNotNone(keeper_article)
+        self.assertIsNone(duplicate_article)
+        self.assertIsNotNone(frontier_row)
+        self.assertEqual(frontier_row["status"], "pending")
+
 
     async def test_process_resolves_duplicate_digest_once_per_page(self) -> None:
-        html = """<html><body><article>
+        # The body must exceed the small-page duplicate floor so the digest
+        # lookup runs at all.
+        padding = "查重填充段落，用来让页面体超过小页面判重下限。" * 100
+        html = f"""<html><body><article>
           <h1>查重计数新闻</h1>
           <p>这是足够长的正文内容，用来验证每页只进行一次内容查重查询。</p>
-          <p>第二段正文确保页面得分可以达到索引阈值。</p>
+          <p>{padding}</p>
         </article></body></html>"""
         crawler = self._crawler()
 
