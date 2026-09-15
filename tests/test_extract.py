@@ -1252,3 +1252,248 @@ class ExtractTests(unittest.TestCase):
         self.assertIsNotNone(page.article)
         assert page.article is not None
         self.assertEqual(page.article.category, "通知公告")
+
+
+class Wave2TitleTests(unittest.TestCase):
+    def test_h1_fallback_skips_vsb_column_portlet(self) -> None:
+        # hospital.ustc.edu.cn: the first h1 is a VSB column portlet
+        # (frag=... + span.Column_Name); the real title is a later bare h1.
+        html = """
+        <html><head><title>年度健康体检工作通知-医院</title></head><body>
+        <h1 class="fl" frag="窗口9"><span class='Column_Name'>医院新闻</span></h1>
+        <div class='v_news_content'><h1>年度健康体检工作通知安排</h1>
+        <p>各有关单位：现将年度健康体检工作安排通知如下，请各单位及时转告相关人员并按要求预约。</p></div>
+        </body></html>
+        """
+        page = extract_page("https://hospital.ustc.edu.cn/2026/0901/c1234a567890/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "年度健康体检工作通知安排")
+
+    def test_generic_column_heading_falls_back_to_document_title(self) -> None:
+        # etcis: portlet h1 carries the column name "中心新闻"; the real
+        # title is in <title> with a "标题-站名" shape.
+        html = """
+        <html><head><title>江苏省南菁高级中学来我校开展暑期研学活动-信息与计算机科学实验教学中心</title></head><body>
+        <h1 class="display-4 text-primary">中心新闻</h1>
+        <div class='v_news_content'>
+        <p>江苏省南菁高级中学师生一行来我校开展暑期研学活动，参观了实验室并听取科普报告。</p></div>
+        </body></html>
+        """
+        page = extract_page("https://etcis-web.ustc.edu.cn/2026/0819/c3668a750644/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "江苏省南菁高级中学来我校开展暑期研学活动")
+
+    def test_detail_heading_notice_title(self) -> None:
+        # physics-lab (jxzy): <title> is the site name only, the real title
+        # lives in div.notice_title.
+        html = """
+        <html><head><title>中国科学技术大学物理实验教学中心</title></head><body>
+        <div class="notice_title">关于开放物理实验室的通知</div>
+        <div class='v_news_content'>
+        <p>物理实验室将于下周起面向全校师生开放，请需要使用实验室的老师同学提前预约登记。</p></div>
+        </body></html>
+        """
+        page = extract_page("https://jxzy.ustc.edu.cn/info/1011/1285.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "关于开放物理实验室的通知")
+
+    def test_detail_heading_wl_nrytitle_wins_over_column_h1(self) -> None:
+        # quantum-materials: two h1 elements; .wl-stitle h1 is the column
+        # name and .wl-nrytitle h1 is the article title.
+        html = """
+        <html><head><title>陈子元博士毕业欢送会(2025)</title></head><body>
+        <div class="wl-stitle"><h1>组内动态</h1></div>
+        <div class="wl-nrytitle"><h1>陈子元博士毕业欢送会(2025)</h1></div>
+        <div class='v_news_content'>
+        <p>课题组为陈子元博士举行毕业欢送会，回顾其在组期间的研究工作并合影留念。</p></div>
+        </body></html>
+        """
+        page = extract_page("https://quantum-materials.ustc.edu.cn/2025/1218/c36591a716747/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "陈子元博士毕业欢送会(2025)")
+
+    def test_detail_heading_detail_header_wins_over_position_box(self) -> None:
+        # set: .position-box h1 is the column banner, .detail-header h1 is
+        # the real article title.
+        html = """
+        <html><head><title>从爱因斯坦的好奇心到量子计算机</title></head><body>
+        <div class="position-box"><h1>通知公告 - 瀚海讲堂</h1></div>
+        <div class="detail-header"><h1>从爱因斯坦的好奇心到量子计算机</h1><p>发布时间：2026-06-09</p></div>
+        <div class='v_news_content'>
+        <p>瀚海讲堂本期邀请知名学者讲述从爱因斯坦的好奇心到量子计算机的科学历程。</p></div>
+        </body></html>
+        """
+        page = extract_page("https://set.ustc.edu.cn/2026/0609/c35480a743977/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "从爱因斯坦的好奇心到量子计算机")
+
+    def test_lead_paragraph_title_truncates_at_word_boundary(self) -> None:
+        # mbit: no title element at all, the lead paragraph becomes the
+        # title and must not be cut in the middle of an English word.
+        lead = (
+            "On June 1, 2026, the research group welcomed Prof. Stefaan from "
+            "an international partner institute for a two week academic visit "
+            "focused on collaborative research and graduate student training "
+            "programs in advanced materials science and engineering."
+        )
+        html = f"""
+        <html><head><title>News</title></head><body>
+        <article><p>{lead}</p></article>
+        </body></html>
+        """
+        page = extract_page("https://www.mbit.ustc.edu.cn/news/detail/54", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        title = page.article.title
+        self.assertTrue(lead.startswith(title), title)
+        self.assertLessEqual(len(title), 160)
+        # The character right after the title must be a word boundary.
+        self.assertEqual(lead[len(title)], " ", title)
+
+    def test_generic_placeholder_title_uses_bold_lead(self) -> None:
+        # spin: every page title is the placeholder "NEW PUBLISHED PAPER";
+        # the real paper title is the first <strong> in the body.
+        html = """
+        <html><head><title>NEW PUBLISHED PAPER</title></head><body>
+        <h1 class="wl-newsh1">NEW PUBLISHED PAPER</h1>
+        <div class='v_news_content'>
+        <p><strong>Quantum sensing with spin defects in wide-bandgap materials</strong></p>
+        <p>We report a new study on quantum sensing published this week in a peer reviewed journal.</p>
+        </div></body></html>
+        """
+        page = extract_page("https://spin.ustc.edu.cn/2026/0221/c35808a721553/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(
+            page.article.title,
+            "Quantum sensing with spin defects in wide-bandgap materials",
+        )
+
+    def test_real_title_not_replaced_by_bold_lead(self) -> None:
+        html = """
+        <html><head><title>正常文章标题-某学院</title></head><body>
+        <h1>正常文章标题</h1>
+        <div class='v_news_content'>
+        <p><strong>加粗的重点句不应成为标题</strong>，正文其余部分正常展开叙述。</p>
+        </div></body></html>
+        """
+        page = extract_page("https://sgy.ustc.edu.cn/2026/0713/c42697a747449/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "正常文章标题")
+
+
+class Wave2DateTests(unittest.TestCase):
+    def test_bare_date_label_is_recognized(self) -> None:
+        # university VSB subsites label the date as a bare 日期：... span.
+        html = """
+        <html><head><title>主题教育专题学习活动通知</title></head><body>
+        <div class='v_news_content'>
+        <p><span>日期：2024-10-11</span></p>
+        <p>现将主题教育专题学习活动安排通知如下，请各支部组织党员按时参加学习。</p>
+        </div></body></html>
+        """
+        page = extract_page(
+            "https://www.ustc.edu.cn/tzggcontent.jsp?urltype=news.NewsContentUrl&wbnewsid=2&wbtreeid=1363",
+            html,
+        )
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.published_at, "2024-10-11")
+
+    def test_event_date_label_is_not_a_publication_date(self) -> None:
+        # "比赛日期" / "活动日期" style labels describe the event, not the
+        # publication time, and must not satisfy the bare 日期 label.
+        html = """
+        <html><head><title>校园足球联赛通知</title></head><body>
+        <div class='v_news_content'>
+        <p>比赛日期：2026-10-01，请各参赛队伍提前半小时到场签到。</p>
+        <p>现将校园足球联赛整体安排通知如下，请各单位按要求组织报名工作。</p>
+        </div></body></html>
+        """
+        page = extract_page(
+            "https://www.ustc.edu.cn/tzggcontent.jsp?urltype=news.NewsContentUrl&wbnewsid=3&wbtreeid=1363",
+            html,
+        )
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.published_at, "")
+
+    def test_labeled_page_date_beats_url_path_date(self) -> None:
+        # sjc: the URL path date is the page rebuild date; the 发布时间 in
+        # the page header is the real publication date.
+        html = """
+        <html><head><title>年度审计结果公告</title></head><body>
+        <div class='inner-news-detail'>
+        <div class='inner-news-hd'>发布时间：2026-05-21 点击率：105 次</div>
+        <p>现将年度审计结果公告如下，具体内容请参见附件说明与相关文件材料。</p>
+        </div></body></html>
+        """
+        page = extract_page("https://sjc.ustc.edu.cn/2026/0630/c32882a745899/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.published_at, "2026-05-21")
+
+    def test_url_path_date_remains_fallback(self) -> None:
+        html = """
+        <html><head><title>年度审计结果公告</title></head><body>
+        <div class='inner-news-detail'>
+        <p>现将年度审计结果公告如下，具体内容请参见附件说明与相关文件材料。</p>
+        </div></body></html>
+        """
+        page = extract_page("https://sjc.ustc.edu.cn/2026/0630/c32882a745899/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.published_at, "2026-06-30")
+
+    def test_time_datetime_attribute_is_used(self) -> None:
+        # mbit publication/team pages expose the date only via
+        # <time class="entry-date published" datetime="...">.
+        html = """
+        <html><head><title>Publication - MBIT Lab</title></head><body>
+        <article><h1>Some Paper Title</h1>
+        <time class="entry-date published" datetime="2026-06-01">June 1, 2026</time>
+        <p>Paper abstract content goes here with enough length to be a body of text.</p>
+        </article></body></html>
+        """
+        page = extract_page("https://www.mbit.ustc.edu.cn/publication/detail/100", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.published_at, "2026-06-01")
+
+    def test_unlabeled_news_top_p_date(self) -> None:
+        # xcb: the old template puts a bare date in p.news-top-p above the
+        # h5.news-top-h5 title.
+        html = """
+        <html><head><title>学校召开年度工作会议</title></head><body>
+        <p class="news-top-p">2012.12.06</p><h5 class="news-top-h5">学校召开年度工作会议</h5>
+        <div class='v_news_content'>
+        <p>学校于本周召开年度工作会议，总结全年工作并部署下一阶段重点任务安排。</p>
+        </div></body></html>
+        """
+        page = extract_page("http://xcb.ustc.edu.cn/info/1011/19247.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.published_at, "2012-12-06")
+
+    def test_labeled_date_in_plain_div_near_title(self) -> None:
+        # journal: 发布时间 sits in a plain classless div next to the title.
+        html = """
+        <html><head><title>关于本刊2026年征订的通知</title></head><body>
+        <div class="article-head"><h1>关于本刊2026年征订的通知</h1>
+        <div>发布时间：2015-11-18</div></div>
+        <div class='article-content'>
+        <p>本刊2026年度征订工作现已开始，请各单位联系人及时办理相关订阅手续，征订的具体范围、价格与联系方式详见下文说明。</p>
+        </div></body></html>
+        """
+        page = extract_page(
+            "https://journal.ustc.edu.cn/ch/reader/view_news.aspx?id=20151118091450623", html
+        )
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.published_at, "2015-11-18")
