@@ -85,8 +85,10 @@ jobs:
 
       - name: Reindex adapter-covered sources
         if: inputs.reindex
+        # 退出码语义:0=干净,2=完成但有 per-item 失败,其他=崩溃(必须红)。
+        # 管道后显式检查 PIPESTATUS,与 Crawl and sync 的写法一致:tee 吞掉
+        # 管道状态,崩溃(1)在这里必须让步骤红。
         run: |
-          set -o pipefail
           uv run ustc-crawler reindex \
             --source library \
             --source unit-mech-ustc-edu-cn \
@@ -94,23 +96,27 @@ jobs:
             --source unit-iat-ustc-edu-cn \
             --source graduate-admissions \
             --source course 2>&1 | tee reindex.log
+          test "${PIPESTATUS[0]}" = 0 -o "${PIPESTATUS[0]}" = 2
           uv run ustc-crawler sync-backfill 2>&1 | tee backfill.log
+          test "${PIPESTATUS[0]}" = 0
 
       - name: Retext article bodies
         if: inputs.retext
+        # 退出码语义:0=干净,2=完成但有 per-item 失败,其他=崩溃(必须红)。
         run: |
-          set -o pipefail
           uv run ustc-crawler retext 2>&1 | tee retext.log
+          test "${PIPESTATUS[0]}" = 0 -o "${PIPESTATUS[0]}" = 2
           uv run ustc-crawler sync-backfill 2>&1 | tee backfill.log
+          test "${PIPESTATUS[0]}" = 0
 
       - name: Requeue locally failed batches
         if: inputs.requeue_failed
-        # pipefail matters here: without it a crashing requeue (e.g. malformed
-        # DB in run 34802169939) still exits green because tee swallows the
-        # status, and the run proceeds to save the broken state back to cache.
+        # 退出码语义:0=干净,2=完成但有 per-item 失败,其他=崩溃(必须红)。
+        # 管道后的显式 PIPESTATUS 检查取代 pipefail:崩溃(1)必须红(参考
+        # run 34802169939 的 DB 损坏事故),但完成态的 2 不应让步骤红。
         run: |
-          set -o pipefail
           uv run ustc-crawler sync-requeue-failed 2>&1 | tee requeue.log
+          test "${PIPESTATUS[0]}" = 0 -o "${PIPESTATUS[0]}" = 2
 
       - name: Crawl and sync
         env:
@@ -128,13 +134,15 @@ jobs:
             echo "::error::vars.CRAWLER_SERVER is not set; configure it under Settings > Secrets and variables > Actions > Variables"
             exit 1
           fi
+          # 退出码语义:0=干净,2=完成但有 per-item 失败,124=预算耗尽,其他=崩溃(必须红)。
+          # db-upgrade 只接受 0:升级失败意味着 schema 不可信,必须红。
           uv run ustc-crawler db-upgrade 2>&1 | tee db-upgrade.log
           test "${PIPESTATUS[0]}" = 0
           uv run ustc-crawler crawl --incremental 2>&1 | tee crawl.log
-          test "${PIPESTATUS[0]}" = 0
+          test "${PIPESTATUS[0]}" = 0 -o "${PIPESTATUS[0]}" = 2
           timeout --signal=TERM --kill-after=60s "${SYNC_BUDGET_MINUTES}m" \
             uv run ustc-crawler sync --server "${{ vars.CRAWLER_SERVER }}" 2>&1 | tee sync.log
-          test "${PIPESTATUS[0]}" = 0 -o "${PIPESTATUS[0]}" = 124
+          test "${PIPESTATUS[0]}" = 0 -o "${PIPESTATUS[0]}" = 124 -o "${PIPESTATUS[0]}" = 2
 
       - name: Report non-terminal sync state
         # Diagnose through a read-only stdlib sqlite3 connection, not Store:
