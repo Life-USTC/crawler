@@ -1421,6 +1421,18 @@ def extract_page(
                     break
             if hint:
                 link_dates[target] = hint
+    # Some CMS templates (yz column pages) navigate with
+    # onclick="window.open('...')" on list items instead of <a href>; those
+    # targets are the listing's only outlinks to article pages.
+    for node in soup.select("[onclick]"):
+        onclick = str(node.get("onclick") or "")
+        match = re.search(r"window\.open\(\s*(['\"])([^'\"]+)\1", onclick)
+        if not match:
+            continue
+        target = normalize_url(match.group(2), url)
+        if target and target not in seen_links:
+            seen_links.add(target)
+            links.append(target)
     for target in embedded_documents:
         if target not in seen_links:
             seen_links.add(target)
