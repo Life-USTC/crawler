@@ -178,6 +178,12 @@ GENERIC_HEADINGS = {
     "图片新闻",
     "新闻通知",
     "new published paper",
+    # hospital sidebar/banner h1s: the 科室 pages render the column name in
+    # the sideMenu header (h1.tit) and an untouched template placeholder in
+    # the SubBan banner, while the real title sits in the article h1 and the
+    # document title.
+    "科室设置",
+    "测试栏目名称",
 }
 
 GENERIC_CATEGORIES = {

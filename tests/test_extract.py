@@ -1391,6 +1391,44 @@ class Wave2TitleTests(unittest.TestCase):
         assert page.article is not None
         self.assertEqual(page.article.title, "从爱因斯坦的好奇心到量子计算机")
 
+    def test_sidebar_column_h1_falls_back_to_document_title(self) -> None:
+        # hospital.ustc.edu.cn 科室页: the sidebar menu header h1.tit carries
+        # the column name "科室设置"; the real title is the article h1 and
+        # the document title.
+        html = """
+        <html><head><title>眼科</title></head><body>
+        <div class="sideMenu fl"><div class="side_top"><h1 class="tit">科室设置</h1></div></div>
+        <article class="news-details auto w_96"><div><div class="title"><h1>眼科</h1></div>
+        <div class='v_news_content'>
+        <p>眼科现有医护人员若干名，承担全校师生眼科常见病多发病的诊疗与健康体检工作。</p></div>
+        </div></article>
+        </body></html>
+        """
+        page = extract_page("https://hospital.ustc.edu.cn/2023/1120/c35257a620331/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "眼科")
+
+    def test_banner_placeholder_h1_falls_back_to_document_title(self) -> None:
+        # hospital.ustc.edu.cn 科室介绍页: the sub-page banner h1 keeps the
+        # template placeholder "测试栏目名称"; the real title is the article
+        # h1 and the document title.
+        html = """
+        <html><head><title>院办公室</title></head><body>
+        <div class="SubBan"><div class="imgbox"><h1>测试栏目名称</h1></div></div>
+        <div class="sideMenu fl"><div class="side_top"><h1 class="tit"></h1></div></div>
+        <h1 class="fl" frag="窗口9">科室介绍</h1>
+        <article class="news-details auto w_96"><div><div class="title"><h1>院办公室</h1></div>
+        <div class='v_news_content'>
+        <p>院办公室负责医院行政事务协调、公文流转与会议组织等综合性管理服务工作。</p></div>
+        </div></article>
+        </body></html>
+        """
+        page = extract_page("https://hospital.ustc.edu.cn/2023/1215/c35217a624736/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "院办公室")
+
     def test_lead_paragraph_title_truncates_at_word_boundary(self) -> None:
         # mbit: no title element at all, the lead paragraph becomes the
         # title and must not be cut in the middle of an English word.
