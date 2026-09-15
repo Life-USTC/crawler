@@ -1977,6 +1977,14 @@ class Store:
         removed = 0
         document_articles_removed = 0
         tombstones: dict[str, tuple[str, str]] = {}
+        # Article removal is deferred to a second phase.  A page saved under
+        # its normalized canonical URL (http -> https scheme upgrade) can be
+        # followed by its same-bytes twin page, whose duplicate removal keys
+        # include that very canonical URL; deleting inside the loop removed
+        # the freshly saved article.  Collect candidates here and delete only
+        # URLs this pass never saved.
+        pending_removals: set[str] = set()
+        saved_urls: set[str] = set()
         max_reindex_bytes = 8 * 1024 * 1024
         source_hosts = {
             str(row["id"]): (
@@ -2101,8 +2109,7 @@ class Store:
                         ),
                     )
                     keys = {row["url"], row["final_url"], row["canonical_url"]}
-                    for key in filter(None, keys):
-                        removed += remove_article_with_media(key)
+                    pending_removals.update(filter(None, keys))
                     if scanned % 500 == 0:
                         self._core.commit()
                     continue
@@ -2115,8 +2122,7 @@ class Store:
                         (oversized_reason, row["url"]),
                     )
                     keys = {row["url"], row["final_url"], row["canonical_url"]}
-                    for key in filter(None, keys):
-                        removed += remove_article_with_media(key)
+                    pending_removals.update(filter(None, keys))
                     if scanned % 500 == 0:
                         self._core.commit()
                     continue
@@ -2228,15 +2234,28 @@ class Store:
                         ),
                     )
                 articles += 1
+                saved_urls.add(article.url)
+                # Retire the stale rows this page replaces (e.g. the http
+                # orphan left behind by the https scheme upgrade).  Deferred:
+                # a later twin page's removal keys must not delete the row
+                # just saved.
+                pending_removals.update(
+                    key for key in filter(None, keys) if key != article.url
+                )
             else:
-                for key in filter(None, keys):
-                    removed += remove_article_with_media(key)
+                pending_removals.update(filter(None, keys))
             # Committing once per page turns this pass into millions of
             # synchronous SQLite fsyncs.  Keep the same transactionally
             # consistent result while amortizing the cost over small batches.
             if scanned % 500 == 0:
                 self._core.commit()
         self._core.commit()
+        # Second removal phase: drop every candidate this pass did not save.
+        # Tombstone collection and media detachment keep their usual semantics.
+        for url in sorted(pending_removals - saved_urls):
+            removed += remove_article_with_media(url)
+        if pending_removals:
+            self._core.commit()
         # Older runs could have treated a non-HTML document URL as an article
         # when the origin returned an HTML error shell.  Keep those documents
         # in ``assets``/``pages`` but remove the misleading article records.

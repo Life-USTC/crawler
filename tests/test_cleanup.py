@@ -500,6 +500,100 @@ class RetextArticleBodiesTests(unittest.TestCase):
         self.assertEqual(before, after)
 
 
+class ReindexSchemeTwinTests(unittest.TestCase):
+    """http/https twin pages must not delete each other's canonical article.
+
+    set.ustc.edu.cn is reachable over both schemes and the archive holds one
+    page row per scheme with identical bytes (same sha256).  Reindexing the
+    http page saves the article at the normalized https URL while the stale
+    http article row survives; the https twin page is then treated as a
+    duplicate and its removal pass deleted the canonical https article again.
+    """
+
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        root = Path(self.temp_dir.name)
+        self.data_dir = root / "data"
+        self.db_path = self.data_dir / "crawler.sqlite"
+        self.store = Store(self.db_path, self.data_dir)
+        self.store.add_source(
+            SourceConfig(
+                id="set",
+                name="未来技术学院",
+                organization_level="college",
+                seed_urls=["https://set.ustc.edu.cn/"],
+                allowed_hosts=["set.ustc.edu.cn"],
+            )
+        )
+
+    def tearDown(self) -> None:
+        self.store.close()
+        self.temp_dir.cleanup()
+
+    def test_scheme_twin_pages_keep_canonical_article_and_drop_http_orphan(self) -> None:
+        http_url = "http://set.ustc.edu.cn/2026/0715/c35479a747698/page.htm"
+        https_url = "https://set.ustc.edu.cn/2026/0715/c35479a747698/page.htm"
+        html = """<html><head><title>瀚海讲堂：从爱因斯坦到量子计算机</title></head><body>
+        <article><h1>瀚海讲堂：从爱因斯坦到量子计算机</h1>
+        <time>发布时间：2026-07-15</time>
+        <p>第一段足够长的正文内容，用于让离线重新提取把页面识别为一篇公开的新闻文章。</p>
+        <p>第二段正文确保页面满足文章识别阈值，以验证 http 与 https 孪生页面的重新索引。</p>
+        </article></body></html>"""
+        http_page = extract_page(http_url, html, source_id="set")
+        self.assertIsNotNone(http_page.article)
+        http_page.raw_body = html.encode()
+        self.store.save_page(http_page, "set", 1)
+        # The stale pre-reindex state: an http article row with the old
+        # column-name title, no https canonical row.
+        self.store.save_article(
+            ArticleDocument(
+                url=http_url,
+                source_id="set",
+                title="通知公告 - 瀚海讲堂",
+                author="",
+                published_at="2026-07-15",
+                updated_at="",
+                category="",
+                summary="",
+                body_html="<p>正文</p>",
+                body_text="正文",
+                body_markdown="正文",
+                extraction_method="test",
+                source_page_url=http_url,
+            )
+        )
+        https_page = extract_page(https_url, html, source_id="set")
+        self.assertIsNotNone(https_page.article)
+        https_page.raw_body = html.encode()
+        self.store.save_page(https_page, "set", 1)
+
+        result = self.store.reindex_extractions({"set"})
+
+        self.assertEqual(result["articles"], 1)
+        self.assertEqual(result["removed"], 1)
+        canonical = store_core(self.store).execute(
+            "SELECT title FROM articles WHERE url=?", (https_url,)
+        ).fetchone()
+        self.assertIsNotNone(canonical)
+        assert canonical is not None
+        self.assertEqual(canonical["title"], "瀚海讲堂：从爱因斯坦到量子计算机")
+        self.assertIsNone(
+            store_core(self.store).execute(
+                "SELECT url FROM articles WHERE url=?", (http_url,)
+            ).fetchone()
+        )
+        tombstones = [
+            json.loads(row["payload_json"])
+            for row in store_core(self.store).execute("SELECT payload_json FROM sync_outbox")
+        ]
+        self.assertTrue(
+            any(
+                payload.get("tombstone") and payload.get("canonicalUrl") == http_url
+                for payload in tombstones
+            )
+        )
+
+
 class CleanupCliTests(unittest.TestCase):
     def test_cli_dry_run_reports_counts(self) -> None:
         with TemporaryDirectory() as temp:
