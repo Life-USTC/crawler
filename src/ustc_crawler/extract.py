@@ -597,6 +597,17 @@ def _clean_signature_value(value: str) -> str:
     # Reject values that contain role words without a real name.
     if re.search(r"^(通讯员|编辑|记者|作者)$", value):
         return ""
+    # Reject bare date/time strings: an empty 作者： label followed by the
+    # update timestamp flattens into a date "author" (jgdw).
+    if re.fullmatch(
+        r"20\d{2}[/\-.]\d{1,2}[/\-.]\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?",
+        value,
+    ):
+        return ""
+    # Reject acknowledgement fragments such as "研究/成果受…基金资助" that
+    # the trailing 文/ rule can capture (oic).
+    if "/" in value or "／" in value or re.search(r"受[^，。；;]{0,30}资助", value):
+        return ""
     return value
 
 
@@ -651,10 +662,11 @@ def _trailing_publication_signature(body_text: str) -> str:
         ):
             reporter = _clean_signature_value(match.group(1))
 
-    # 4. Writer label/slash: 文：XXX or 文/XXX
+    # 4. Writer label/slash: 文：XXX or 文/XXX (but not 论文/研究… funding
+    # acknowledgements)
     if not reporter:
         for match in re.finditer(
-            rf"文\s*[:：/]\s*([^{stop}\d]+)(?=(?:{label_stop})|$|[{stop}])",
+            rf"(?<!论)文\s*[:：/]\s*([^{stop}\d]+)(?=(?:{label_stop})|$|[{stop}])",
             tail,
         ):
             reporter = _clean_signature_value(match.group(1))
@@ -667,9 +679,10 @@ def _trailing_publication_signature(body_text: str) -> str:
         ):
             editor = _clean_signature_value(match.group(1))
 
-    # 6. Source: 来源：XXX (skip ``素材来源`` and ``文章来源``; prefer the last source)
+    # 6. Source: 来源：XXX (skip ``素材来源``/``文章来源``/``资金来源``;
+    # prefer the last source)
     for match in re.finditer(
-        rf"(?<!素材)(?<!文章)来源\s*[:：]\s*([^{stop}\d]+)(?=(?:{label_stop})|$|[{stop}])",
+        rf"(?<!素材)(?<!文章)(?<!资金)来源\s*[:：]\s*([^{stop}\d]+)(?=(?:{label_stop})|$|[{stop}])",
         tail,
     ):
         source = _clean_signature_value(match.group(1))
@@ -1322,6 +1335,12 @@ def extract_page(
         )
         or _trailing_publication_signature(body_text)
     )
+    # A "source/author" value that is literally part of the site's keywords
+    # meta is the site slogan, not a byline (qybx 文章来源：全院办校所系结合).
+    # Length-gated so short legitimate unit names are spared.
+    keywords_meta = _first_meta(soup, "keywords")
+    if author and len(author) >= 4 and keywords_meta and author in keywords_meta:
+        author = ""
     summary = _text(article_ld.get("description")) or _first_meta(
         soup, "description", "og:description"
     )

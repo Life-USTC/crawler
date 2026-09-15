@@ -1593,3 +1593,79 @@ class Wave2BodyTests(unittest.TestCase):
         assert page.article is not None
         self.assertEqual(page.article.title, "实验室最新研究成果发布")
         self.assertIn("认知智能方向", page.article.body_text)
+
+
+class Wave2AuthorTests(unittest.TestCase):
+    def test_author_rejects_date_time_value(self) -> None:
+        # jgdw: empty 作者： label followed by the update timestamp; the
+        # flattened meta bar must not turn the date into the author.
+        html = """
+        <html><head><title>机关党委专题学习通知</title></head><body>
+        <p class='arti_title'>机关党委专题学习通知</p>
+        <p class='arti_metas'><span class='arti_publisher'>作者：</span><span class='arti_update'>2026/07/30 05:48</span><span class='arti_views'>浏览次数：10</span></p>
+        <div class='wp_articlecontent'><p>请各党支部组织党员按时参加专题学习，学习内容详见附件材料。</p></div>
+        </body></html>
+        """
+        page = extract_page("https://jgdw.ustc.edu.cn/2026/0730/c19303a749081/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.author, "")
+
+    def test_trailing_source_rejects_funding_prefix(self) -> None:
+        # bwc: procurement notices end with 资金来源：自筹, which is not a
+        # publication source signature.
+        html = """
+        <html><head><title>物业服务采购公告</title></head><body>
+        <div class='v_news_content'>
+        <p>现就校园物业服务项目发布采购公告，欢迎符合条件的供应商参加投标。</p>
+        <p>本项目资金来源：自筹。</p>
+        </div></body></html>
+        """
+        page = extract_page("https://bwc.ustc.edu.cn/2026/0717/c5668a747893/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.author, "")
+
+    def test_trailing_writer_rule_rejects_funding_sentence(self) -> None:
+        # oic: 本论文/研究/成果受…资助 is an acknowledgement, not a 文/署名.
+        html = """
+        <html><head><title>国际联合研究成果发表</title></head><body>
+        <div class='v_news_content'>
+        <p>我校与海外合作高校联合完成的研究成果近日在国际期刊正式发表。</p>
+        <p>本论文/研究/成果受中国科学技术大学全球合作拓展培育基金资助。</p>
+        </div></body></html>
+        """
+        page = extract_page("https://oic.ustc.edu.cn/news/19724.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.author, "")
+
+    def test_author_rejects_site_slogan_from_keywords(self) -> None:
+        # qybx: the site slogan is filled into 文章来源 and also appears in
+        # the keywords meta; such a value is not an author.
+        html = """
+        <html><head><title>科教融合工作会议召开</title>
+        <meta name='keywords' content='中国科学技术大学全院办校所系结合'></head><body>
+        <p class='arti_title'>科教融合工作会议召开</p>
+        <p class='arti_metas'><span class='arti_from'>文章来源：全院办校所系结合</span><span class='arti_update'>发布时间：2026-08-03</span></p>
+        <div class='wp_articlecontent'><p>学校召开科教融合工作会议，部署下一阶段学院与研究所协同重点工作。</p></div>
+        </body></html>
+        """
+        page = extract_page("https://qybx.ustc.edu.cn/2026/0803/c20980a749955/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.author, "")
+
+    def test_author_not_in_keywords_is_preserved(self) -> None:
+        html = """
+        <html><head><title>科教融合工作会议召开</title>
+        <meta name='keywords' content='中国科学技术大学,科教融合'></head><body>
+        <p class='arti_title'>科教融合工作会议召开</p>
+        <p class='arti_metas'><span class='arti_from'>文章来源：科研部</span><span class='arti_update'>发布时间：2026-08-03</span></p>
+        <div class='wp_articlecontent'><p>学校召开科教融合工作会议，部署下一阶段学院与研究所协同重点工作。</p></div>
+        </body></html>
+        """
+        page = extract_page("https://qybx.ustc.edu.cn/2026/0803/c20980a749955/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.author, "科研部")
