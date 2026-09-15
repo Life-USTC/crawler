@@ -1163,7 +1163,6 @@ class SyncClientTests(unittest.TestCase):
                 second.body_html = "<p>Revised HTML</p>"
                 second.body_markdown = "Revised markdown"
                 store.enqueue_article_for_sync(first)
-                store.enqueue_article_for_sync(second)
                 sync = IngestionSyncClient(
                     store.database,
                     store.data_dir,
@@ -1171,6 +1170,13 @@ class SyncClientTests(unittest.TestCase):
                     self.ingestion_secret,
                     http_client=client,
                 )
+                summary = sync.sync()
+                self.assertEqual(summary["acked"], 1)
+                # Fresh-first coalescing keeps only the newest pending event
+                # per identity, so the revision is enqueued after the first
+                # revision has been delivered: both revisions still reach the
+                # server, disambiguated by the (source, url, revision) triple.
+                store.enqueue_article_for_sync(second)
                 summary = sync.sync()
                 self.assertEqual(summary["acked"], 1)
                 with store.database.session_factory() as session:

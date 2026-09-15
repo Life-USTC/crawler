@@ -8,7 +8,7 @@ from collections.abc import Iterable
 from datetime import date, datetime
 from pathlib import Path
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from ..db.engine import Database
@@ -633,6 +633,48 @@ class IngestionOutbox:
                 row.last_error = error_code
                 row.updated_at = now
 
+    @staticmethod
+    def _coalesce_pending_events(session: Session) -> int:
+        """Supersede all but the newest pending event for each entity.
+
+        Only the newest pending revision of an article is worth syncing: its
+        content subsumes every older pending revision, and delivering an
+        older revision after the newer one could roll the article back.
+        Superseded events keep their immutable payload; only lifecycle
+        metadata changes, mirroring the existing batch-supersede semantics.
+        Tombstones share the identity key with body events, so a newest
+        tombstone is kept (the deletion must be delivered) and only yields
+        when an even newer body event exists.
+        """
+
+        rows = session.execute(
+            select(SyncOutbox.event_id, SyncOutbox.entity_key, SyncOutbox.created_at)
+            .where(SyncOutbox.status == "pending", SyncOutbox.batch_id.is_(None))
+            .order_by(SyncOutbox.entity_key, SyncOutbox.created_at, SyncOutbox.event_id)
+        ).all()
+        newest: dict[str, tuple[str, str]] = {}
+        for event_id, entity_key, created_at in rows:
+            rank = (created_at, event_id)
+            if entity_key not in newest or rank > newest[entity_key]:
+                newest[entity_key] = rank
+        stale = [
+            event_id
+            for event_id, entity_key, created_at in rows
+            if (created_at, event_id) != newest[entity_key]
+        ]
+        if not stale:
+            return 0
+        session.execute(
+            update(SyncOutbox)
+            .where(SyncOutbox.event_id.in_(stale))
+            .values(
+                status="superseded",
+                last_error="coalesced_by_newer",
+                updated_at=datetime.now().astimezone().isoformat(timespec="seconds"),
+            )
+        )
+        return len(stale)
+
     def build_batch(
         self,
         *,
@@ -676,10 +718,11 @@ class IngestionOutbox:
                     raise ValueError(f"immutable batch payload changed: {batch_id}")
                 return batch
 
+            self._coalesce_pending_events(session)
             candidate_rows = session.scalars(
                 select(SyncOutbox)
                 .where(SyncOutbox.status == "pending", SyncOutbox.batch_id.is_(None))
-                .order_by(SyncOutbox.created_at, SyncOutbox.event_id)
+                .order_by(SyncOutbox.created_at.desc(), SyncOutbox.event_id)
                 .limit(limit)
             ).all()
             if not candidate_rows:
