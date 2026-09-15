@@ -10,20 +10,38 @@ from .base import LABELED_DATE, ArticleFields, SiteAdapter, iso_date_text
 
 _ARTICLE_URL = re.compile(r"/20\d{2}/\d{4}/c\d+a\d+/", re.I)
 
+# physics.ustc.edu.cn stamps a bracketed publication date into the heading
+# itself (``<font size="-1">[2025-09-18]</font>``); it is metadata, not title.
+_BRACKETED_DATE_SUFFIX = re.compile(r"\s*\[\d{4}-\d{2}-\d{2}\]\s*$")
+
 
 class VsbCmsAdapter(SiteAdapter):
     name = "vsb"
-    hosts = ("mech.ustc.edu.cn", "iid.ustc.edu.cn")
+    hosts = (
+        "mech.ustc.edu.cn",
+        "iid.ustc.edu.cn",
+        "www.nsrl.ustc.edu.cn",
+        "physics.ustc.edu.cn",
+    )
 
     def extract(self, url: str, html: str) -> ArticleFields | None:
         if not _ARTICLE_URL.search(url):
             return None
         soup = BeautifulSoup(html, "html.parser")
-        title_node = soup.select_one(".arti_title")
+        title_node = next(
+            (
+                node
+                for node in soup.select(".arti_title, .article-tit h1")
+                if node.get_text(" ", strip=True)
+            ),
+            None,
+        )
         body = soup.select_one(".wp_articlecontent")
         if title_node is None or body is None:
             return None
-        title = title_node.get_text(" ", strip=True)
+        title = _BRACKETED_DATE_SUFFIX.sub(
+            "", title_node.get_text(" ", strip=True)
+        ).strip()
         if not title:
             return None
         # Prefer the metadata bar beside the title; related-article lists at
