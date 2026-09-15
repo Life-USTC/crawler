@@ -140,8 +140,9 @@ class HtmlToMarkdownTests(unittest.TestCase):
             "</div>"
         )
         md = html_to_markdown(html, base_url="http://www.nsrl.ustc.edu.cn/2014/0917/c10984a121342/page.htm")
-        self.assertIn("![](http://www.nsrl.ustc.edu.cn/_upload/article/images/a.jpg)", md)
-        self.assertIn("![](http://www.nsrl.ustc.edu.cn/_upload/article/images/c.jpg)", md)
+        # normalize_url upgrades ustc.edu.cn hosts to https (F3 dedup).
+        self.assertIn("![](https://www.nsrl.ustc.edu.cn/_upload/article/images/a.jpg)", md)
+        self.assertIn("![](https://www.nsrl.ustc.edu.cn/_upload/article/images/c.jpg)", md)
         self.assertNotIn("&lt;IMG", md)
 
     def test_unterminated_escaped_fckeditor_tags_are_restored(self) -> None:
@@ -155,8 +156,9 @@ class HtmlToMarkdownTests(unittest.TestCase):
             "<p>参观结束。</p></div>"
         )
         md = html_to_markdown(html, base_url="http://www.nsrl.ustc.edu.cn/2014/0917/c10984a121342/page.htm")
-        self.assertIn("![](http://www.nsrl.ustc.edu.cn/_upload/a.jpg)", md)
-        self.assertIn("![](http://www.nsrl.ustc.edu.cn/_upload/c.jpg)", md)
+        # normalize_url upgrades ustc.edu.cn hosts to https (F3 dedup).
+        self.assertIn("![](https://www.nsrl.ustc.edu.cn/_upload/a.jpg)", md)
+        self.assertIn("![](https://www.nsrl.ustc.edu.cn/_upload/c.jpg)", md)
         self.assertIn("参观结束。", md)
         self.assertNotIn("&lt;IMG", md)
 
