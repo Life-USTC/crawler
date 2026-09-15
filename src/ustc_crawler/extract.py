@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urlsplit
 
-from bs4 import BeautifulSoup, Tag, XMLParsedAsHTMLWarning
+from bs4 import BeautifulSoup, NavigableString, Tag, XMLParsedAsHTMLWarning
 
 from .adapters import adapter_for
 from .canonicalize import normalize_url
@@ -440,6 +440,21 @@ def _block_text(root: Tag) -> str:
     for cell in root.find_all(["td", "th"]):
         # Separate adjacent cells when a row is flattened with get_text("").
         cell.append(" ")
+        if not cell.find(_BLOCK_TAGS):
+            continue
+        # A cell mixing bare text with block children would lose the bare
+        # text below (only leaf block nodes are collected).  Lift each bare
+        # text run into its own <p> so it survives (sppm/mpa Word exports
+        # wrap whole articles in a single table cell).
+        document = root
+        while document.parent is not None:
+            document = document.parent
+        if not hasattr(document, "new_tag"):
+            continue
+        for child in list(cell.children):
+            if isinstance(child, NavigableString) and str(child).strip():
+                paragraph = document.new_tag("p")
+                child.wrap(paragraph)
     lines: list[str] = []
     for node in root.find_all(_BLOCK_TAGS):
         if node.find(_BLOCK_TAGS):
@@ -853,8 +868,13 @@ def _is_hidden(node: Tag) -> bool:
 
 
 def _is_shell_container(node: Tag) -> bool:
-    if node.name in {"header", "footer", "nav", "aside"}:
+    if node.name in {"header", "footer", "nav"}:
         return True
+    if node.name == "aside":
+        # Ghost-style themes (bigdata) put the article itself inside an
+        # <aside class="... sidebar"> column.  An aside that contains an
+        # <article> is the main column, not chrome.
+        return node.find("article") is None
     markers = [str(node.get("id", "")), *(str(value) for value in node.get("class", []))]
     if any(
         marker.strip().casefold()
@@ -980,6 +1000,18 @@ def _clean_root(root: Tag) -> None:
     for node in root.find_all(REMOVE_TAGS):
         node.decompose()
     for node in root.find_all(["header", "footer", "nav", "aside"]):
+        # Keep an aside that wraps the article itself (Ghost-style themes).
+        if node.name == "aside" and node.find("article") is not None:
+            continue
+        node.decompose()
+    # Metadata bars that share the chosen content container on several
+    # templates: page-head 发布时间/点击率 rows (sjc inner-news-hd, nsti /
+    # bioinspired wl-post, smile weix_time) and share/visit widgets (sppm).
+    # Their dates are read from date_node before cleaning, so removing them
+    # here only keeps them out of the body.
+    for node in root.select(
+        ".inner-news-hd, .wl-post, .weix_time, .social-share, .share_tt, .WP_VisitCount"
+    ):
         node.decompose()
     for node in root.select(", ".join(BREADCRUMB_SELECTORS)):
         node.decompose()

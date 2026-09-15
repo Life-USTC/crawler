@@ -1497,3 +1497,99 @@ class Wave2DateTests(unittest.TestCase):
         self.assertIsNotNone(page.article)
         assert page.article is not None
         self.assertEqual(page.article.published_at, "2015-11-18")
+
+
+class Wave2BodyTests(unittest.TestCase):
+    def test_social_share_visit_count_removed_and_cell_text_kept(self) -> None:
+        # sppm old template: the whole body is bare text inside a table
+        # cell, mixed with a trailing <p> and share/visit-count widgets.
+        html = """
+        <html><head><title>评审结果公示</title></head><body>
+        <div class='infobox'>
+        <div class='social-share'><span class='share_tt'>分享至:</span></div>
+        <table><tr><td>现将评审结果公示如下，公示期为五个工作日，如有异议请联系学院办公室反映情况。<span class='WP_VisitCount'>95</span><p>联系人：张老师。</p></td></tr></table>
+        </div></body></html>
+        """
+        page = extract_page("http://sppm.ustc.edu.cn/2012/0521/c13411a269002/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertIn("现将评审结果公示如下", page.article.body_text)
+        self.assertIn("联系人：张老师。", page.article.body_text)
+        self.assertNotIn("分享至", page.article.body_text)
+        self.assertNotIn("分享至", page.article.body_markdown)
+
+    def test_inner_news_header_bar_not_leaked_into_body(self) -> None:
+        # sjc: the inner-news-hd bar (发布时间/点击率) must feed the date
+        # extraction but never leak into the body.
+        html = """
+        <html><head><title>年度审计结果公告</title></head><body>
+        <div class='inner-news-detail'>
+        <div class='inner-news-hd'>发布时间：2026-05-21 点击率：105 次</div>
+        <p>现将年度审计结果公告如下，具体内容请参见附件说明与相关文件材料。</p>
+        </div></body></html>
+        """
+        page = extract_page("https://sjc.ustc.edu.cn/2026/0630/c32882a745899/page.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.published_at, "2026-05-21")
+        self.assertEqual(
+            page.article.body_text,
+            "现将年度审计结果公告如下，具体内容请参见附件说明与相关文件材料。",
+        )
+        self.assertNotIn("点击率", page.article.body_markdown)
+
+    def test_wl_post_bar_not_leaked_into_body(self) -> None:
+        # nsti / bioinspired: the wl-post bar carries 发布时间 + 访问次数.
+        html = """
+        <html><head><title>宝钢奖学金评审结果公示</title></head><body>
+        <div class='wl-con wl-detail'>
+        <div class='wl-detail-title'>宝钢奖学金评审结果公示</div>
+        <div class='wl-post'>发布时间：2026-09-01 访问次数：10次</div>
+        <p>经评审委员会研究，现将宝钢奖学金评审结果公示如下，公示期为一周。</p>
+        </div></body></html>
+        """
+        page = extract_page(
+            "https://bioinspired.sz.ustc.edu.cn/2026/0519/c40763a741141/page.htm", html
+        )
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.published_at, "2026-09-01")
+        self.assertNotIn("访问次数", page.article.body_text)
+        self.assertNotIn("访问次数", page.article.body_markdown)
+        self.assertIn("经评审委员会研究", page.article.body_text)
+
+    def test_weix_time_bar_removed_and_date_read(self) -> None:
+        # smile: .central_text wraps a .weix_time meta bar + .center_txt body.
+        html = """
+        <html><head><title>新生心理健康普查通知</title></head><body>
+        <div class='central_text'>
+        <div class='weix_time'>发布时间：2026-09-01 发布来源：</div>
+        <div class='center_txt'>
+        <p>学校将面向全体新生开展心理健康普查，请各学院组织学生按预约时段参加测评。</p>
+        </div></div></body></html>
+        """
+        page = extract_page("http://smile.ustc.edu.cn/index/info/5017", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.published_at, "2026-09-01")
+        self.assertNotIn("发布来源", page.article.body_text)
+        self.assertNotIn("发布来源", page.article.body_markdown)
+        self.assertIn("心理健康普查", page.article.body_text)
+
+    def test_aside_wrapping_article_is_content(self) -> None:
+        # bigdata (Ghost-style): the article lives inside
+        # <aside class="col-md-9 sidebar"><article class="post">; the aside
+        # must not be treated as a shell container.
+        html = """
+        <html><head><title>实验室最新研究成果发布</title></head><body>
+        <div class='container'><aside class='col-md-9 sidebar'><article class='post'>
+        <h1>实验室最新研究成果发布</h1>
+        <p>近日实验室在认知智能方向取得重要进展，相关成果已在国际学术会议上正式发表并报告。</p>
+        </article></aside></div>
+        </body></html>
+        """
+        page = extract_page("http://bigdata.ustc.edu.cn/class_24/news/news_20241127.html", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "实验室最新研究成果发布")
+        self.assertIn("认知智能方向", page.article.body_text)
