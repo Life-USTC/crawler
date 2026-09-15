@@ -63,6 +63,22 @@ class ExtractTests(unittest.TestCase):
         )
         self.assertEqual(page.links, [])
 
+    def test_onclick_window_open_targets_are_links(self) -> None:
+        # yz.ustc.edu.cn column pages navigate via
+        # onclick="window.open('/article/2847/181?num=-1','_blank')" on the
+        # list items instead of <a href>; they are the page's only outlinks.
+        html = """
+        <html><body><ul class='article-list'>
+        <li onclick="window.open('/article/2847/181?num=-1','_blank')"><img src='/a.jpg'>2026年硕士招生简章</li>
+        <li onclick="window.open('/article/2827/181?num=-1','_blank')"><img src='/b.jpg'>2026年博士招生通告</li>
+        <li onclick="history.back()">返回</li>
+        </ul></body></html>
+        """
+        page = extract_page("https://yz.ustc.edu.cn/column/181", html)
+        self.assertIn("https://yz.ustc.edu.cn/article/2847/181?num=-1", page.links)
+        self.assertIn("https://yz.ustc.edu.cn/article/2827/181?num=-1", page.links)
+        self.assertEqual(len(page.links), 2)
+
     def test_detail_h1_replaces_generic_section_heading(self) -> None:
         html = """
         <html><head><title>真实标题 : 单位网站</title>
