@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from urllib.parse import urlsplit
 
-from bs4 import BeautifulSoup, Tag, XMLParsedAsHTMLWarning
+from bs4 import BeautifulSoup, NavigableString, Tag, XMLParsedAsHTMLWarning
 
 from .adapters import adapter_for
 from .canonicalize import normalize_url
@@ -170,6 +170,14 @@ GENERIC_HEADINGS = {
     "影像",
     "faculty",
     "中国科学技术大学-研究生招生在线",
+    # Column-name banners observed masquerading as article titles in the
+    # wave-2 site audit (hospital / etcis / aga / spin).
+    "医院新闻",
+    "信息公告",
+    "中心新闻",
+    "图片新闻",
+    "新闻通知",
+    "new published paper",
 }
 
 GENERIC_CATEGORIES = {
@@ -213,6 +221,41 @@ BREADCRUMB_SELECTORS = (
     "nav[aria-label='Breadcrumb']",
     "[class*='breadcrumb']",
 )
+
+
+def _truncate_lead_title(value: str, limit: int = 160) -> str:
+    """Cut an over-long lead-paragraph title at a word boundary.
+
+    CJK prose has no spaces and keeps the plain length cut; English text is
+    cut at the last space inside the limit so words are not severed.
+    """
+    if len(value) <= limit:
+        return value
+    cut = value[:limit]
+    if " " in cut:
+        candidate = cut.rsplit(" ", 1)[0]
+        # Only take the word-boundary cut when it keeps a substantial
+        # prefix; a lone early space would otherwise shrink the title to a
+        # couple of words.
+        if len(candidate) >= limit // 2:
+            cut = candidate
+    return cut.rstrip(" ,;，；")
+
+
+def _is_column_banner_h1(node: Tag) -> bool:
+    """Identify h1 elements that render a column name, not the post title.
+
+    VSB templates put the column banner in a portlet h1 (``frag`` attribute
+    or a ``span.Column_Name`` inside), and several templates wrap it in
+    positioning containers such as ``.position-box`` / ``.wp_column`` /
+    ``.wl-stitle``.
+    """
+    if node.has_attr("frag") or node.select_one(".Column_Name"):
+        return True
+    return (
+        node.find_parent(class_=re.compile(r"position-box|wp_column|wl-stitle|Column_Name"))
+        is not None
+    )
 
 
 def _is_generic_heading(value: str) -> bool:
@@ -321,9 +364,30 @@ def parse_date(value: str | None) -> str:
 
 
 def _labeled_date(value: str) -> str:
-    """Read a publication date only when the surrounding text labels it."""
+    """Read a publication date only when the surrounding text labels it.
+
+    A bare ``日期：`` label is accepted (VSB subsites use it), but only when
+    it is not glued to a preceding word — event labels such as ``比赛日期``
+    or ``活动日期`` describe the event, not the publication time.
+    """
     match = re.search(
-        r"(?:发布时间|发布日期|发布于|发稿时间|更新时间|(?:来源|消息来源)\s*[:：]?\s*时间)"
+        r"(?:发布时间|发布日期|发布于|发稿时间|更新时间|(?<![一-鿿A-Za-z])日期"
+        r"|(?:来源|消息来源)\s*[:：]?\s*时间)"
+        r"\s*[:：]?\s*([^\n|｜]{0,40})",
+        value,
+    )
+    return parse_date(match.group(1)) if match else ""
+
+
+def _publish_labeled_date(value: str) -> str:
+    """Like ``_labeled_date`` but restricted to publication labels.
+
+    Used where the date competes with the URL-path date: an update-time
+    label (``更新时间``) must never outrank the path date as the
+    *publication* date.
+    """
+    match = re.search(
+        r"(?:发布时间|发布日期|发布于|发稿时间|(?<![一-鿿A-Za-z])日期)"
         r"\s*[:：]?\s*([^\n|｜]{0,40})",
         value,
     )
@@ -381,6 +445,21 @@ def _block_text(root: Tag) -> str:
     for cell in root.find_all(["td", "th"]):
         # Separate adjacent cells when a row is flattened with get_text("").
         cell.append(" ")
+        if not cell.find(_BLOCK_TAGS):
+            continue
+        # A cell mixing bare text with block children would lose the bare
+        # text below (only leaf block nodes are collected).  Lift each bare
+        # text run into its own <p> so it survives (sppm/mpa Word exports
+        # wrap whole articles in a single table cell).
+        document = root
+        while document.parent is not None:
+            document = document.parent
+        if not hasattr(document, "new_tag"):
+            continue
+        for child in list(cell.children):
+            if isinstance(child, NavigableString) and str(child).strip():
+                paragraph = document.new_tag("p")
+                child.wrap(paragraph)
     lines: list[str] = []
     for node in root.find_all(_BLOCK_TAGS):
         if node.find(_BLOCK_TAGS):
@@ -523,6 +602,19 @@ def _clean_signature_value(value: str) -> str:
     # Reject values that contain role words without a real name.
     if re.search(r"^(通讯员|编辑|记者|作者)$", value):
         return ""
+    # Reject bare date/time strings: an empty 作者： label followed by the
+    # update timestamp flattens into a date "author" (jgdw).
+    if re.fullmatch(
+        r"20\d{2}[/\-.]\d{1,2}[/\-.]\d{1,2}(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?",
+        value,
+    ):
+        return ""
+    # Reject acknowledgement fragments such as "研究/成果受…基金资助" that
+    # the trailing 文/ rule can capture (oic).  A bare "/" alone is NOT
+    # rejected: slash-joined co-authors ("张三/李四") are legitimate, and
+    # the evidenced pollution is already covered by the 资助 pattern.
+    if re.search(r"受[^，。；;]{0,30}资助", value):
+        return ""
     return value
 
 
@@ -577,10 +669,11 @@ def _trailing_publication_signature(body_text: str) -> str:
         ):
             reporter = _clean_signature_value(match.group(1))
 
-    # 4. Writer label/slash: 文：XXX or 文/XXX
+    # 4. Writer label/slash: 文：XXX or 文/XXX (but not 论文/研究… funding
+    # acknowledgements)
     if not reporter:
         for match in re.finditer(
-            rf"文\s*[:：/]\s*([^{stop}\d]+)(?=(?:{label_stop})|$|[{stop}])",
+            rf"(?<!论)文\s*[:：/]\s*([^{stop}\d]+)(?=(?:{label_stop})|$|[{stop}])",
             tail,
         ):
             reporter = _clean_signature_value(match.group(1))
@@ -593,9 +686,10 @@ def _trailing_publication_signature(body_text: str) -> str:
         ):
             editor = _clean_signature_value(match.group(1))
 
-    # 6. Source: 来源：XXX (skip ``素材来源`` and ``文章来源``; prefer the last source)
+    # 6. Source: 来源：XXX (skip ``素材来源``/``文章来源``/``资金来源``;
+    # prefer the last source)
     for match in re.finditer(
-        rf"(?<!素材)(?<!文章)来源\s*[:：]\s*([^{stop}\d]+)(?=(?:{label_stop})|$|[{stop}])",
+        rf"(?<!素材)(?<!文章)(?<!资金)来源\s*[:：]\s*([^{stop}\d]+)(?=(?:{label_stop})|$|[{stop}])",
         tail,
     ):
         source = _clean_signature_value(match.group(1))
@@ -690,7 +784,7 @@ def _title_from_document(
         document_title,
     )
     if compact_suffix and re.search(
-        r"(?:大学|学院|研究院|研究所|实验室|新闻中心|新闻网|信息网|专题网|"
+        r"(?:大学|学院|研究院|研究所|实验室|中心|新闻中心|新闻网|信息网|专题网|"
         r"共享中心|办公室|委员会|主题教育|学习教育|"
         r"中国科学技术大学.{0,30}网|中国科大.{0,30}网)$",
         compact_suffix.group(2),
@@ -744,16 +838,26 @@ def _title_from_document(
             for node in soup.select("article p, main p, .entry-content p"):
                 value = _text(node.get_text(" ", strip=True))
                 if len(value) >= 20 and not _is_generic_heading(value):
-                    return value[:160].rstrip(" ,;，；")
+                    return _truncate_lead_title(value)
         if not _is_generic_heading(document_title):
             return document_title
+    # Some templates ship a placeholder title on every page (e.g. spin's
+    # "NEW PUBLISHED PAPER") while the real paper title leads the body in a
+    # <strong> run.  Only reached when every title source above was generic.
+    for node in soup.select(
+        "article strong, main strong, .entry-content strong, "
+        ".wp_articlecontent strong, .v_news_content strong"
+    ):
+        value = _text(node.get_text(" ", strip=True))
+        if 8 <= len(value) <= 160 and not _is_generic_heading(value):
+            return value
     # A few lightweight WordPress-style sites omit the post title entirely
     # and leave only a generic ``News`` heading.  The lead paragraph is still
     # a better searchable label than the section name in that case.
     for node in soup.select("article p, main p, .entry-content p"):
         value = _text(node.get_text(" ", strip=True))
         if len(value) >= 20 and not _is_generic_heading(value):
-            return value[:160].rstrip(" ,;，；")
+            return _truncate_lead_title(value)
     return current
 
 
@@ -784,8 +888,13 @@ def _is_hidden(node: Tag) -> bool:
 
 
 def _is_shell_container(node: Tag) -> bool:
-    if node.name in {"header", "footer", "nav", "aside"}:
+    if node.name in {"header", "footer", "nav"}:
         return True
+    if node.name == "aside":
+        # Ghost-style themes (bigdata) put the article itself inside an
+        # <aside class="... sidebar"> column.  An aside that contains an
+        # <article> is the main column, not chrome.
+        return node.find("article") is None
     markers = [str(node.get("id", "")), *(str(value) for value in node.get("class", []))]
     if any(
         marker.strip().casefold()
@@ -911,6 +1020,18 @@ def _clean_root(root: Tag) -> None:
     for node in root.find_all(REMOVE_TAGS):
         node.decompose()
     for node in root.find_all(["header", "footer", "nav", "aside"]):
+        # Keep an aside that wraps the article itself (Ghost-style themes).
+        if node.name == "aside" and node.find("article") is not None:
+            continue
+        node.decompose()
+    # Metadata bars that share the chosen content container on several
+    # templates: page-head 发布时间/点击率 rows (sjc inner-news-hd, nsti /
+    # bioinspired wl-post, smile weix_time) and share/visit widgets (sppm).
+    # Their dates are read from date_node before cleaning, so removing them
+    # here only keeps them out of the body.
+    for node in root.select(
+        ".inner-news-hd, .wl-post, .weix_time, .social-share, .share_tt, .WP_VisitCount"
+    ):
         node.decompose()
     for node in root.select(", ".join(BREADCRUMB_SELECTORS)):
         node.decompose()
@@ -1032,26 +1153,30 @@ def extract_page(
     detail_heading = soup.select_one(
         ".arti_title, .zkd-title, .articel-show-title, #articel-show-title .n-f-10, "
         ".c-f-30.c-lh-36.n-text-center.n-f-bold, "
-        ".News-detail-title, "
+        ".News-detail-title, .notice_title, "
         ".article-title, .post-title, .entry-title, .page_title, .detail_title, "
         ".newstitle, .wl-detail-title, .content_title, #Title, "
         ".person-title, .titles, .show01 h5, .center_titlea, .page-header h1, .biaoti_top h1, "
-        ".biaoti_top h2, .biaoti_top h3, .bt01"
+        ".biaoti_top h2, .biaoti_top h3, .bt01, .wl-nrytitle h1, .detail-header h1"
     )
     title = _text(detail_heading.get_text(" ", strip=True)) if detail_heading else ""
     title_is_heading = bool(title)
+    title_node: Tag | None = detail_heading if title else None
     title = title or _first_meta(soup, "og:title", "twitter:title")
     if not title:
+        # Skip VSB column-banner h1s (portlet windows, breadcrumb boxes);
+        # they carry the column name, not the article title.
         heading = next(
             (
                 node
                 for node in soup.find_all("h1")
-                if _text(node.get_text(" ", strip=True))
+                if _text(node.get_text(" ", strip=True)) and not _is_column_banner_h1(node)
             ),
             None,
         )
         title = _text(heading.get_text(" ", strip=True) if heading else "")
         title_is_heading = bool(title)
+        title_node = heading if title else None
     if not title and soup.title:
         title = _text(soup.title.get_text(" ", strip=True))
     if not title:
@@ -1082,6 +1207,7 @@ def extract_page(
     )
     date_node = soup.select_one(
         ".media-foucs .date, .detail-content .date, .arti_metas, .ins-res, .detail-info, "
+        ".inner-news-hd, .wl-post, .weix_time, .news-top-p, "
         "#time, .time, .notice_time, .post-meta-side, .post-meta-print, .info-bar, time"
     )
     detail_url = _looks_like_article_url(url)
@@ -1121,22 +1247,45 @@ def extract_page(
             return value
         return ""
 
-    explicit_published = path_published
-    if not explicit_published:
-        value = parse_date(_text(article_ld.get("datePublished")))
-        explicit_published = _trust_future_date(value, "jsonld")
+    # An explicit publication label on the page outranks the URL path date:
+    # on VSB sites the path date is the page rebuild/migration date, while
+    # the labeled 发布时间 is the real publication date (sjc, bioinspired).
+    explicit_published = ""
+    value = parse_date(_text(article_ld.get("datePublished")))
+    explicit_published = _trust_future_date(value, "jsonld")
     if not explicit_published:
         value = parse_date(
             _first_meta(soup, "article:published_time", "date", "publishdate", "publishTime")
         )
         explicit_published = _trust_future_date(value, "meta")
     if not explicit_published and detail_date:
+        explicit_published = _trust_future_date(
+            _publish_labeled_date(date_node.get_text(" ", strip=True)), "labeled"
+        )
+    if not explicit_published:
+        explicit_published = path_published
+    if not explicit_published and detail_date:
         date_text_value = date_node.get_text(" ", strip=True)
         labeled = _labeled_date(date_text_value)
         if labeled:
             explicit_published = _trust_future_date(labeled, "labeled")
         else:
-            explicit_published = _trust_future_date(parse_date(date_text_value), "unlabeled")
+            # October-CMS-style <time> elements carry the date only in the
+            # datetime attribute; its text may be an English rendering.
+            explicit_published = _trust_future_date(
+                parse_date(str(date_node.get("datetime") or ""))
+                or parse_date(date_text_value),
+                "unlabeled",
+            )
+    if not explicit_published and title_node is not None:
+        # Some CMS templates (journal) render 发布时间 in a classless div
+        # next to the title, outside every semantic date selector.  Search
+        # the title's parent block for a publication-labeled date.
+        block = title_node.find_parent(["div", "section", "td", "header"])
+        if block is not None:
+            explicit_published = _trust_future_date(
+                _publish_labeled_date(block.get_text(" ", strip=True)), "labeled"
+            )
     published = explicit_published
     date_text = date_node.get_text(" ", strip=True) if date_node else ""
     updated = (
@@ -1185,14 +1334,23 @@ def extract_page(
     fallback_has_substantive_paragraph = any(
         len(_text(node.get_text(" ", strip=True))) >= 20 for node in root.find_all("p")
     )
-    author = (
-        _clean_signature_value(_author(article_ld.get("author")))
-        or _clean_signature_value(_first_meta(soup, "author", "article:author"))
-        or _clean_signature_value(
-            _label_value(date_text, r"作者|发布者|文章作者|来源")
-        )
-        or _trailing_publication_signature(body_text)
+    author = _clean_signature_value(_author(article_ld.get("author"))) or _clean_signature_value(
+        _first_meta(soup, "author", "article:author")
     )
+    if not author:
+        # Signature heuristics (meta-bar label / trailing body signature) can
+        # pick up the site slogan when a template stuffs it into 文章来源.
+        # A long value that is literally part of the keywords meta is the
+        # slogan, not a byline (qybx 文章来源：全院办校所系结合).  Length-gated
+        # so short legitimate unit names are spared, and deliberately NOT
+        # applied to jsonld/meta authors above — those are explicit metadata
+        # where a long organization name is a legitimate byline.
+        author = _clean_signature_value(
+            _label_value(date_text, r"作者|发布者|文章作者|来源")
+        ) or _trailing_publication_signature(body_text)
+        keywords_meta = _first_meta(soup, "keywords")
+        if author and len(author) >= 4 and keywords_meta and author in keywords_meta:
+            author = ""
     summary = _text(article_ld.get("description")) or _first_meta(
         soup, "description", "og:description"
     )
