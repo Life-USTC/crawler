@@ -910,6 +910,38 @@ def _is_main_column_aside(node: Tag) -> bool:
     return node.find("article") is not None or len(node.find_all("a", href=True)) >= 8
 
 
+def _is_vsb_section_landing(soup: BeautifulSoup, url: str) -> bool:
+    """Identify VSB section landing pages that reuse the single-article shell.
+
+    mcip renders every column （研究成果/论文， 实验室成员/教师， 招生&招聘 …)
+    with the same ``.wp_single`` / ``.wp_articlecontent`` shell that #89 uses
+    to recognize single-article list.htm pages, so the section landings were
+    saved as articles titled by the column name.  The navigation markup
+    separates the two: a section landing is the target of a top-nav entry
+    (.wp_nav) or of a single-level column item (``li class="column-N"``),
+    while genuine articles sit one level deeper (``column-N-M``).
+    """
+    page_url = normalize_url(url)
+    if not page_url:
+        return False
+
+    def targets_page(href: object) -> bool:
+        target = normalize_url(str(href), url)
+        return bool(target) and target == page_url
+
+    for anchor in soup.select(".wp_nav a[href]"):
+        if targets_page(anchor["href"]):
+            return True
+    for item in soup.select(".wp_listcolumn li[class]"):
+        classes = [str(value) for value in item.get("class", [])]
+        if not any(re.fullmatch(r"column-\d+", value) for value in classes):
+            continue
+        anchor = item.find("a", href=True)
+        if anchor is not None and targets_page(anchor["href"]):
+            return True
+    return False
+
+
 def _is_shell_container(node: Tag) -> bool:
     if node.name in {"header", "footer", "nav"}:
         return True
@@ -1449,7 +1481,9 @@ def extract_page(
     # container (.wp_single / #wp_column_article, the shape of most mcip
     # pages).  Requiring a container keeps true listings (no article shell)
     # excluded.  Photo-album posts (毕业留念, 活动图集) carry an image-only
-    # body, so images stand in for the minimum text length.
+    # body, so images stand in for the minimum text length.  Section landing
+    # pages (论文/教师/招生&招聘 …) reuse the same shell for column content,
+    # so pages the navigation itself links to as a section are excluded too.
     single_article_listing_url = bool(
         listing_url
         and (
@@ -1458,6 +1492,7 @@ def extract_page(
         )
         and soup.select_one(".wp_articlecontent")
         and (len(body_text) > 180 or images)
+        and not _is_vsb_section_landing(soup, url)
     )
     if single_article_listing_url:
         listing_url = False
