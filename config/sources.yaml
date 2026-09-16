@@ -111,8 +111,9 @@ directory:
   url: https://www.ustc.edu.cn/yxjs.htm
 
 # Candidates found by a separate subdomain/official-link audit. They are kept
-# out of the default crawl until explicitly requested; several are stale,
-# platform-only, or currently redirect to authentication.
+# out of publication sync until explicitly requested; several are stale,
+# platform-only, or currently redirect to authentication. Entries without
+# `discovery_only: true` were reviewed and promoted to full publication.
 supplemental_sources:
   - id: supplemental-bigdata
     name: 认知智能全国重点实验室
@@ -131,13 +132,11 @@ supplemental_sources:
     organization_level: office
     seed_urls: [https://arch.ustc.edu.cn/main.htm]
     allowed_hosts: [arch.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-bwc
     name: 保卫处
     organization_level: office
     seed_urls: [https://bwc.ustc.edu.cn/main.htm, https://bwc.ustc.edu.cn/5670/list.htm, https://bwc.ustc.edu.cn/5668/list.htm]
     allowed_hosts: [bwc.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-cec
     name: 化学实验教学中心
     organization_level: center
@@ -167,13 +166,11 @@ supplemental_sources:
     organization_level: office
     seed_urls: [https://fc.ustc.edu.cn/main.htm, https://fc.ustc.edu.cn/14587/list.htm, https://fc.ustc.edu.cn/14586/list.htm]
     allowed_hosts: [fc.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-kyb
     name: 科研部
     organization_level: office
     seed_urls: [https://kyb.ustc.edu.cn/main.htm, https://kyb.ustc.edu.cn/xwdt/list.htm]
     allowed_hosts: [kyb.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-lab
     name: 公共实验中心
     organization_level: center
@@ -203,7 +200,6 @@ supplemental_sources:
     organization_level: college
     seed_urls: [https://nsti.ustc.edu.cn/main.htm, https://nsti.ustc.edu.cn/xwtz/list.htm, https://nsti.ustc.edu.cn/xyxw/list.htm]
     allowed_hosts: [nsti.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-owc
     name: 无线光通信与网络研究中心
     organization_level: research
@@ -233,7 +229,6 @@ supplemental_sources:
     organization_level: office
     seed_urls: [https://rwb.ustc.edu.cn/main.htm, https://rwb.ustc.edu.cn/7286/list.htm]
     allowed_hosts: [rwb.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-scai
     name: SCAI Lab
     organization_level: research
@@ -263,7 +258,6 @@ supplemental_sources:
     organization_level: office
     seed_urls: [https://young.ustc.edu.cn/main.htm, https://young.ustc.edu.cn/15063/list.htm]
     allowed_hosts: [young.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-emba
     name: EMBA
     organization_level: program
@@ -299,25 +293,21 @@ supplemental_sources:
     organization_level: office
     seed_urls: [https://gonghui.ustc.edu.cn/main.htm, https://gonghui.ustc.edu.cn/7504/list.htm, https://gonghui.ustc.edu.cn/7466/list.htm]
     allowed_hosts: [gonghui.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-po
     name: 党政办公室
     organization_level: office
     seed_urls: [https://po.ustc.edu.cn/main.htm, https://po.ustc.edu.cn/gzdt/list.htm, https://po.ustc.edu.cn/xwdt/list.htm]
     allowed_hosts: [po.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-sjc
     name: 审计处
     organization_level: office
     seed_urls: [https://sjc.ustc.edu.cn/main.htm, https://sjc.ustc.edu.cn/dtxx/list.htm, https://sjc.ustc.edu.cn/sjgg/list.htm]
     allowed_hosts: [sjc.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-zhc
     name: 资产与后勤保障处
     organization_level: office
     seed_urls: [https://zhc.ustc.edu.cn/main.htm]
     allowed_hosts: [zhc.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-ktx
     name: 反场箍缩磁约束聚变实验室
     organization_level: research
@@ -341,7 +331,6 @@ supplemental_sources:
     organization_level: center
     seed_urls: [https://smile.ustc.edu.cn/, https://smile.ustc.edu.cn/index/lists/002]
     allowed_hosts: [smile.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-qybx
     name: 科教融合专题
     organization_level: program
@@ -365,7 +354,6 @@ supplemental_sources:
     organization_level: office
     seed_urls: [https://xcb.ustc.edu.cn/]
     allowed_hosts: [xcb.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-yqzx
     name: 综合科研仪器共享中心
     organization_level: center
@@ -422,13 +410,11 @@ supplemental_sources:
     organization_level: office
     seed_urls: [https://oic.ustc.edu.cn/]
     allowed_hosts: [oic.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-finance
     name: 财务处
     organization_level: office
     seed_urls: [https://finance.ustc.edu.cn/main.htm]
     allowed_hosts: [finance.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-job
     name: 就业信息网（主域名）
     organization_level: office
@@ -440,19 +426,16 @@ supplemental_sources:
     organization_level: office
     seed_urls: [https://aga.ustc.edu.cn/]
     allowed_hosts: [aga.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-djyszw
     name: 党建与思政网
     organization_level: office
     seed_urls: [https://djyszw.ustc.edu.cn/]
     allowed_hosts: [djyszw.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-zzb
     name: 党委组织部（党校）
     organization_level: office
     seed_urls: [https://zzb.ustc.edu.cn/main.htm]
     allowed_hosts: [zzb.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-journals
     name: 期刊中心
     organization_level: center
@@ -464,13 +447,11 @@ supplemental_sources:
     organization_level: center
     seed_urls: [https://museum.ustc.edu.cn/main.htm]
     allowed_hosts: [museum.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-mba
     name: 管理学院 MBA 中心
     organization_level: program
     seed_urls: [https://mba.ustc.edu.cn/main.htm]
     allowed_hosts: [mba.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-mpa
     name: 公共管理硕士教育中心
     organization_level: program
@@ -488,7 +469,6 @@ supplemental_sources:
     organization_level: college
     seed_urls: [https://ic.ustc.edu.cn/]
     allowed_hosts: [ic.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-iphs
     name: 公共卫生研究院
     organization_level: research
@@ -539,7 +519,6 @@ supplemental_sources:
     organization_level: office
     seed_urls: [https://ef.ustc.edu.cn/]
     allowed_hosts: [ef.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-pms-cmet
     name: 质量工程项目管理信息系统
     organization_level: center
@@ -563,13 +542,11 @@ supplemental_sources:
     organization_level: student
     seed_urls: [https://gradunion.ustc.edu.cn/]
     allowed_hosts: [gradunion.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-jgdw
     name: 机关党委办公室
     organization_level: office
     seed_urls: [https://jgdw.ustc.edu.cn/]
     allowed_hosts: [jgdw.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-iotsec
     name: 物联网与智慧城市安全保障关键技术研究
     organization_level: research
@@ -593,7 +570,6 @@ supplemental_sources:
     organization_level: office
     seed_urls: [https://zhb.ustc.edu.cn/]
     allowed_hosts: [zhb.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-nano
     name: 微纳研究与制造中心
     organization_level: center
@@ -635,7 +611,6 @@ supplemental_sources:
     organization_level: college
     seed_urls: [https://sie.ustc.edu.cn/]
     allowed_hosts: [sie.ustc.edu.cn]
-    discovery_only: true
   - id: supplemental-ircls
     name: 人文与社会科学学院语言科学交叉研究中心
     organization_level: center
