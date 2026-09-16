@@ -701,10 +701,13 @@ class IngestionOutbox:
         with transaction(self.database) as session:
             existing = session.get(SyncBatch, batch_id)
             if existing is not None:
+                # Rebuild must use the exact claim-time ordering (fresh-first):
+                # the persisted payload hash covers the item sequence, so a
+                # different order would fail the immutability check below.
                 rows = session.scalars(
                     select(SyncOutbox)
                     .where(SyncOutbox.batch_id == batch_id)
-                    .order_by(SyncOutbox.created_at, SyncOutbox.event_id)
+                    .order_by(SyncOutbox.created_at.desc(), SyncOutbox.event_id)
                 ).all()
                 batch = build_ingestion_batch(
                     [self._publication(row) for row in rows],
