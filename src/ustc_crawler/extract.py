@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup, NavigableString, Tag, XMLParsedAsHTMLWarning
 
 from .adapters import adapter_for
 from .canonicalize import normalize_url
-from .markdown import html_to_markdown
+from .markdown import html_to_markdown, image_source_hash, image_source_urls
 from .models import ArticleDocument, ImageRef, PageDocument
 
 logger = logging.getLogger(__name__)
@@ -1174,6 +1174,12 @@ def _image_refs(root: Tag, page_url: str) -> list[ImageRef]:
     return result
 
 
+def _image_source_map(images: list[ImageRef]) -> dict[str, str]:
+    """Build the source registry consumed while rendering article Markdown."""
+
+    return {image_source_hash(image.url): image.url for image in images if image.url}
+
+
 def _visual_sitebuilder_player_urls(soup: BeautifulSoup, page_url: str) -> tuple[list[str], list[str]]:
     """Extract media hidden in VisualSiteBuilder video/PDF player scripts."""
 
@@ -1414,6 +1420,10 @@ def extract_page(
     )
     images = _image_refs(root, url)
     known_images = {image.url for image in images}
+    for target in image_source_urls(body_html, base_url=url):
+        if target not in known_images:
+            known_images.add(target)
+            images.append(ImageRef(url=target))
     for target in player_images:
         if target not in known_images:
             known_images.add(target)
@@ -1571,7 +1581,12 @@ def extract_page(
             summary=summary,
             body_html=body_html,
             body_text=body_text,
-            body_markdown=html_to_markdown(body_html, base_url=url),
+            body_markdown=html_to_markdown(
+                body_html,
+                base_url=url,
+                image_sources=_image_source_map(images),
+                strict_image_sources=True,
+            ),
             extraction_method="jsonld+meta+heuristic",
             source_page_url=url,
             raw_metadata={"jsonld": metadata},
@@ -1589,7 +1604,28 @@ def extract_page(
             if article is not None:
                 article.raw_metadata["adapter_error"] = adapter.name
         if fields is not None and fields.title.strip():
-            body_text = _block_text(_parse_html(fields.body_html))
+            adapter_root = _parse_html(fields.body_html)
+            adapter_images = _image_refs(adapter_root, url)
+            adapter_image_urls = {image.url for image in adapter_images}
+            generic_images_by_url = {image.url: image for image in images}
+            for target in image_source_urls(fields.body_html, base_url=url):
+                if target in adapter_image_urls:
+                    continue
+                adapter_images.append(generic_images_by_url.get(target, ImageRef(url=target)))
+                adapter_image_urls.add(target)
+            # Player previews are discovered from scripts in the full page;
+            # retain those only when the adapter body also carries them so
+            # the source registry stays aligned with rendered Markdown.
+            image_urls = {image.url for image in adapter_images}
+            for image in images:
+                if image.url in image_urls or image.url not in fields.body_html:
+                    continue
+                adapter_images.append(image)
+                image_urls.add(image.url)
+            images_for_article = adapter_images or images
+            for image in images_for_article:
+                image.article_url = canonical or url
+            body_text = _block_text(adapter_root)
             article = ArticleDocument(
                 url=canonical or url,
                 source_id=source_id,
@@ -1603,11 +1639,16 @@ def extract_page(
                 summary=fields.summary or summary,
                 body_html=fields.body_html,
                 body_text=body_text,
-                body_markdown=html_to_markdown(fields.body_html, base_url=url),
+                body_markdown=html_to_markdown(
+                    fields.body_html,
+                    base_url=url,
+                    image_sources=_image_source_map(images_for_article),
+                    strict_image_sources=True,
+                ),
                 extraction_method=f"adapter:{adapter.name}",
                 source_page_url=url,
                 raw_metadata={"jsonld": metadata},
-                images=images,
+                images=images_for_article,
             )
     return PageDocument(
         requested_url=url,

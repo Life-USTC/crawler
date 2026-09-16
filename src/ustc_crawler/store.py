@@ -19,6 +19,7 @@ from .canonicalize import host_matches, looks_like_asset, looks_like_binary, nor
 from .db import ALEMBIC_HEAD, Database, upgrade_database
 from .db.core import CoreConnection, RowMapping
 from .db.models import Article, ArticleMedia, Asset, Frontier, Media, Page, Source, SyncRun
+from .markdown import html_to_markdown, image_source_hash, image_source_urls
 from .models import (
     ArticleDocument,
     ImageRef,
@@ -71,6 +72,67 @@ def article_bundle_path(data_dir: str | Path, url: str, suffix: str = ".json") -
     return Path(data_dir) / "articles" / f"{article_bundle_key(url)}{suffix}"
 
 
+def _bundle_image_refs(data_dir: str | Path, article_url: str) -> list[ImageRef] | None:
+    """Read source image metadata from an article bundle when available."""
+
+    bundle = article_bundle_path(data_dir, article_url)
+    if not bundle.is_file():
+        return None
+    try:
+        payload = json.loads(bundle.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    values = payload.get("images") if isinstance(payload, dict) else None
+    if not isinstance(values, list):
+        return None
+    return [
+        ImageRef(
+            url=str(value["url"]),
+            alt=str(value.get("alt") or ""),
+            title=str(value.get("title") or ""),
+            caption=str(value.get("caption") or ""),
+            article_url=article_url,
+        )
+        for value in values
+        if isinstance(value, dict) and value.get("url")
+    ]
+
+
+def _article_image_refs(
+    data_dir: str | Path,
+    article_url: str,
+    body_html: str,
+    source_page_url: str,
+) -> list[ImageRef]:
+    """Build source image metadata from archived HTML and bundle metadata.
+
+    The normalized body HTML is authoritative for which image sources are
+    present and their order.  The existing bundle only supplies metadata for
+    those sources.
+    """
+
+    bundle_refs = _bundle_image_refs(data_dir, article_url) or []
+    bundle_by_url = {image.url: image for image in bundle_refs}
+    refs: list[ImageRef] = []
+    for source_url in image_source_urls(
+        body_html,
+        base_url=source_page_url or article_url,
+    ):
+        metadata = bundle_by_url.get(source_url)
+        refs.append(
+            ImageRef(
+                url=source_url,
+                alt=metadata.alt if metadata else "",
+                title=metadata.title if metadata else "",
+                caption=metadata.caption if metadata else "",
+                article_url=article_url,
+            )
+        )
+    for image in refs:
+        image.article_url = article_url
+    return refs
+
+
 def utc_now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
@@ -83,10 +145,9 @@ MAX_FRONTIER_ATTEMPTS = 5
 
 @dataclass(slots=True)
 class ArticleSyncSnapshot:
-    """An article and its local objects loaded for one sync-backfill chunk."""
+    """An article and its local attachment objects for one sync chunk."""
 
     article: ArticleDocument
-    media_paths: dict[str, tuple[str, str]]
     asset_paths: dict[str, tuple[str, str]]
 
 
@@ -797,12 +858,10 @@ class Store:
         )
         article.publication_type = publication_type
         article.classifier_version = CLASSIFIER_VERSION
-        media_paths = self.media_paths_for_article(article.url)
         asset_paths = self.asset_paths_for_article(article.url, article.source_page_url)
         local_objects = spool_article_objects(
             article,
             self.data_dir,
-            media_paths=media_paths,
             asset_paths=asset_paths,
         )
         publication = build_publication(
@@ -835,13 +894,11 @@ class Store:
         source = self.source_descriptor(article.source_id)
         if source.discovery_only:
             return None
-        media_paths = self.media_paths_for_article(article.url)
         asset_paths = self.asset_paths_for_article(article.url, article.source_page_url)
         return IngestionOutbox(self.database).enqueue_article(
             article,
             self.data_dir,
             source=source,
-            media_paths=media_paths,
             asset_paths=asset_paths,
             run_id=run_id,
         )
@@ -891,16 +948,28 @@ class Store:
                 if row.local_path and Path(row.local_path).is_file()
             }
 
-    def sync_article_page(self, after_url: str = "", limit: int = 100) -> list[ArticleDocument]:
-        """Read a bounded keyset page of article snapshots for sync backfill."""
+    def sync_article_page(
+        self,
+        after_url: str = "",
+        limit: int = 100,
+        source_ids: set[str] | None = None,
+    ) -> list[ArticleDocument]:
+        """Read a bounded source-filtered keyset page for sync backfill."""
 
         return [
             snapshot.article
-            for snapshot in self.sync_article_snapshot_page(after_url, limit)
+            for snapshot in self.sync_article_snapshot_page(
+                after_url,
+                limit,
+                source_ids,
+            )
         ]
 
     def sync_article_snapshot_page(
-        self, after_url: str = "", limit: int = 100
+        self,
+        after_url: str = "",
+        limit: int = 100,
+        source_ids: set[str] | None = None,
     ) -> list[ArticleSyncSnapshot]:
         """Read articles and linked local objects with bounded bulk queries.
 
@@ -914,30 +983,15 @@ class Store:
         if limit < 1:
             raise ValueError("sync backfill limit must be positive")
         with self.database.session_factory() as session:
-            query = select(Article).order_by(Article.url).limit(limit)
+            query = select(Article)
+            if source_ids:
+                query = query.where(Article.source_id.in_(sorted(source_ids)))
             if after_url:
                 query = query.where(Article.url > after_url)
+            query = query.order_by(Article.url).limit(limit)
             rows = session.scalars(query).all()
             if not rows:
                 return []
-
-            article_urls = [row.url for row in rows]
-            image_rows = session.scalars(
-                select(ArticleMedia)
-                .where(ArticleMedia.article_url.in_(article_urls))
-                .order_by(ArticleMedia.article_url, ArticleMedia.image_url)
-            ).all()
-            media_rows = session.scalars(
-                select(Media)
-                .outerjoin(ArticleMedia, ArticleMedia.image_url == Media.url)
-                .where(
-                    or_(
-                        Media.article_url.in_(article_urls),
-                        ArticleMedia.article_url.in_(article_urls),
-                    )
-                )
-                .order_by(Media.url)
-            ).unique().all()
 
             source_urls = {
                 url
@@ -976,25 +1030,6 @@ class Store:
                 }
                 for row in rows
             ]
-            image_values = [
-                {
-                    "article_url": image.article_url,
-                    "url": image.image_url,
-                    "alt": image.alt or "",
-                    "title": image.title or "",
-                    "caption": image.caption or "",
-                }
-                for image in image_rows
-            ]
-            media_values = [
-                {
-                    "url": media.url,
-                    "article_url": media.article_url,
-                    "local_path": media.local_path,
-                    "mime_type": media.mime_type,
-                }
-                for media in media_rows
-            ]
             asset_values = [
                 {
                     "url": asset.url,
@@ -1004,29 +1039,6 @@ class Store:
                 }
                 for asset in asset_rows
             ]
-
-        images_by_article: dict[str, list[ImageRef]] = {}
-        media_urls_by_article: dict[str, set[str]] = {
-            url: set() for url in article_urls
-        }
-        for image in image_values:
-            article_url = str(image["article_url"])
-            images_by_article.setdefault(article_url, []).append(
-                ImageRef(
-                    url=str(image["url"]),
-                    alt=str(image["alt"]),
-                    title=str(image["title"]),
-                    caption=str(image["caption"]),
-                    article_url=article_url,
-                )
-            )
-            media_urls_by_article.setdefault(article_url, set()).add(str(image["url"]))
-
-        media_by_url = {str(media["url"]): media for media in media_values}
-        for media in media_values:
-            article_url = media["article_url"]
-            if article_url in media_urls_by_article:
-                media_urls_by_article[article_url].add(str(media["url"]))
 
         assets_by_source: dict[str, list[dict[str, Any]]] = {}
         for asset in asset_values:
@@ -1059,22 +1071,15 @@ class Store:
                 extraction_method=str(values["extraction_method"]),
                 source_page_url=source_page_url,
                 raw_metadata=raw_metadata,
-                images=images_by_article.get(article_url, []),
+                images=_article_image_refs(
+                    self.data_dir,
+                    article_url,
+                    str(values["body_html"]),
+                    source_page_url,
+                ),
                 publication_type=values["publication_type"],
                 classifier_version=values["classifier_version"],
             )
-            media_paths: dict[str, tuple[str, str]] = {}
-            for media_url in sorted(media_urls_by_article.get(article_url, ())):
-                media = media_by_url.get(media_url)
-                if not media or not media["local_path"]:
-                    continue
-                path = Path(str(media["local_path"]))
-                if path.is_file():
-                    media_paths[media_url] = (
-                        str(path),
-                        str(media["mime_type"] or "application/octet-stream"),
-                    )
-
             asset_paths: dict[str, tuple[str, str]] = {}
             for source_url in (article_url, source_page_url):
                 for asset in assets_by_source.get(source_url, ()):
@@ -1090,11 +1095,88 @@ class Store:
             result.append(
                 ArticleSyncSnapshot(
                     article=article,
-                    media_paths=media_paths,
                     asset_paths=asset_paths,
                 )
             )
         return result
+
+    def rebuild_markdown(
+        self,
+        source_ids: set[str] | None = None,
+        *,
+        after_url: str = "",
+        limit: int = 0,
+        chunk_size: int = 100,
+    ) -> dict[str, Any]:
+        """Rebuild article Markdown from archived body HTML and enqueue it.
+
+        This repair deliberately reads article rows and their archived bundle
+        metadata instead of reparsing saved pages.  The article URL is the
+        keyset cursor, and only ``body_markdown`` plus bundle image metadata
+        are rewritten; the stored source HTML and all other article fields
+        remain unchanged.
+        """
+
+        if chunk_size < 1 or chunk_size > 1_000:
+            raise ValueError("Markdown rebuild chunk size must be between 1 and 1000")
+        if limit < 0:
+            raise ValueError("Markdown rebuild limit must not be negative")
+        scanned = 0
+        changed = 0
+        enqueued = 0
+        errors = 0
+        cursor = after_url
+        remaining = limit
+        while True:
+            page_limit = min(chunk_size, remaining) if remaining else chunk_size
+            snapshots = self.sync_article_snapshot_page(cursor, page_limit, source_ids)
+            if not snapshots:
+                break
+            for snapshot in snapshots:
+                article = snapshot.article
+                cursor = article.url
+                scanned += 1
+                try:
+                    images = article.images
+                    image_sources = {
+                        image_source_hash(image.url): image.url
+                        for image in images
+                        if image.url
+                    }
+                    body_markdown = html_to_markdown(
+                        article.body_html,
+                        base_url=article.source_page_url or article.url,
+                        image_sources=image_sources,
+                        strict_image_sources=True,
+                    )
+                    if body_markdown != article.body_markdown:
+                        self._core.execute(
+                            "UPDATE articles SET body_markdown=? WHERE url=?",
+                            (body_markdown, article.url),
+                        )
+                        self._core.commit()
+                        changed += 1
+                    article.body_markdown = body_markdown
+                    self.write_article_bundle(article)
+                    self._core.commit()
+                    # The Core connection is the single pooled SQLite
+                    # connection.  Release it before the ORM-backed outbox
+                    # helper resolves the source descriptor.
+                    if self.enqueue_article_for_sync(article) is not None:
+                        enqueued += 1
+                except (OSError, ValueError, KeyError):
+                    errors += 1
+            if remaining:
+                remaining -= len(snapshots)
+                if remaining <= 0:
+                    break
+        return {
+            "scanned": scanned,
+            "last_url": cursor,
+            "changed": changed,
+            "enqueued": enqueued,
+            "errors": errors,
+        }
 
     def write_article_bundle(
         self, article: ArticleDocument, content_hash: str | None = None
@@ -1141,28 +1223,15 @@ class Store:
 
     def rebuild_article_bundles(self) -> dict[str, int]:
         """Rebuild every URL-specific JSON/HTML article archive from SQLite."""
-        images_by_article: dict[str, list[ImageRef]] = {}
-        for row in self._core.execute(
-            """SELECT article_url,image_url,alt,title,caption
-               FROM article_media ORDER BY article_url,created_at,image_url"""
-        ):
-            images_by_article.setdefault(str(row["article_url"]), []).append(
-                ImageRef(
-                    url=str(row["image_url"]),
-                    alt=str(row["alt"] or ""),
-                    title=str(row["title"] or ""),
-                    caption=str(row["caption"] or ""),
-                    article_url=str(row["article_url"]),
-                )
-            )
         rebuilt = 0
         for row in self._core.execute("SELECT * FROM articles ORDER BY url"):
             try:
                 raw_metadata = json.loads(row["raw_json"] or "{}")
             except json.JSONDecodeError:
                 raw_metadata = {}
+            article_url = str(row["url"])
             article = ArticleDocument(
-                url=str(row["url"]),
+                url=article_url,
                 source_id=str(row["source_id"]),
                 title=str(row["title"] or ""),
                 author=str(row["author"] or ""),
@@ -1176,7 +1245,12 @@ class Store:
                 extraction_method=str(row["extraction_method"] or ""),
                 source_page_url=str(row["source_page_url"] or ""),
                 raw_metadata=raw_metadata if isinstance(raw_metadata, dict) else {},
-                images=images_by_article.get(str(row["url"]), []),
+                images=_article_image_refs(
+                    self.data_dir,
+                    article_url,
+                    str(row["body_html"] or ""),
+                    str(row["source_page_url"] or article_url),
+                ),
             )
             self.write_article_bundle(article, str(row["content_hash"] or ""))
             rebuilt += 1
@@ -1795,7 +1869,7 @@ class Store:
                       (SELECT a.published_at FROM articles a
                        WHERE a.url=p.url OR a.url=p.final_url OR a.url=p.canonical_url LIMIT 1) AS article_published
                FROM pages p"""
-        page_params: tuple[str, ...] = ()
+        page_params: tuple[Any, ...] = ()
         if page_urls:
             placeholders = ",".join("?" for _ in page_urls)
             page_query += f" WHERE p.url IN ({placeholders})"
@@ -1965,20 +2039,27 @@ class Store:
     def reindex_extractions(
         self,
         source_ids: set[str] | None = None,
-        source_caps: dict[str, int] | None = None,
         page_urls: set[str] | None = None,
+        *,
+        after_url: str = "",
+        limit: int = 0,
     ) -> dict[str, int]:
         """Re-run the parser over saved HTML without making network requests.
 
         Source and page subsets let targeted repairs finish without rescanning
-        the entire archive after an extraction or classification change.
+        the entire archive after an extraction or classification change.  The
+        URL cursor and optional limit make a large historical repair resumable.
         """
+        if limit < 0:
+            raise ValueError("reindex limit must not be negative")
         from .crawl import MIN_DEDUP_BODY_TEXT_CHARS, _decode
         from .extract import extract_page
         from .scoring import document_asset_url, score_page
 
         scanned = 0
+        last_url = after_url
         articles = 0
+        enqueued = 0
         removed = 0
         document_articles_removed = 0
         content_duplicates = 0
@@ -2096,8 +2177,16 @@ class Store:
             placeholders = ",".join("?" for _ in page_urls)
             page_query += f" AND url IN ({placeholders})"
             page_params += tuple(sorted(page_urls))
+        if after_url:
+            page_query += " AND url > ?"
+            page_params += (after_url,)
+        page_query += " ORDER BY url"
+        if limit:
+            page_query += " LIMIT ?"
+            page_params += (limit,)
         rows = self._core.execute(page_query, page_params)
         for row in rows:
+            last_url = str(row["url"])
             content_type = (row["content_type"] or "").lower()
             if content_type and "html" not in content_type and "xhtml" not in content_type:
                 continue
@@ -2236,9 +2325,6 @@ class Store:
                 self.save_article_hint(target, published_at, row["url"])
             keys = {row["url"], row["final_url"], row["canonical_url"]}
             if article and result.value_score >= 16 and not duplicate_of:
-                cap = (source_caps or {}).get(article.source_id)
-                if cap and cap > 0:
-                    article.images = article.images[:cap]
                 # Reindexing can change the article's image list. Remove old
                 # relationships first so exports do not retain stale images.
                 for key in filter(None, keys):
@@ -2277,6 +2363,11 @@ class Store:
                             utc_now(),
                         ),
                     )
+                self._core.commit()
+                # Release the Core connection before the ORM-backed enqueue
+                # helper obtains the source descriptor.
+                if self.enqueue_article_for_sync(article) is not None:
+                    enqueued += 1
                 articles += 1
                 saved_urls.add(article.url)
                 # Retire the stale rows this page replaces (e.g. the http
@@ -2329,7 +2420,9 @@ class Store:
                 )
         return {
             "scanned": scanned,
+            "last_url": last_url,
             "articles": articles,
+            "enqueued": enqueued,
             "removed": removed,
             "document_articles_removed": document_articles_removed,
             "content_duplicates": content_duplicates,

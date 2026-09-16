@@ -1,6 +1,14 @@
 import unittest
 
-from ustc_crawler.markdown import html_to_markdown
+from bs4 import BeautifulSoup
+
+from ustc_crawler.markdown import (
+    _strip_paragraph_layout_whitespace,
+    html_to_markdown,
+    image_source_hash,
+    image_source_urls,
+    local_image_url,
+)
 
 
 class HtmlToMarkdownTests(unittest.TestCase):
@@ -50,6 +58,53 @@ class HtmlToMarkdownTests(unittest.TestCase):
         self.assertIn("https://www.ustc.edu.cn/a.jpg", md)
         self.assertNotIn("srcset='/", md)
 
+    def test_registered_images_use_local_urls_and_keep_repeated_positions(self) -> None:
+        base_url = "https://www.ustc.edu.cn/info/1/2.htm"
+        first = "https://www.ustc.edu.cn/a.jpg"
+        second = "https://www.ustc.edu.cn/b.jpg"
+        sources = {image_source_hash(url): url for url in (first, second)}
+        html = (
+            "<p><img data-src='/a.jpg' alt='第一张'>中间"
+            "<img src='/b.jpg' alt='第二张'>末尾"
+            "<img src='/a.jpg' alt='第一张重复'></p>"
+        )
+
+        md = html_to_markdown(
+            html,
+            base_url=base_url,
+            image_sources=sources,
+            strict_image_sources=True,
+        )
+
+        first_local = local_image_url(first)
+        second_local = local_image_url(second)
+        self.assertEqual(md.count(first_local), 2)
+        self.assertEqual(md.count(second_local), 1)
+        self.assertLess(md.index(first_local), md.index(second_local))
+        self.assertLess(md.index(second_local), md.rindex(first_local))
+        self.assertIn("![第一张]", md)
+        self.assertIn("![第二张]", md)
+
+    def test_strict_registered_images_drop_unknown_sources(self) -> None:
+        known = "https://www.ustc.edu.cn/known.jpg"
+        md = html_to_markdown(
+            "<p><img src='/known.jpg' alt='已登记'><img src='/unknown.jpg' alt='未知'></p>",
+            base_url="https://www.ustc.edu.cn/info/1/2.htm",
+            image_sources={image_source_hash(known): known},
+            strict_image_sources=True,
+        )
+        self.assertIn(local_image_url(known), md)
+        self.assertNotIn("unknown.jpg", md)
+
+    def test_nested_paragraph_layout_whitespace_does_not_double_indent(self) -> None:
+        md = html_to_markdown("<p>\u3000<span>\xa0 </span><span>正文</span>之后</p>")
+        self.assertEqual(md, "正文之后")
+
+    def test_paragraph_cleanup_preserves_code_layout_whitespace(self) -> None:
+        soup = BeautifulSoup("<p><code>  code\n  line</code></p>", "html.parser")
+        _strip_paragraph_layout_whitespace(soup)
+        self.assertEqual(soup.code.string, "  code\n  line")
+
     def test_relative_src_kept_without_base_url(self) -> None:
         html = "<div><p><img src='/__local/a.jpg' alt='图'></p></div>"
         md = html_to_markdown(html)
@@ -95,6 +150,29 @@ class HtmlToMarkdownTests(unittest.TestCase):
             "[视频: 2021032539014229.mp4]"
             "(https://biotraining.ustc.edu.cn/_upload/article/videos/f0/2f/1c19876f.mp4)",
             md,
+        )
+
+    def test_vurl_image_stays_an_image_and_video_poster_is_dropped(self) -> None:
+        source_url = "https://news.ustc.edu.cn/images/vsb.jpg"
+        html = (
+            '<p><img vurl="https://news.ustc.edu.cn/media/video.mp4" '
+            'src="/images/vsb.jpg" alt="现场"></p>'
+            '<video poster="https://img-xhpfm.example/poster.jpg" '
+            'src="/media/video.mp4"></video>'
+        )
+        md = html_to_markdown(
+            html,
+            base_url="https://news.ustc.edu.cn/info/1056/90586.htm",
+            image_sources={image_source_hash(source_url): source_url},
+            strict_image_sources=True,
+        )
+
+        self.assertIn(f"![现场]({local_image_url(source_url)})", md)
+        self.assertIn("[视频](https://news.ustc.edu.cn/media/video.mp4)", md)
+        self.assertNotIn("img-xhpfm.example", md)
+        self.assertEqual(
+            image_source_urls(html, base_url="https://news.ustc.edu.cn/info/1056/90586.htm"),
+            (source_url,),
         )
 
     def test_pdf_player_renders_attachment_link(self) -> None:

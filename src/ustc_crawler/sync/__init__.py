@@ -39,6 +39,7 @@ from .models import (
     TombstonePublication,
     build_ingestion_batch,
     build_publication,
+    image_sources_for_article,
     revision_hash_for_article,
 )
 from .outbox import (
@@ -78,6 +79,7 @@ __all__ = [
     "TombstonePublication",
     "build_ingestion_batch",
     "build_publication",
+    "image_sources_for_article",
     "revision_hash_for_article",
     "spool_bytes",
     "SyncClient",

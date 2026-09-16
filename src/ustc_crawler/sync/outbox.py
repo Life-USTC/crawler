@@ -198,10 +198,14 @@ def spool_article_objects(
     article: ArticleDocument,
     data_dir: str | Path,
     *,
-    media_paths: dict[str, LocalObjectInput] | None = None,
     asset_paths: dict[str, LocalObjectInput] | None = None,
 ) -> tuple[LocalObjectManifest, ...]:
-    """Create immutable HTML/Markdown/media/asset objects for one article snapshot."""
+    """Create immutable HTML/Markdown/asset objects for one article snapshot.
+
+    Images are resolved by the server from ``imageSources`` when Markdown is
+    rendered.  The crawler keeps source URLs in article metadata and does not
+    require locally downloaded media for publication sync.
+    """
 
     objects: list[LocalObjectManifest] = []
     if article.body_html:
@@ -222,25 +226,6 @@ def spool_article_objects(
                 content_type="text/markdown",
             )
         )
-    seen_media: set[tuple[str, str]] = set()
-    for sort_order, image in enumerate(article.images):
-        value = (media_paths or {}).get(image.url)
-        if value is None:
-            continue
-        path, content_type = _media_input(value)
-        if not path.is_file():
-            continue
-        manifest = spool_file(
-            path,
-            kind="media",
-            content_type=content_type,
-            sort_order=sort_order,
-            alt_text=image.alt or None,
-        )
-        key = (manifest.kind, manifest.sha256)
-        if key not in seen_media:
-            seen_media.add(key)
-            objects.append(manifest)
     seen_assets: set[str] = set()
     for asset_url, value in sorted((asset_paths or {}).items()):
         path, content_type = _media_input(value)
@@ -412,7 +397,6 @@ class IngestionOutbox:
         data_dir: str | Path,
         *,
         source: PublicationSourceDescriptor,
-        media_paths: dict[str, LocalObjectInput] | None = None,
         asset_paths: dict[str, LocalObjectInput] | None = None,
         run_id: str | None = None,
         observed_at: str | date | datetime | None = None,
@@ -421,7 +405,6 @@ class IngestionOutbox:
             article,
             data_dir,
             source=source,
-            media_paths=media_paths,
             asset_paths=asset_paths,
             run_id=run_id,
             observed_at=observed_at,
@@ -433,7 +416,6 @@ class IngestionOutbox:
         data_dir: str | Path,
         *,
         source: PublicationSourceDescriptor,
-        media_paths: dict[str, LocalObjectInput] | None = None,
         asset_paths: dict[str, LocalObjectInput] | None = None,
         run_id: str | None = None,
         observed_at: str | date | datetime | None = None,
@@ -444,7 +426,6 @@ class IngestionOutbox:
         local_objects = spool_article_objects(
             article,
             data_dir,
-            media_paths=media_paths,
             asset_paths=asset_paths,
         )
         wire_objects = [wire_manifest(item) for item in local_objects]

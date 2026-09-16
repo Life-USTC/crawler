@@ -96,9 +96,6 @@ class CrawlOptions:
     max_depth: int = 0
     concurrency: int = 2
     delay: float = 1.0
-    download_images: bool = True
-    max_images_per_page: int = 30
-    max_image_bytes: int = 20 * 1024 * 1024
     ignore_robots: bool = False
     min_value_score: int = 16
     news_first: bool = True
@@ -478,40 +475,6 @@ class AsyncCrawler:
                 priority,
             )
 
-    async def _download_images(self, article, source_page_url: str) -> None:
-        if not self.options.download_images:
-            return
-        source = self.sources.get(article.source_id)
-        per_source_cap = source.max_images_per_page if source and source.max_images_per_page is not None else self.options.max_images_per_page
-        cap = per_source_cap if per_source_cap > 0 else 0
-        images = article.images if cap <= 0 else article.images[:cap]
-        for image in images:
-            existing = self.store.media_snapshot(image.url)
-            if existing and existing["status"] == "ok" and existing["local_path"]:
-                local_file = Path(existing["local_path"])
-                recorded_size = existing.get("size") or 0
-                # A shared image that is already intact on disk only needs a
-                # new relationship row; a torn file falls through to a refetch.
-                if local_file.is_file() and (not recorded_size or local_file.stat().st_size == recorded_size):
-                    self.store.link_media(image, article.url, source_page_url)
-                    continue
-            response = await self.fetcher.fetch(image.url, max_bytes=self.options.max_image_bytes)
-            if response.status == 200 and response.body:
-                self.store.save_media(
-                    image, response.body, response.content_type, article.url, source_page_url
-                )
-                self.media += 1
-            else:
-                self.store.save_media(
-                    image,
-                    b"",
-                    response.content_type,
-                    article.url,
-                    source_page_url,
-                    response.error or f"http {response.status}",
-                )
-                self.errors += 1
-
     async def _process(self, url: str, source_id: str, depth: int, parent: str) -> None:
         source = self.sources[source_id]
         async with self._counter_lock:
@@ -742,13 +705,11 @@ class AsyncCrawler:
             hint = self.store.article_hint(article.url) or self.store.article_hint(url)
             if hint and not article.published_at:
                 article.published_at = hint
-            # The article row must exist before media rows reference it, but
-            # the archive bundle is written exactly once, after the images are
-            # downloaded and included in the sync snapshot.
+            # Persist the source HTML/Markdown snapshot and enqueue it. Image
+            # bytes are fetched lazily by the publication server or by the
+            # explicit archival ``download-images`` command.
             self.store.save_article(article, write_bundle=False)
             self.articles += 1
-            if not refresh_existing_before_cutoff:
-                await self._download_images(article, response.final_url)
             self.store.save_article_and_enqueue_for_sync(
                 article,
                 run_id=self.sync_run_id if self.sync_run_started else None,

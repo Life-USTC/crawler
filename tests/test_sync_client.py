@@ -1730,7 +1730,71 @@ class SyncClientTests(unittest.TestCase):
             finally:
                 store.close()
 
-    def test_backfill_bulk_snapshot_preserves_payload_and_shared_media(self) -> None:
+    def test_backfill_supports_source_cursor_and_limit_for_historical_repair(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            try:
+                articles = [self._article(number) for number in range(1, 4)]
+                for article in articles:
+                    with store.database.session_factory.begin() as session:
+                        Store._save_article_record(
+                            session,
+                            article,
+                            hashlib.sha256(article.body_text.encode()).hexdigest(),
+                            "2026-08-20T00:00:00+08:00",
+                        )
+
+                first = sync_backfill(
+                    store,
+                    chunk_size=10,
+                    source_ids={"source"},
+                    limit=1,
+                )
+                self.assertEqual(first, {"scanned": 1, "enqueued": 1, "errors": 0})
+                second = sync_backfill(
+                    store,
+                    chunk_size=10,
+                    source_ids={"source"},
+                    after_url=articles[0].url,
+                    limit=1,
+                )
+                self.assertEqual(second, {"scanned": 1, "enqueued": 1, "errors": 0})
+                with store.database.session_factory() as session:
+                    self.assertEqual(session.scalar(select(func.count()).select_from(SyncOutbox)), 2)
+            finally:
+                store.close()
+
+    def test_snapshot_does_not_recover_images_only_from_legacy_media_linkage(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            try:
+                article = self._article(1)
+                store.save_article(article)
+                image = ImageRef(url="https://example.edu/uploads/old.png", alt="旧图片")
+                self.assertIsNotNone(
+                    store.save_media(
+                        image,
+                        b"old image",
+                        "image/png",
+                        article.url,
+                        article.source_page_url,
+                    )
+                )
+                snapshots = store.sync_article_snapshot_page(limit=1)
+                self.assertEqual(snapshots[0].article.images, [])
+                self.assertEqual(
+                    sync_backfill(store),
+                    {"scanned": 1, "enqueued": 1, "errors": 0},
+                )
+                with store.database.session_factory() as session:
+                    payload = json.loads(session.scalar(select(SyncOutbox.payload_json)))
+                self.assertEqual(payload["imageSources"], {})
+            finally:
+                store.close()
+
+    def test_backfill_bulk_snapshot_preserves_sources_without_sync_media_upload(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
             store = self._store(root)
@@ -1744,6 +1808,7 @@ class SyncClientTests(unittest.TestCase):
                 articles = [self._article(1), self._article(2)]
                 for article in articles:
                     article.images = [shared_image]
+                    article.body_html += f'<p><img src="{shared_image.url}" alt="shared"></p>'
                     store.save_article(article)
                 media_path = store.save_media(
                     shared_image,
@@ -1771,10 +1836,6 @@ class SyncClientTests(unittest.TestCase):
                     sorted(article.url for article in articles),
                 )
                 self.assertEqual(
-                    snapshots[1].media_paths[shared_image.url],
-                    (str(media_path), "image/png"),
-                )
-                self.assertEqual(
                     snapshots[1].asset_paths[asset_url],
                     (str(asset_path), "application/pdf"),
                 )
@@ -1793,7 +1854,6 @@ class SyncClientTests(unittest.TestCase):
                     local_objects = spool_article_objects(
                         article,
                         store.data_dir,
-                        media_paths=store.media_paths_for_article(article.url),
                         asset_paths=store.asset_paths_for_article(
                             article.url,
                             article.source_page_url,
@@ -1817,6 +1877,14 @@ class SyncClientTests(unittest.TestCase):
                     self.assertEqual(
                         json.loads(actual_rows[article.url].object_manifest_json),
                         [item.model_dump(mode="json") for item in local_objects],
+                    )
+                    self.assertEqual(
+                        actual_payload["imageSources"][hashlib.sha256(shared_image.url.encode()).hexdigest()],
+                        shared_image.url,
+                    )
+                    self.assertNotIn(
+                        "media",
+                        {item["kind"] for item in json.loads(actual_rows[article.url].object_manifest_json)},
                     )
             finally:
                 store.close()
@@ -1855,7 +1923,7 @@ class SyncClientTests(unittest.TestCase):
                     [snapshot.article.url for snapshot in first],
                     sorted(snapshot.article.url for snapshot in first),
                 )
-                self.assertEqual(len(statements), 4)
+                self.assertEqual(len(statements), 2)
                 self.assertEqual(
                     [
                         snapshot.article.url
@@ -2017,6 +2085,35 @@ class SyncClientTests(unittest.TestCase):
             parser.parse_args(["sync-backfill", "--db", "db.sqlite"]).command,
             "sync-backfill",
         )
+        backfill_args = parser.parse_args(
+            [
+                "sync-backfill",
+                "--source",
+                "news",
+                "--after-url",
+                "https://example.edu/news/10",
+                "--limit",
+                "25",
+            ]
+        )
+        self.assertEqual(backfill_args.source, ["news"])
+        self.assertEqual(backfill_args.after_url, "https://example.edu/news/10")
+        self.assertEqual(backfill_args.limit, 25)
+        rebuild_args = parser.parse_args(
+            [
+                "rebuild-markdown",
+                "--source",
+                "news",
+                "--after-url",
+                "https://example.edu/news/10",
+                "--limit",
+                "25",
+            ]
+        )
+        self.assertEqual(rebuild_args.command, "rebuild-markdown")
+        self.assertEqual(rebuild_args.source, ["news"])
+        self.assertEqual(rebuild_args.after_url, "https://example.edu/news/10")
+        self.assertEqual(rebuild_args.limit, 25)
 
 
 if __name__ == "__main__":

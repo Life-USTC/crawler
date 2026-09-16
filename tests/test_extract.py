@@ -3,6 +3,7 @@ from pathlib import Path
 
 from ustc_crawler.crawl import _decode, _xml_links
 from ustc_crawler.extract import extract_page, parse_date
+from ustc_crawler.markdown import local_image_url
 
 SUZHOU_FIXTURE = Path(__file__).parent / "fixtures" / "suzhou_article.html"
 SUZHOU_ENGLISH_FIXTURE = Path(__file__).parent / "fixtures" / "suzhou_english_article.html"
@@ -434,7 +435,7 @@ class ExtractTests(unittest.TestCase):
         )
         self.assertIn("62283555-800或802。", page.article.body_text)
 
-    def test_body_markdown_absolutizes_relative_image_urls(self) -> None:
+    def test_body_markdown_uses_local_image_urls_without_mutating_body_html(self) -> None:
         html = """
         <html><head><title>校园活动图片报道</title></head><body>
         <div class='v_news_content'>
@@ -446,9 +447,51 @@ class ExtractTests(unittest.TestCase):
         self.assertIsNotNone(page.article)
         assert page.article is not None
         self.assertIn(
-            "![开放日现场](https://www.ustc.edu.cn/__local/open-day.jpg)",
+            "![开放日现场]("
+            "/api/publications/images/ab02c0d07eb92ac62a1c807f71d923914f1d5832160b0bcf1be34f65e84fcd68)",
             page.article.body_markdown,
         )
+        self.assertIn("/__local/open-day.jpg", page.article.body_html)
+        self.assertNotIn("/api/publications/images/", page.article.body_html)
+
+    def test_body_markdown_preserves_repeated_images_and_alt_text(self) -> None:
+        html = """
+        <html><head><title>校园活动图片报道</title></head><body>
+        <article>
+        <p>学校举办年度校园开放日活动，吸引了众多师生和访客前来参观交流。</p>
+        <p><span><img data-src='/open-day.jpg' alt='开场'></span>中间内容
+        <img src='/open-day.jpg' alt='结尾'></p>
+        </article></body></html>
+        """
+        page = extract_page("https://www.ustc.edu.cn/info/1055/1234.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        local_url = local_image_url("https://www.ustc.edu.cn/open-day.jpg")
+        self.assertEqual(page.article.body_markdown.count(local_url), 2)
+        self.assertIn(f"![开场]({local_url})", page.article.body_markdown)
+        self.assertIn(f"![结尾]({local_url})", page.article.body_markdown)
+        self.assertIn("/open-day.jpg", page.article.body_html)
+        self.assertNotIn("/api/publications/images/", page.article.body_html)
+
+    def test_body_markdown_registers_images_restored_from_escaped_html(self) -> None:
+        html = """
+        <html><head><title>图片新闻</title></head><body><article>
+        <p>这是足够长的正文内容，用于确认旧版编辑器转义的图片仍会进入文章 Markdown。</p>
+        <p>第二段正文补充说明，确保页面被识别为文章。</p>
+        &lt;IMG src=&quot;/images/a.jpg&quot;&gt;
+        &lt;IMG src=&quot;/images/b.jpg&quot;&gt;
+        &lt;IMG src=&quot;/images/c.jpg&quot;&gt;
+        </article></body></html>
+        """
+        page = extract_page("https://www.ustc.edu.cn/info/1055/1235.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(len(page.article.images), 3)
+        for name in ("a.jpg", "b.jpg", "c.jpg"):
+            self.assertIn(
+                local_image_url(f"https://www.ustc.edu.cn/images/{name}"),
+                page.article.body_markdown,
+            )
 
     def test_table_cells_and_rows_are_separated_in_body_text(self) -> None:
         html = """
@@ -906,11 +949,11 @@ class ExtractTests(unittest.TestCase):
         self.assertIsNotNone(page.article)
         assert page.article is not None
         self.assertIn(
-            "![](https://ef.ustc.edu.cn/__local/0/13/5F/a.jpg)",
+            f"![]({local_image_url('https://ef.ustc.edu.cn/__local/0/13/5F/a.jpg')})",
             page.article.body_markdown,
         )
         self.assertIn(
-            "![](https://ef.ustc.edu.cn/__local/4/98/0F/b.jpg)",
+            f"![]({local_image_url('https://ef.ustc.edu.cn/__local/4/98/0F/b.jpg')})",
             page.article.body_markdown,
         )
         # The script source itself must not leak into the plain-text body.

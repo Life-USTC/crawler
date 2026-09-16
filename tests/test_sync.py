@@ -1,5 +1,6 @@
 import json
 import unittest
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -9,7 +10,8 @@ from sqlalchemy import func, select, text
 
 from ustc_crawler.db import ALEMBIC_HEAD
 from ustc_crawler.db.models import Article, SyncBatch, SyncBatchItem, SyncOutbox, SyncRun
-from ustc_crawler.models import ArticleDocument, SourceConfig
+from ustc_crawler.markdown import image_source_hash, local_image_url
+from ustc_crawler.models import ArticleDocument, ImageRef, SourceConfig
 from ustc_crawler.store import Store, article_bundle_path
 from ustc_crawler.sync.models import (
     IngestionBatch,
@@ -185,6 +187,68 @@ class IngestionProtocolTests(unittest.TestCase):
         publication = build_publication(article)
 
         self.assertIsNone(publication.body_text)
+
+    def test_publication_registers_image_sources_and_revision_tracks_markdown_objects(self) -> None:
+        source_url = "https://example.edu/uploads/diagram.png"
+        article = ArticleDocument(
+            url="https://example.edu/news/with-image",
+            source_id="source",
+            title="Image publication",
+            author="",
+            published_at="2026-08-20",
+            updated_at="",
+            category="",
+            summary="",
+            body_html='<p><img src="/uploads/diagram.png" alt="图表"></p>',
+            body_text="正文",
+            body_markdown=f"![图表]({local_image_url(source_url)})",
+            extraction_method="html",
+            source_page_url="https://example.edu/news/with-image",
+            images=[ImageRef(url=source_url, alt="图表")],
+        )
+        markdown_manifest = ObjectManifest(
+            kind="body_markdown",
+            sha256="a" * 64,
+            size=len(article.body_markdown.encode()),
+            contentType="text/markdown",
+        )
+
+        publication = build_publication(article, objects=[markdown_manifest])
+        self.assertEqual(
+            publication.image_sources,
+            {image_source_hash(source_url): source_url},
+        )
+
+        revised = replace(article, body_markdown=article.body_markdown + "\n补充说明")
+        revised_manifest = ObjectManifest(
+            kind="body_markdown",
+            sha256="b" * 64,
+            size=len(revised.body_markdown.encode()),
+            contentType="text/markdown",
+        )
+        self.assertNotEqual(
+            revision_hash_for_article(article, objects=[markdown_manifest]),
+            revision_hash_for_article(revised, objects=[revised_manifest]),
+        )
+
+    def test_publication_rejects_unregistered_markdown_image_destination(self) -> None:
+        article = ArticleDocument(
+            url="https://example.edu/news/unregistered-image",
+            source_id="source",
+            title="Image publication",
+            author="",
+            published_at="",
+            updated_at="",
+            category="",
+            summary="",
+            body_html="<p>正文</p>",
+            body_text="正文",
+            body_markdown="![外链](https://example.edu/image.png)",
+            extraction_method="html",
+            source_page_url="https://example.edu/news/unregistered-image",
+        )
+        with self.assertRaisesRegex(ValueError, "local image proxy"):
+            build_publication(article)
 
     def test_publication_wire_normalization_is_idempotent_for_server_trim(self) -> None:
         title = "T" * 999 + " " + "truncated after the protocol bound"
@@ -393,6 +457,21 @@ class OrmAndOutboxTests(unittest.TestCase):
             body_markdown="Hello",
             extraction_method="article",
             source_page_url="https://example.edu/news/1",
+        )
+
+    def test_article_spool_does_not_require_or_upload_image_media(self) -> None:
+        source_url = "https://example.edu/uploads/diagram.png"
+        article = self._article()
+        article.body_html = '<p><img src="/uploads/diagram.png" alt="图表"></p>'
+        article.body_markdown = f"![图表]({local_image_url(source_url)})"
+        article.images = [ImageRef(url=source_url, alt="图表")]
+
+        with TemporaryDirectory() as temp:
+            objects = spool_article_objects(article, Path(temp) / "data")
+
+        self.assertEqual(
+            [manifest.kind for manifest in objects],
+            ["body_html", "body_markdown"],
         )
 
     def test_save_article_sanitizes_controls_before_db_and_bundle(self) -> None:
