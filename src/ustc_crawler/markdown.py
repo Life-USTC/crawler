@@ -76,6 +76,20 @@ def local_image_url(url: str) -> str:
 
 
 class _ArticleConverter(MarkdownConverter):
+    def escape(self, text, parent_tags):
+        """Escape literal punctuation that can join generated Markdown syntax.
+
+        ``markdownify`` escapes most Markdown punctuation, but leaves ``!``
+        untouched.  A source text node ending in ``!`` immediately before an
+        HTML link therefore joins the link's generated ``[...](...)`` syntax
+        and becomes an image.  Escape the source character while preserving
+        the converter's normal handling of preformatted/code content.
+        """
+        text = super().escape(text, parent_tags)
+        if "_noformat" not in parent_tags:
+            text = text.replace("!", r"\!")
+        return text
+
     def convert_img(self, el, text, parent_tags):
         # Base64-inlined images are unusable in Markdown and can be megabytes.
         src = el.get("src") or ""
