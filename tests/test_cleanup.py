@@ -262,6 +262,61 @@ class CleanupExcessImagesTests(unittest.TestCase):
         )
         self.assertEqual(store_core(self.store).execute("SELECT COUNT(*) FROM media").fetchone()[0], 2)
 
+    def test_vurl_images_and_video_poster_enqueue_without_downloading_media(self) -> None:
+        url = "https://www.ustc.edu.cn/info/1056/90586.htm"
+        html = """<html><body><article><h1>真实图片新闻</h1>
+        <time>发布时间：2026-08-01</time>
+        <p>这是足够长的正文内容，用于确认带有 VSB 图片属性和视频海报的页面会正确提取，保留原始 HTML 并生成可以发布的本地图片 Markdown。</p>
+        <p>第二段正文继续说明新闻背景和相关安排，确保这是一个有效的文章容器。</p>
+        <p><img vurl='/video/one.mp4' src='/images/one.jpg' alt='一'><img vurl='/video/two.mp4' src='/images/two.jpg' alt='二'></p>
+        <p><img vurl='/video/three.mp4' src='/images/three.jpg' alt='三'><img vurl='/video/four.mp4' src='/images/four.jpg' alt='四'></p>
+        <video poster='https://img-xhpfm.example/poster.jpg' src='/media/movie.mp4'></video>
+        </article></body></html>"""
+        page = extract_page(url, html, source_id="university")
+
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        article = page.article
+        source_html = article.body_html
+        self.assertEqual(
+            [image.url for image in article.images],
+            [f"https://www.ustc.edu.cn/images/{name}.jpg" for name in ("one", "two", "three", "four")],
+        )
+        self.assertEqual(len(article.images), 4)
+        self.assertIn("vurl=\"/video/one.mp4\"", source_html)
+        self.assertIn("poster=\"https://img-xhpfm.example/poster.jpg\"", source_html)
+        self.assertNotIn("/api/publications/images/", source_html)
+        for name in ("one", "two", "three", "four"):
+            self.assertIn(
+                local_image_url(f"https://www.ustc.edu.cn/images/{name}.jpg"),
+                article.body_markdown,
+            )
+        self.assertNotIn("img-xhpfm.example", article.body_markdown)
+        self.assertIn("[视频](https://www.ustc.edu.cn/media/movie.mp4)", article.body_markdown)
+
+        self.store.save_article_and_enqueue_for_sync(article)
+
+        row = store_core(self.store).execute(
+            "SELECT body_html FROM articles WHERE url=?", (url,)
+        ).fetchone()
+        self.assertEqual(row["body_html"], source_html)
+        outbox = store_core(self.store).execute(
+            "SELECT payload_json,object_manifest_json FROM sync_outbox"
+        ).fetchone()
+        payload = json.loads(outbox["payload_json"])
+        self.assertEqual(
+            set(payload["imageSources"].values()),
+            {image.url for image in article.images},
+        )
+        self.assertNotIn(
+            "media",
+            {item["kind"] for item in json.loads(outbox["object_manifest_json"])},
+        )
+        self.assertEqual(
+            store_core(self.store).execute("SELECT COUNT(*) FROM media").fetchone()[0],
+            0,
+        )
+
     def test_reindex_preserves_all_image_sources(self) -> None:
         url = "https://www.ustc.edu.cn/info/1/2.htm"
         html = """<html><body><article><h1>图片新闻</h1>

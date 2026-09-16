@@ -6,6 +6,7 @@ from ustc_crawler.markdown import (
     _strip_paragraph_layout_whitespace,
     html_to_markdown,
     image_source_hash,
+    image_source_urls,
     local_image_url,
 )
 
@@ -149,6 +150,29 @@ class HtmlToMarkdownTests(unittest.TestCase):
             "[视频: 2021032539014229.mp4]"
             "(https://biotraining.ustc.edu.cn/_upload/article/videos/f0/2f/1c19876f.mp4)",
             md,
+        )
+
+    def test_vurl_image_stays_an_image_and_video_poster_is_dropped(self) -> None:
+        source_url = "https://news.ustc.edu.cn/images/vsb.jpg"
+        html = (
+            '<p><img vurl="https://news.ustc.edu.cn/media/video.mp4" '
+            'src="/images/vsb.jpg" alt="现场"></p>'
+            '<video poster="https://img-xhpfm.example/poster.jpg" '
+            'src="/media/video.mp4"></video>'
+        )
+        md = html_to_markdown(
+            html,
+            base_url="https://news.ustc.edu.cn/info/1056/90586.htm",
+            image_sources={image_source_hash(source_url): source_url},
+            strict_image_sources=True,
+        )
+
+        self.assertIn(f"![现场]({local_image_url(source_url)})", md)
+        self.assertIn("[视频](https://news.ustc.edu.cn/media/video.mp4)", md)
+        self.assertNotIn("img-xhpfm.example", md)
+        self.assertEqual(
+            image_source_urls(html, base_url="https://news.ustc.edu.cn/info/1056/90586.htm"),
+            (source_url,),
         )
 
     def test_pdf_player_renders_attachment_link(self) -> None:

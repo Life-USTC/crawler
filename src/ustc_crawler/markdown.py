@@ -103,6 +103,11 @@ def _replace_players(soup: BeautifulSoup, base_url: str) -> None:
     """Swap JS-only player containers for a link to the underlying media file."""
     for attribute, label in _PLAYER_URL_ATTRS:
         for node in soup.select(f"[{attribute}]"):
+            # VSB puts ``vurl`` on ordinary images as well as on its video
+            # player containers.  An image's attribute is metadata for the
+            # image and must not turn the image into a video link.
+            if node.name == "img":
+                continue
             raw = str(node.get(attribute) or "").strip()
             if not raw:
                 continue
@@ -111,6 +116,30 @@ def _replace_players(soup: BeautifulSoup, base_url: str) -> None:
             anchor = soup.new_tag("a", href=target)
             anchor.string = _media_label(node, label)
             node.replace_with(anchor)
+
+
+def _replace_videos(soup: BeautifulSoup, base_url: str) -> None:
+    """Render native videos as links without leaking poster images.
+
+    ``markdownify`` treats a ``video[poster]`` as an image wrapped in a link.
+    Poster URLs are not article image sources, so retaining that output would
+    produce a Markdown image with no registered local proxy.  Keep the video
+    itself useful by linking to its first HTTP(S) source and discard the
+    poster/fallback markup.
+    """
+    for node in soup.find_all("video"):
+        raw = str(node.get("src") or "").strip()
+        if not raw:
+            source = node.find("source", src=True)
+            raw = str(source.get("src") or "").strip() if source else ""
+        if not raw:
+            node.decompose()
+            continue
+        target = normalize_url(raw, base_url) if base_url else ""
+        target = target or raw
+        anchor = soup.new_tag("a", href=target)
+        anchor.string = _media_label(node, "视频")
+        node.replace_with(anchor)
 
 
 def _inline_pdf_viewer_images(soup: BeautifulSoup, base_url: str) -> None:
@@ -299,6 +328,7 @@ def _prepare_soup(
     for node in soup.find_all(["script", "style", "form", "noscript"]):
         node.decompose()
     _replace_players(soup, base_url)
+    _replace_videos(soup, base_url)
     _drop_empty_headings(soup)
     _strip_noise(soup, strip_selectors)
     _strip_paragraph_layout_whitespace(soup)
