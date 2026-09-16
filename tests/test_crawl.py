@@ -1268,16 +1268,17 @@ class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
 class SeedRevivalTests(unittest.IsolatedAsyncioTestCase):
     async def test_prepare_revives_errored_seed_below_attempt_cap(self) -> None:
         # nercslip's seed once answered 404 and stayed as an error row, so the
-        # whole source went dark.  Every run must retry an errored seed until
-        # the attempt cap, but no further.
+        # whole source went dark (that source has since been removed; mcip
+        # stands in as the supplemental fixture).  Every run must retry an
+        # errored seed until the attempt cap, but no further.
         temp_dir = TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)
         root = Path(temp_dir.name)
-        retry_seed = "https://nercslip.ustc.edu.cn/main.htm"
+        retry_seed = "https://mcip.ustc.edu.cn/main.htm"
         capped_seed = "https://yz1.ustc.edu.cn/"
         store = Store(root / "crawler.sqlite", root / "data")
         for source_id, seed, host in (
-            ("supplemental-nercslip", retry_seed, "nercslip.ustc.edu.cn"),
+            ("supplemental-mcip", retry_seed, "mcip.ustc.edu.cn"),
             ("supplemental-yz1", capped_seed, "yz1.ustc.edu.cn"),
         ):
             store.add_source(
@@ -1290,7 +1291,7 @@ class SeedRevivalTests(unittest.IsolatedAsyncioTestCase):
                     discovery_only=True,
                 )
             )
-        store.enqueue(retry_seed, "supplemental-nercslip", 0, "", 500)
+        store.enqueue(retry_seed, "supplemental-mcip", 0, "", 500)
         store.enqueue(capped_seed, "supplemental-yz1", 0, "", 500)
         store_core(store).execute(
             "UPDATE frontier SET status='error', attempts=1, last_error='http 404' WHERE url=?",
