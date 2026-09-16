@@ -34,6 +34,13 @@ from .models import (
 type LocalObjectInput = str | Path | tuple[str | Path, str]
 MAX_OBJECT_SIZE = 32 * 1024 * 1024
 DEFAULT_MAX_BATCH_BYTES = 2 * 1024 * 1024
+MAX_ERROR_DETAIL_CHARS = 500
+
+
+def sanitize_error_detail(detail: str) -> str:
+    """Flatten whitespace and bound a persisted error response excerpt."""
+
+    return " ".join(detail.split())[:MAX_ERROR_DETAIL_CHARS]
 BATCH_STATUSES = frozenset(
     {"pending", "uploading", "acked", "partial", "failed", "superseded"}
 )
@@ -616,11 +623,19 @@ class IngestionOutbox:
             batch.updated_at = now
             return batch.status
 
-    def mark_batch_error(self, batch_id: str, error_code: str) -> None:
-        """Record a safe error code without persisting response bodies or URLs."""
+    def mark_batch_error(self, batch_id: str, error_code: str, *, detail: str = "") -> None:
+        """Record a safe error code plus an optional sanitized response excerpt.
+
+        ``detail`` is a flattened, length-bounded excerpt of a 4xx response
+        body (already secret-redacted by the sync client); it is persisted as
+        ``{"error": <code>, "detail": <excerpt>}`` in the batch's
+        ``response_json`` column so a rejected batch can be diagnosed without
+        replaying it.  Raw response bodies and URLs are never stored.
+        """
 
         if not error_code or any(character.isspace() for character in error_code):
             raise ValueError("batch error must be a non-empty code without whitespace")
+        excerpt = sanitize_error_detail(detail) if detail else ""
         now = datetime.now().astimezone().isoformat(timespec="seconds")
         with transaction(self.database) as session:
             batch = session.get(SyncBatch, batch_id)
@@ -629,6 +644,8 @@ class IngestionOutbox:
             batch.last_error = error_code
             batch.attempts += 1
             batch.updated_at = now
+            if excerpt:
+                batch.response_json = _dump_json({"error": error_code, "detail": excerpt})
             for row in session.scalars(select(SyncOutbox).where(SyncOutbox.batch_id == batch_id)):
                 row.last_error = error_code
                 row.updated_at = now
