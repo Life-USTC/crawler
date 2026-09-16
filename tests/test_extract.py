@@ -996,6 +996,84 @@ class ExtractTests(unittest.TestCase):
         page = extract_page("https://mcip.ustc.edu.cn/xwzx/list.htm", html)
         self.assertIsNone(page.article)
 
+    def test_single_article_list_htm_top_nav_section_landing_is_not_an_article(self) -> None:
+        # mcip section landings (研究成果/招生&招聘 …) reuse the .wp_single
+        # article shell for column content, so #89 saved them as articles
+        # titled by the column name.  The top nav links to the landing as a
+        # section entry; that marks the page as a column, not an article.
+        # The nav href keeps the legacy http scheme while the fetched page is
+        # https - the comparison must still hold.
+        html = """
+        <html><head><title>招生&amp;招聘</title></head><body>
+        <ul class='wp_nav'>
+        <li class='nav-item i1'><a href='http://mcip.ustc.edu.cn/main.htm'>主页</a></li>
+        <li class='nav-item i2'><a href='http://mcip.ustc.edu.cn/yjcg/list.htm'>研究成果</a></li>
+        <li class='nav-item i5'><a href='/zswzp/list.htm'>招生&amp;招聘</a></li>
+        </ul>
+        <div class='wp_single wp_column_article' id='wp_column_article'>
+        <h2>招生&amp;招聘</h2>
+        <div class='wp_entry'><div class='wp_articlecontent'>
+        <p>博士后招聘：年龄不超过35岁，专业包括但不限于机械工程、仪器科学、力学、材料、物理、化学相关学科。</p>
+        <p>聘期：合同聘期2年，合同期间大力支持申报相关科研项目及人才计划，期满考核优秀者支持申报特任副研究员岗位。</p>
+        <p>待遇：基础年薪15万元起，学校为博士后办理社会保险和住房公积金，并提供两室带全套家具的廉租房。</p>
+        </div></div></div>
+        </body></html>
+        """
+        page = extract_page("https://mcip.ustc.edu.cn/zswzp/list.htm", html)
+        self.assertIsNone(page.article)
+
+    def test_single_article_list_htm_sub_column_landing_is_not_an_article(self) -> None:
+        # 研究成果 > 论文 is a single-level sub-column (li class 'column-1')
+        # whose wp_articlecontent holds a bibliography, not an article body.
+        html = """
+        <html><head><title>论文</title></head><body>
+        <ul class='wp_listcolumn'>
+        <li class='wp_column column-1 selected'><a href='/lw/list.htm'>论文</a></li>
+        <li class='wp_column column-2'><a href='/zl/list.htm'>专利</a></li>
+        <li class='wp_column column-3'><a href='/xm/list.htm'>项目</a></li>
+        <li class='wp_column column-4'><a href='/zz/list.htm'>专著</a></li>
+        </ul>
+        <div class='wp_single wp_column_article' id='wp_column_article'>
+        <h2>论文</h2>
+        <div class='wp_entry'><div class='wp_articlecontent'>
+        <p class='MsoListParagraph'>[1] Lei Mao, et al. In-situ magnetic field sensing for lithium batteries, 2026.</p>
+        <p class='MsoListParagraph'>[2] Lei Mao, et al. Performance consistency detection of battery packs, 2025.</p>
+        <p class='MsoListParagraph'>[3] Lei Mao, et al. Data fusion methods for intelligent operation and maintenance, 2024.</p>
+        <p class='MsoListParagraph'>[4] Lei Mao, et al. Advanced perception systems for condition monitoring, 2023.</p>
+        </div></div></div>
+        </body></html>
+        """
+        page = extract_page("https://mcip.ustc.edu.cn/lw/list.htm", html)
+        self.assertIsNone(page.article)
+
+    def test_single_article_list_htm_deeper_column_item_is_an_article(self) -> None:
+        # Genuine mcip articles are linked from the sub-column nav one level
+        # deeper (li class 'column-N-M'); the single-level 'column-N' parent
+        # item (学术交流) pointing at a different URL must not exclude them.
+        html = """
+        <html><head><title>第48届日内瓦国际发明展金奖</title></head><body>
+        <ul class='wp_listcolumn'>
+        <li class='wp_column column-1 parent'><a href='/xsjl_24996/list.htm'>学术交流</a>
+        <ul>
+        <li class='wp_column column-1-1 selected'><a href='/d48jrnwgjfmzjj/list.htm'>第48届日内瓦国际发明展金奖</a></li>
+        <li class='wp_column column-1-2'><a href='/2022nxnyqcdsjcxjs/list.htm'>2022年新能源汽车大数据创新竞赛</a></li>
+        </ul>
+        </li>
+        </ul>
+        <div class='wp_single wp_column_article' id='wp_column_article'>
+        <h2>第48届日内瓦国际发明展金奖</h2>
+        <div class='wp_entry'><div class='wp_articlecontent'>
+        <p>近日，第48届日内瓦国际发明展在瑞士日内瓦闭幕，并对外公布获奖名单，中国科学技术大学工程科学学院毛磊研究员团队的参展作品荣获金奖。</p>
+        <p>该作品提出了一种基于原位磁场感知的锂电池组性能一致性监测方法，显著提升了电池安全管理水平，受到评审专家的高度评价与广泛关注。</p>
+        <p>团队成员长期深耕电池管理领域，相关成果已在多个实际场景中得到应用验证，为新能源行业发展提供了有力的技术支撑。</p>
+        </div></div></div>
+        </body></html>
+        """
+        page = extract_page("https://mcip.ustc.edu.cn/d48jrnwgjfmzjj/list.htm", html)
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        self.assertEqual(page.article.title, "第48届日内瓦国际发明展金奖")
+
     def test_wordpress_attachment_shell_is_not_an_article(self) -> None:
         page = extract_page(
             "https://teach.ustc.edu.cn/?attachment_id=20483",
