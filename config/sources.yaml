@@ -45,6 +45,8 @@ sources:
       - hs.lib.ustc.edu.cn
       - icdd.lib.ustc.edu.cn
       - start.lib.ustc.edu.cn
+  # course.ustc.edu.cn 的 robots.txt 为 User-Agent: * Disallow: /（全站禁爬），
+  # 且 /portal 需统一身份认证；我们尊重 robots，该来源有意保持 0 篇。
   - id: course
     name: 网络教学平台
     organization_level: service
@@ -500,12 +502,6 @@ supplemental_sources:
     organization_level: center
     seed_urls: [https://esetc.ustc.edu.cn/main.htm]
     allowed_hosts: [esetc.ustc.edu.cn]
-    discovery_only: true
-  - id: supplemental-nercslip
-    name: 语音及语言信息处理国家工程研究中心（旧域名）
-    organization_level: research
-    seed_urls: [https://nercslip.ustc.edu.cn/main.htm]
-    allowed_hosts: [nercslip.ustc.edu.cn]
     discovery_only: true
   - id: supplemental-yz1
     name: 研究生招生在线（旧域名）
