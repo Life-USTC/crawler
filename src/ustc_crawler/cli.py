@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fcntl
 import json
 import os
 import signal
@@ -97,6 +98,27 @@ def _failure_exit_code(result: dict) -> int:
     failed = int(result.get("failed", 0) or 0)
     errors = int(result.get("errors", 0) or 0)
     return 2 if failed > 0 or errors > 0 else 0
+
+
+@contextlib.contextmanager
+def _sync_instance_lock(data_dir: str) -> Iterator[bool]:
+    """Non-blocking single-instance lock for sync runs.
+
+    Yields False when another sync process already holds
+    ``<data_dir>/sync.lock``; otherwise yields True and holds the lock
+    until the context exits.  The OS releases the lock at process exit,
+    even on a crash, so a killed run never wedges later rounds.
+    """
+
+    lock_path = Path(data_dir) / "sync.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        yield True
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -373,31 +395,41 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sync":
         server = _ingestion_server(parser, args)
         secret = ingestion_secret_from_environment()
-        store = Store(args.db, args.data_dir)
-        try:
-            client = IngestionSyncClient(store.database, args.data_dir, server, secret)
-            try:
-                summary = client.sync(
-                    options=SyncOptions(
-                        batch_size=args.batch_size,
-                        max_payload_bytes=args.max_payload_bytes,
-                        max_batches=args.max_batches,
-                        max_retries=args.max_retries,
-                        object_concurrency=args.object_concurrency,
-                        batch_concurrency=args.batch_concurrency,
-                    )
-                )
+        with _sync_instance_lock(args.data_dir) as acquired:
+            if not acquired:
+                # Timer semantics: another sync instance is running, so skip
+                # this round cleanly and let the next invocation retry.
                 print(
-                    json.dumps(
-                        summary,
-                        ensure_ascii=False,
-                        indent=2,
-                    )
+                    f"sync already running for data dir {args.data_dir} "
+                    f"({Path(args.data_dir) / 'sync.lock'} held); skipping this run",
+                    file=sys.stderr,
                 )
+                return 0
+            store = Store(args.db, args.data_dir)
+            try:
+                client = IngestionSyncClient(store.database, args.data_dir, server, secret)
+                try:
+                    summary = client.sync(
+                        options=SyncOptions(
+                            batch_size=args.batch_size,
+                            max_payload_bytes=args.max_payload_bytes,
+                            max_batches=args.max_batches,
+                            max_retries=args.max_retries,
+                            object_concurrency=args.object_concurrency,
+                            batch_concurrency=args.batch_concurrency,
+                        )
+                    )
+                    print(
+                        json.dumps(
+                            summary,
+                            ensure_ascii=False,
+                            indent=2,
+                        )
+                    )
+                finally:
+                    client.close()
             finally:
-                client.close()
-        finally:
-            store.close()
+                store.close()
         return _failure_exit_code(summary)
     if args.command == "sync-backfill":
         store = Store(args.db, args.data_dir)
