@@ -942,17 +942,37 @@ class IngestionSyncClient:
             run.errors = errors
 
 
-def sync_backfill(store: Store, *, chunk_size: int = 100) -> dict[str, int]:
-    """Keyset-enqueue existing articles without making any network requests."""
+def sync_backfill(
+    store: Store,
+    *,
+    chunk_size: int = 100,
+    source_ids: set[str] | None = None,
+    after_url: str = "",
+    limit: int = 0,
+) -> dict[str, int]:
+    """Keyset-enqueue existing articles without making any network requests.
+
+    ``source_ids``, ``after_url``, and ``limit`` bound an article-keyset
+    repair.  Reindexing enqueues each successfully rebuilt canonical article
+    directly, so its page-keyset cursor is not reused for this operation.
+    """
 
     if chunk_size < 1 or chunk_size > 1_000:
         raise ValueError("backfill chunk size must be between 1 and 1000")
+    if limit < 0:
+        raise ValueError("backfill limit must not be negative")
     outbox = IngestionOutbox(store.database)
     sources: dict[str, Any] = {}
-    cursor = ""
+    cursor = after_url
+    remaining = limit
     result = {"scanned": 0, "enqueued": 0, "errors": 0}
     while True:
-        snapshots = store.sync_article_snapshot_page(cursor, chunk_size)
+        page_limit = min(chunk_size, remaining) if remaining else chunk_size
+        snapshots = store.sync_article_snapshot_page(
+            cursor,
+            page_limit,
+            source_ids,
+        )
         if not snapshots:
             break
         for snapshot in snapshots:
@@ -970,7 +990,6 @@ def sync_backfill(store: Store, *, chunk_size: int = 100) -> dict[str, int]:
                     article,
                     store.data_dir,
                     source=source,
-                    media_paths=snapshot.media_paths,
                     asset_paths=snapshot.asset_paths,
                 )
             except (OSError, ValueError, KeyError):
@@ -978,6 +997,10 @@ def sync_backfill(store: Store, *, chunk_size: int = 100) -> dict[str, int]:
                 continue
             if created:
                 result["enqueued"] += 1
+        if remaining:
+            remaining -= len(snapshots)
+            if remaining <= 0:
+                break
     return result
 
 

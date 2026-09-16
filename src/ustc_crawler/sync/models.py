@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Iterable
 from datetime import date, datetime
 from typing import Annotated, Any, Literal
@@ -17,6 +18,7 @@ from pydantic import (
     field_validator,
 )
 
+from ..markdown import IMAGE_PROXY_PREFIX, image_source_hash
 from ..models import ArticleDocument, SourceConfig, sanitize_json_value, sanitize_text
 from ..publication import CLASSIFIER_VERSION, PublicationType, classify_publication
 
@@ -31,6 +33,7 @@ MAX_PUBLICATION_CATEGORY_LENGTH = 500
 MAX_PUBLICATION_SUMMARY_LENGTH = 20_000
 MAX_PUBLICATION_BODY_TEXT_LENGTH = 5_000_000
 MAX_PUBLICATION_EXTRACTION_METHOD_LENGTH = 200
+MAX_IMAGE_SOURCES = 1_000
 
 
 def _strip_text(value: Any) -> Any:
@@ -109,6 +112,17 @@ def _validate_url(value: str) -> str:
 def _validate_optional_url(value: str | None) -> str | None:
     if value is not None:
         _validate_url(value)
+    return value
+
+
+def _validate_image_source_map(value: dict[str, str]) -> dict[str, str]:
+    """Validate that each image key is the digest of its source URL."""
+
+    for digest, source_url in value.items():
+        _validate_url(source_url)
+        expected = image_source_hash(source_url)
+        if digest != expected:
+            raise ValueError("imageSources key must be the SHA-256 of its source URL")
     return value
 
 
@@ -382,6 +396,7 @@ class IngestionPublication(ProtocolModel):
         max_length=200,
     )
     raw_metadata: dict[str, Any] | None = Field(default=None, alias="rawMetadata")
+    image_sources: dict[Sha256, Url] = Field(alias="imageSources", max_length=MAX_IMAGE_SOURCES)
     objects: list[ObjectManifest] = Field(
         default_factory=list,
         max_length=MAX_PUBLICATION_OBJECTS,
@@ -394,6 +409,7 @@ class IngestionPublication(ProtocolModel):
         _normalize_optional_timestamp
     )
     _normalize_raw_metadata = field_validator("raw_metadata", mode="before")(_json_value)
+    _validate_image_sources = field_validator("image_sources")(_validate_image_source_map)
 
 
 class TombstonePublication(ProtocolModel):
@@ -465,6 +481,43 @@ def _normalized_source_page_url(article: ArticleDocument) -> str:
     return source_page_url or sanitize_text(article.url).strip()
 
 
+def image_sources_for_article(article: ArticleDocument) -> dict[str, str]:
+    """Derive the immutable source registry used by Markdown image URLs."""
+
+    result: dict[str, str] = {}
+    for image in article.images:
+        source_url = sanitize_text(image.url).strip()
+        if not source_url:
+            raise ValueError("article image source URL must not be blank")
+        _validate_url(source_url)
+        digest = image_source_hash(source_url)
+        previous = result.get(digest)
+        if previous is not None and previous != source_url:
+            raise ValueError("image source hash collision")
+        result[digest] = source_url
+    return dict(sorted(result.items()))
+
+
+_MARKDOWN_IMAGE_DESTINATION = re.compile(
+    r"!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s)]+))",
+)
+
+
+def _validate_markdown_image_sources(
+    body_markdown: str,
+    image_sources: dict[str, str],
+) -> None:
+    """Require every Markdown image destination to use a registered proxy."""
+
+    for match in _MARKDOWN_IMAGE_DESTINATION.finditer(body_markdown):
+        destination = match.group(1) or match.group(2) or ""
+        if not destination.startswith(IMAGE_PROXY_PREFIX):
+            raise ValueError("body_markdown image URL must use the local image proxy")
+        digest = destination[len(IMAGE_PROXY_PREFIX) :]
+        if not re.fullmatch(r"[0-9a-f]{64}", digest) or digest not in image_sources:
+            raise ValueError("body_markdown image URL has no matching image source")
+
+
 def _normalized_publication_values(
     article: ArticleDocument,
     *,
@@ -481,6 +534,8 @@ def _normalized_publication_values(
     author = _bounded_optional_text(article.author, MAX_PUBLICATION_AUTHOR_LENGTH)
     category = _bounded_optional_text(article.category, MAX_PUBLICATION_CATEGORY_LENGTH)
     summary = _bounded_optional_text(article.summary, MAX_PUBLICATION_SUMMARY_LENGTH)
+    image_sources = image_sources_for_article(article)
+    _validate_markdown_image_sources(article.body_markdown, image_sources)
     kind = publication_type or classify_publication(
         url=canonical_url,
         source_id=source_id,
@@ -506,6 +561,7 @@ def _normalized_publication_values(
         "classifierVersion": _bounded_optional_text(classifier_version, 200),
         "publicationType": kind,
         "rawMetadata": _json_value(article.raw_metadata),
+        "imageSources": image_sources,
         "objects": _bounded_objects(objects),
     }
 
@@ -596,6 +652,7 @@ def build_publication(
         extractionMethod=values["extractionMethod"],
         classifierVersion=values["classifierVersion"],
         rawMetadata=values["rawMetadata"] or None,
+        imageSources=values["imageSources"],
         objects=values["objects"],
     )
 
@@ -641,6 +698,7 @@ __all__ = [
     "TombstonePublication",
     "build_ingestion_batch",
     "build_publication",
+    "image_sources_for_article",
     "normalize_publication_timestamp",
     "revision_hash_for_article",
     "_source_descriptor",

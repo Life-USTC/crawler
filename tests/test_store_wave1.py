@@ -1,3 +1,4 @@
+import json
 import os
 import unittest
 from datetime import UTC
@@ -5,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from ustc_crawler.models import ArticleDocument, ImageRef, PageDocument, SourceConfig
-from ustc_crawler.store import Store, _atomic_write_bytes
+from ustc_crawler.store import Store, _atomic_write_bytes, article_bundle_path
 
 
 class AtomicWriteTests(unittest.TestCase):
@@ -133,6 +134,46 @@ class ArticleBundleAtomicTests(unittest.TestCase):
 
             self.assertEqual(len(files), 2)
             self.assertTrue(all(not name.startswith(".") for name in files))
+
+    def test_rebuild_bundle_keeps_source_images_without_media_rows(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "crawler.sqlite", root / "data")
+            store.add_source(
+                SourceConfig(
+                    id="news",
+                    name="测试新闻",
+                    organization_level="university",
+                    seed_urls=["https://example.test/"],
+                    allowed_hosts=["example.test"],
+                )
+            )
+            url = "https://example.test/article/with-image"
+            image = ImageRef(url="https://example.test/images/a.png", alt="配图")
+            article = ArticleDocument(
+                url=url,
+                source_id="news",
+                title="图片文章",
+                author="",
+                published_at="",
+                updated_at="",
+                category="",
+                summary="",
+                body_html='<p><img src="/images/a.png" alt="配图"></p>',
+                body_text="正文",
+                body_markdown="![配图](/api/publications/images/hash)",
+                extraction_method="test",
+                source_page_url=url,
+                images=[image],
+            )
+            store.save_article(article)
+            self.assertEqual(store.rebuild_article_bundles(), {"rebuilt": 1})
+            bundle = json.loads(
+                article_bundle_path(store.data_dir, url).read_text(encoding="utf-8")
+            )
+            store.close()
+
+        self.assertEqual(bundle["images"][0]["url"], image.url)
 
 
 class FrontierRevivalTests(unittest.TestCase):

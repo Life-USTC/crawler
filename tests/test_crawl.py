@@ -979,7 +979,7 @@ class CrawlSinceTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(article)
         self.assertEqual(writes, 1)
 
-    async def test_download_images_skips_already_downloaded_media(self) -> None:
+    async def test_normal_crawl_does_not_download_or_link_article_images(self) -> None:
         url = "https://news.example.test/article/shared-image"
         image_url = "https://news.example.test/img/shared.jpg"
         store = Store(self.db_path, self.data_dir)
@@ -1041,12 +1041,12 @@ class CrawlSinceTests(unittest.IsolatedAsyncioTestCase):
         store.close()
 
         self.assertNotIn(image_url, fetched)
-        self.assertIsNotNone(link)
-        self.assertTrue(link["local_path"])
+        self.assertIsNone(link)
 
-    async def test_download_images_trusts_ok_record_with_unknown_size(self) -> None:
-        # Legacy rows may carry size=0: an intact file behind such a record is
-        # linked without a refetch, matching media._job_priority semantics.
+    async def test_normal_crawl_does_not_consult_legacy_media_records(self) -> None:
+        # Existing archival media remains available to the explicit
+        # ``download-images`` command; the normal crawl only records source
+        # URLs and never turns those rows into article sync objects.
         url = "https://news.example.test/article/legacy-image"
         image_url = "https://news.example.test/img/legacy.jpg"
         store = Store(self.db_path, self.data_dir)
@@ -1103,6 +1103,13 @@ class CrawlSinceTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         self.assertNotIn(image_url, fetched)
+        store = Store(self.db_path, self.data_dir)
+        link = store_core(store).execute(
+            "SELECT 1 FROM article_media WHERE article_url=? AND image_url=?",
+            (url, image_url),
+        ).fetchone()
+        store.close()
+        self.assertIsNone(link)
 
     async def test_incremental_article_page_still_enqueues_document_attachments(self) -> None:
         url = "https://news.example.test/article/with-attachment"

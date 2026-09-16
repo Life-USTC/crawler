@@ -157,14 +157,6 @@ def build_parser() -> argparse.ArgumentParser:
     crawl.add_argument(
         "--delay", type=float, default=1.0, help="minimum seconds between requests to one host"
     )
-    crawl.add_argument("--no-images", action="store_true")
-    crawl.add_argument(
-        "--max-images-per-page",
-        type=int,
-        default=30,
-        help="0 means download every discovered article image",
-    )
-    crawl.add_argument("--max-image-bytes", type=int, default=20 * 1024 * 1024)
     crawl.add_argument(
         "--ignore-robots", action="store_true", help="only use with explicit site-owner permission"
     )
@@ -201,7 +193,6 @@ def build_parser() -> argparse.ArgumentParser:
     export.add_argument("--output", default="data/exports/articles.jsonl", type=_path)
 
     reindex = sub.add_parser("reindex", help="re-extract saved pages without network requests")
-    reindex.add_argument("--config", default="config/sources.yaml", type=_path)
     reindex.add_argument("--db", default="data/crawler.sqlite", type=_path)
     reindex.add_argument("--data-dir", default="data", type=_path)
     reindex.add_argument(
@@ -209,6 +200,40 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         default=[],
         help="limit re-extraction to one or more source IDs (repeatable)",
+    )
+    reindex.add_argument(
+        "--after-url",
+        default="",
+        help="resume after this saved page URL (keyset cursor)",
+    )
+    reindex.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="maximum saved pages to re-extract (0 means all)",
+    )
+
+    rebuild_markdown = sub.add_parser(
+        "rebuild-markdown",
+        help="rebuild article Markdown from saved body HTML without network requests",
+    )
+    _sync_storage_args(rebuild_markdown)
+    rebuild_markdown.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        help="limit the repair to one or more source IDs (repeatable)",
+    )
+    rebuild_markdown.add_argument(
+        "--after-url",
+        default="",
+        help="resume after this article URL (keyset cursor)",
+    )
+    rebuild_markdown.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="maximum articles to rebuild (0 means all)",
     )
 
     retext = sub.add_parser(
@@ -350,6 +375,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _sync_storage_args(sync_backfill_command)
     sync_backfill_command.add_argument("--chunk-size", type=int, default=100)
+    sync_backfill_command.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        help="limit backfill to one or more source IDs (repeatable)",
+    )
+    sync_backfill_command.add_argument(
+        "--after-url",
+        default="",
+        help="resume after this article URL (keyset cursor)",
+    )
+    sync_backfill_command.add_argument(
+        "--limit",
+        type=int,
+        default=0,
+        help="maximum articles to enqueue (0 means all matching articles)",
+    )
 
     requeue = sub.add_parser(
         "sync-requeue-failed",
@@ -436,7 +478,13 @@ def main(argv: list[str] | None = None) -> int:
         try:
             print(
                 json.dumps(
-                    sync_backfill(store, chunk_size=args.chunk_size),
+                    sync_backfill(
+                        store,
+                        chunk_size=args.chunk_size,
+                        source_ids=set(args.source) or None,
+                        after_url=args.after_url,
+                        limit=args.limit,
+                    ),
                     ensure_ascii=False,
                     indent=2,
                 )
@@ -506,9 +554,6 @@ def main(argv: list[str] | None = None) -> int:
             max_depth=args.max_depth,
             concurrency=args.concurrency,
             delay=args.delay,
-            download_images=not args.no_images,
-            max_images_per_page=args.max_images_per_page,
-            max_image_bytes=args.max_image_bytes,
             ignore_robots=args.ignore_robots,
             min_value_score=args.min_value_score,
             news_first=not args.no_news_first,
@@ -543,7 +588,26 @@ def main(argv: list[str] | None = None) -> int:
         try:
             result = store.reindex_extractions(
                 set(args.source) or None,
-                _source_image_caps(args.config),
+                after_url=args.after_url,
+                limit=args.limit,
+            )
+            print(
+                json.dumps(
+                    result,
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+        finally:
+            store.close()
+        return _failure_exit_code(result)
+    if args.command == "rebuild-markdown":
+        store = Store(args.db, args.data_dir)
+        try:
+            result = store.rebuild_markdown(
+                set(args.source) or None,
+                after_url=args.after_url,
+                limit=args.limit,
             )
             print(
                 json.dumps(

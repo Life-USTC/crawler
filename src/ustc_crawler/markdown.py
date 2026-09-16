@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import html as html_module
 import re
+from collections.abc import Mapping
 
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, NavigableString, Tag
 from markdownify import MarkdownConverter
 
 from .canonicalize import normalize_url
@@ -57,6 +59,20 @@ _COUNTER_LINE = re.compile(r"^[\s\d|｜:：/.\-]*(查看|访问次数|分享至)
 _VSB_PDF_IMAGE = re.compile(
     r"[\"']([^\"']+\.(?:jpe?g|png|gif|webp)(?:\?[^\"']*)?)[\"']", re.IGNORECASE
 )
+
+IMAGE_PROXY_PREFIX = "/api/publications/images/"
+
+
+def image_source_hash(url: str) -> str:
+    """Return the stable local-image identity for an absolute source URL."""
+
+    return hashlib.sha256(url.encode("utf-8")).hexdigest().lower()
+
+
+def local_image_url(url: str) -> str:
+    """Return the root-relative public proxy path for one source URL."""
+
+    return f"{IMAGE_PROXY_PREFIX}{image_source_hash(url)}"
 
 
 class _ArticleConverter(MarkdownConverter):
@@ -131,7 +147,13 @@ def _drop_empty_headings(soup: BeautifulSoup) -> None:
             node.decompose()
 
 
-def _absolutize_images(soup: BeautifulSoup, base_url: str) -> None:
+def _absolutize_images(
+    soup: BeautifulSoup,
+    base_url: str,
+    image_sources: Mapping[str, str] | None = None,
+    *,
+    strict_image_sources: bool = False,
+) -> None:
     """Rewrite relative/lazy image URLs against the page URL in place.
 
     Site-relative ``src`` values (e.g. ``/__local/...``) break as soon as the
@@ -141,26 +163,95 @@ def _absolutize_images(soup: BeautifulSoup, base_url: str) -> None:
     """
     for image in soup.find_all("img"):
         raw = (
-            image.get("src")
-            or image.get("data-src")
+            image.get("data-src")
             or image.get("data-original")
             or image.get("data-lazy-src")
+            or image.get("src")
         )
-        if raw:
-            absolute = normalize_url(str(raw), base_url)
-            if absolute:
-                image["src"] = absolute
         srcset = str(image.get("srcset") or "")
+        srcset_candidates: list[str] = []
         if srcset:
-            candidates = []
             for part in srcset.split(","):
                 bits = part.split()
                 if not bits:
                     continue
                 absolute = normalize_url(bits[0], base_url)
-                candidates.append(" ".join([absolute or bits[0], *bits[1:]]))
-            if candidates:
-                image["srcset"] = ", ".join(candidates)
+                candidate = absolute or bits[0]
+                if image_sources is not None and absolute:
+                    registered = image_sources.get(image_source_hash(absolute))
+                    if registered == absolute:
+                        candidate = local_image_url(absolute)
+                srcset_candidates.append(" ".join([candidate, *bits[1:]]))
+            if srcset_candidates:
+                image["srcset"] = ", ".join(srcset_candidates)
+                if not raw:
+                    raw = srcset.split(",", 1)[0].strip().split(" ", 1)[0]
+        if raw:
+            absolute = normalize_url(str(raw), base_url)
+            if absolute:
+                destination = absolute
+                if image_sources is not None:
+                    registered = image_sources.get(image_source_hash(absolute))
+                    if registered != absolute:
+                        if strict_image_sources:
+                            image.decompose()
+                            continue
+                    else:
+                        destination = local_image_url(absolute)
+                image["src"] = destination
+            elif strict_image_sources and image_sources is not None:
+                image.decompose()
+        elif strict_image_sources and image_sources is not None:
+            image.decompose()
+
+
+def _strip_paragraph_layout_whitespace(soup: BeautifulSoup) -> None:
+    """Remove source indentation from paragraphs before Markdown conversion.
+
+    A number of Chinese CMS templates put a full-width or non-breaking space
+    at the start of every paragraph.  The public article renderer supplies
+    paragraph indentation itself, so retaining those characters creates a
+    visibly doubled indent.  Restrict the cleanup to the first text run in a
+    ``p`` element; list and code indentation remains semantic.
+    """
+
+    layout_chars = " \t\r\n\xa0\u3000"
+    layout = re.compile(r"^[ \t\r\n\xa0\u3000]+")
+    for paragraph in soup.find_all("p"):
+        if paragraph.find_parent(["pre", "code", "li"]):
+            continue
+        for node in paragraph.descendants:
+            if not isinstance(node, NavigableString):
+                continue
+            if node.find_parent(["pre", "code"]):
+                break
+            # Once an image or another block/line-break element has occurred,
+            # following whitespace separates content from a caption/text run;
+            # it is no longer paragraph-leading layout whitespace.
+            has_rendered_content = False
+            for previous in node.previous_elements:
+                if previous is paragraph:
+                    break
+                if isinstance(previous, Tag) and previous.name in {
+                    "img",
+                    "br",
+                    "hr",
+                    "table",
+                    "ul",
+                    "ol",
+                    "pre",
+                    "code",
+                }:
+                    has_rendered_content = True
+                    break
+            if has_rendered_content:
+                break
+            value = str(node)
+            normalized = layout.sub("", value)
+            if normalized != value:
+                node.replace_with(normalized)
+            if value.strip(layout_chars):
+                break
 
 
 def _absolutize_links(soup: BeautifulSoup, base_url: str) -> None:
@@ -197,11 +288,12 @@ def _strip_noise(soup: BeautifulSoup, strip_selectors: tuple[str, ...]) -> None:
                 parent.decompose()
 
 
-def html_to_markdown(
-    html: str, *, strip_selectors: tuple[str, ...] = (), base_url: str = ""
-) -> str:
-    if not html or not html.strip():
-        return ""
+def _prepare_soup(
+    html: str,
+    *,
+    base_url: str,
+    strip_selectors: tuple[str, ...],
+) -> BeautifulSoup:
     soup = BeautifulSoup(_restore_escaped_tags(html), "html.parser")
     _inline_pdf_viewer_images(soup, base_url)
     for node in soup.find_all(["script", "style", "form", "noscript"]):
@@ -209,8 +301,65 @@ def html_to_markdown(
     _replace_players(soup, base_url)
     _drop_empty_headings(soup)
     _strip_noise(soup, strip_selectors)
+    _strip_paragraph_layout_whitespace(soup)
+    return soup
+
+
+def image_source_urls(
+    html: str,
+    *,
+    strip_selectors: tuple[str, ...] = (),
+    base_url: str = "",
+) -> tuple[str, ...]:
+    """Return image sources from the same normalized DOM used by conversion."""
+
+    if not html or not html.strip():
+        return ()
+    soup = _prepare_soup(
+        html,
+        base_url=base_url,
+        strip_selectors=strip_selectors,
+    )
+    result: list[str] = []
+    seen: set[str] = set()
+    for image in soup.find_all("img"):
+        raw = (
+            image.get("data-src")
+            or image.get("data-original")
+            or image.get("data-lazy-src")
+            or image.get("src")
+        )
+        if not raw and image.get("srcset"):
+            raw = str(image["srcset"]).split(",", 1)[0].strip().split(" ", 1)[0]
+        source_url = normalize_url(str(raw or ""), base_url)
+        if source_url and source_url not in seen:
+            seen.add(source_url)
+            result.append(source_url)
+    return tuple(result)
+
+
+def html_to_markdown(
+    html: str,
+    *,
+    strip_selectors: tuple[str, ...] = (),
+    base_url: str = "",
+    image_sources: Mapping[str, str] | None = None,
+    strict_image_sources: bool = False,
+) -> str:
+    if not html or not html.strip():
+        return ""
+    soup = _prepare_soup(
+        html,
+        base_url=base_url,
+        strip_selectors=strip_selectors,
+    )
     if base_url:
-        _absolutize_images(soup, base_url)
+        _absolutize_images(
+            soup,
+            base_url,
+            image_sources,
+            strict_image_sources=strict_image_sources,
+        )
         _absolutize_links(soup, base_url)
     md = _ArticleConverter(heading_style="ATX", bullets="-").convert_soup(soup)
     md = re.sub(r"[ \t]+\n", "\n", md)

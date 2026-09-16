@@ -7,7 +7,7 @@
 - 从学校主页、新闻网、职能部门和院系站点发现公开页面。
 - 可断点续跑，并支持只刷新新闻列表和当前文章的增量更新。
 - 解析标题、作者、发布时间、栏目、摘要、正文、图片和附件。
-- 保存原始响应、结构化文章 bundle、媒体、附件和完整审计状态。
+- 保存原始响应、结构化文章 bundle、图片源地址、媒体、附件和完整审计状态。
 - 提供只读网页预览和 JSON API，区分新闻与通知。
 - 对每个配置来源执行离线抽样，验证来源归属、原始文件、字段、bundle 和媒体。
 
@@ -84,11 +84,34 @@ uv run ustc-crawler serve
 - `/api/sources`
 - `/api/article?url=...`
 
-改进解析规则后可以仅使用本地原始 HTML 重建数据：
+改进 Markdown 图片规则后可以直接从已保存的文章 `body_html` 修复数据。正文 HTML
+仍作为源归档保存，修复会从它生成使用 `/api/publications/images/{sha256}` 地址的 Markdown。
+`sha256` 是图片绝对源地址 UTF-8 字节的 SHA-256。大归档可以用 URL 游标和条数分块，
+每次完成一个分块后只为实际处理的 article 写入同步 outbox：
 
 ```bash
-uv run ustc-crawler reindex
-uv run ustc-crawler reindex --source unit-math-ustc-edu-cn
+uv run ustc-crawler rebuild-markdown \
+  --source unit-math-ustc-edu-cn \
+  --limit 1000
+# 将输出的 last_url 设为 LAST_ARTICLE_URL 后继续下一页：
+uv run ustc-crawler rebuild-markdown \
+  --source unit-math-ustc-edu-cn \
+  --after-url "$LAST_ARTICLE_URL" \
+  --limit 1000
+```
+
+`rebuild-markdown --source` 只处理所选来源的已保存文章；`--limit 0` 表示全部文章，
+`--after-url` 是按 article URL 排序的独占游标。此命令只更新 `body_markdown` 和图片
+源元数据，原始 HTML 与其它文章字段保持不变，并按实际 article URL 写入 outbox。
+重复执行会复用已有 revision 事件。需要同时应用完整解析规则（例如分类或正文抽取）时，
+再使用 `reindex`；它同样会按实际重建的 canonical article 直接入队，不使用页面游标
+作为同步游标。只需要同步已经用新规则抓取的文章，或重试此前只完成重建而未入队的记录
+时，可以运行 `sync-backfill`；它使用按文章 URL 排序的独立 `--after-url` 和 `--limit`：
+
+```bash
+uv run ustc-crawler sync-backfill \
+  --source unit-math-ustc-edu-cn \
+  --chunk-size 100
 ```
 
 ## 同步到服务端

@@ -36,6 +36,7 @@
       "extractionMethod": "fixture",
       "classifierVersion": "fixture/1",
       "rawMetadata": {"fixture": true},
+      "imageSources": {},
       "objects": []
     }
   ]

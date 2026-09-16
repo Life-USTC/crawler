@@ -6,8 +6,10 @@ from tempfile import TemporaryDirectory
 from tests.support import store_core
 from ustc_crawler.cli import main as cli_main
 from ustc_crawler.extract import extract_page
+from ustc_crawler.markdown import local_image_url
 from ustc_crawler.models import ArticleDocument, ImageRef, PageDocument, SourceConfig
 from ustc_crawler.store import Store, sha256_bytes
+from ustc_crawler.sync.client import sync_backfill
 
 
 class CleanupBlockedHostArticlesTests(unittest.TestCase):
@@ -260,7 +262,7 @@ class CleanupExcessImagesTests(unittest.TestCase):
         )
         self.assertEqual(store_core(self.store).execute("SELECT COUNT(*) FROM media").fetchone()[0], 2)
 
-    def test_reindex_respects_source_image_cap(self) -> None:
+    def test_reindex_preserves_all_image_sources(self) -> None:
         url = "https://www.ustc.edu.cn/info/1/2.htm"
         html = """<html><body><article><h1>图片新闻</h1>
         <time>发布时间：2026-08-01</time>
@@ -278,18 +280,154 @@ class CleanupExcessImagesTests(unittest.TestCase):
         for image in page.article.images:
             self.store.save_media(image, b"data", "image/png", url, url)
 
-        result = self.store.reindex_extractions(
-            {"university"},
-            {"university": 2},
-        )
+        result = self.store.reindex_extractions({"university"}, page_urls={url})
 
         self.assertEqual(result["articles"], 1)
         self.assertEqual(
             store_core(self.store).execute(
                 "SELECT COUNT(*) FROM article_media WHERE article_url=?", (url,)
             ).fetchone()[0],
-            2,
+            4,
         )
+
+    def test_reindex_cursor_repairs_saved_html_and_enqueues_local_images(self) -> None:
+        raw_by_url: dict[str, bytes] = {}
+        urls = [
+            "https://www.ustc.edu.cn/info/1/20.htm",
+            "https://www.ustc.edu.cn/info/1/21.htm",
+        ]
+        for index, url in enumerate(urls):
+            image_url = f"https://www.ustc.edu.cn/images/{index}.png"
+            html = f"""<html><body><article><h1>图片新闻 {index}</h1>
+            <time>发布时间：2026-08-01</time>
+            <p>这是第 {index} 篇足够长的正文内容，用于验证历史 HTML 离线重处理能够生成新的本地图片 Markdown。</p>
+            <p>正文段落还包含一个独特标记 historical-{index}，避免内容去重合并。</p>
+            <p><img src='/images/{index}.png' alt='历史图片 {index}'></p>
+            </article></body></html>"""
+            raw = html.encode("utf-8")
+            raw_by_url[url] = raw
+            page = extract_page(url, html, source_id="university")
+            self.assertIsNotNone(page.article)
+            assert page.article is not None
+            page.raw_body = raw
+            self.store.save_page(page, "university", 1)
+            page.article.body_markdown = f"![旧链接]({image_url})"
+            self.store.save_article(page.article)
+
+        raw_paths = {
+            url: self.store._core.execute(
+                "SELECT raw_path FROM pages WHERE url=?", (url,)
+            ).fetchone()["raw_path"]
+            for url in urls
+        }
+        before_raw = {
+            url: Path(path).read_bytes()
+            for url, path in raw_paths.items()
+        }
+
+        first = self.store.reindex_extractions({"university"}, limit=1)
+        self.assertEqual(first["scanned"], 1)
+        self.assertEqual(first["articles"], 1)
+        self.assertEqual(first["enqueued"], 1)
+        first_row = self.store._core.execute(
+            "SELECT body_html,body_markdown FROM articles WHERE url=?", (urls[0],)
+        ).fetchone()
+        self.assertIn("/images/0.png", first_row["body_html"])
+        self.assertIn(local_image_url("https://www.ustc.edu.cn/images/0.png"), first_row["body_markdown"])
+        self.assertIn("https://www.ustc.edu.cn/images/1.png", self.store._core.execute(
+            "SELECT body_markdown FROM articles WHERE url=?", (urls[1],)
+        ).fetchone()["body_markdown"])
+
+        second = self.store.reindex_extractions(
+            {"university"}, after_url=urls[0], limit=1
+        )
+        self.assertEqual(second["scanned"], 1)
+        self.assertEqual(second["articles"], 1)
+        self.assertEqual(second["enqueued"], 1)
+        for url, path in raw_paths.items():
+            self.assertEqual(Path(path).read_bytes(), before_raw[url])
+
+        self.assertEqual(
+            sync_backfill(self.store, chunk_size=2),
+            {"scanned": 2, "enqueued": 0, "errors": 0},
+        )
+        rows = self.store._core.execute(
+            "SELECT payload_json,object_manifest_json FROM sync_outbox ORDER BY entity_key"
+        ).fetchall()
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            payload = json.loads(row["payload_json"])
+            self.assertEqual(len(payload["imageSources"]), 1)
+            self.assertNotIn("media", {item["kind"] for item in json.loads(row["object_manifest_json"])})
+
+    def test_rebuild_markdown_uses_article_cursor_and_preserves_archived_fields(self) -> None:
+        urls = [
+            "https://www.ustc.edu.cn/info/1/30.htm",
+            "https://www.ustc.edu.cn/info/1/31.htm",
+        ]
+        raw_paths: dict[str, Path] = {}
+        before_rows: dict[str, dict[str, object]] = {}
+        for index, url in enumerate(urls):
+            image_url = f"https://www.ustc.edu.cn/images/repair-{index}.png"
+            html = f"""<html><body><article><h1>Markdown 修复 {index}</h1>
+            <time>发布时间：2026-08-01</time>
+            <p>这是第 {index} 篇历史文章，用于验证从保存的 body HTML 重建 Markdown 时不会重新解析页面。</p>
+            <p>第二段正文包含 repair-{index} 标记，确保两篇文章保持独立。</p>
+            <p><img src='/images/repair-{index}.png' alt='修复图片 {index}'></p>
+            </article></body></html>"""
+            page = extract_page(url, html, source_id="university")
+            self.assertIsNotNone(page.article)
+            assert page.article is not None
+            page.raw_body = html.encode("utf-8")
+            raw_paths[url] = self.store.save_page(page, "university", 1)
+            page.article.body_markdown = f"![旧链接]({image_url})"
+            self.store.save_article(page.article)
+            row = store_core(self.store).execute(
+                "SELECT * FROM articles WHERE url=?", (url,)
+            ).fetchone()
+            before_rows[url] = dict(row)
+
+        raw_before = {url: path.read_bytes() for url, path in raw_paths.items()}
+        first = self.store.rebuild_markdown({"university"}, limit=1)
+        self.assertEqual(first["scanned"], 1)
+        self.assertEqual(first["changed"], 1)
+        self.assertEqual(first["enqueued"], 1)
+        self.assertEqual(first["last_url"], urls[0])
+
+        second = self.store.rebuild_markdown(
+            {"university"}, after_url=first["last_url"], limit=1
+        )
+        self.assertEqual(second["scanned"], 1)
+        self.assertEqual(second["changed"], 1)
+        self.assertEqual(second["enqueued"], 1)
+        self.assertEqual(second["last_url"], urls[1])
+
+        for url, path in raw_paths.items():
+            self.assertEqual(path.read_bytes(), raw_before[url])
+            row = store_core(self.store).execute(
+                "SELECT * FROM articles WHERE url=?", (url,)
+            ).fetchone()
+            after = dict(row)
+            self.assertEqual(after["body_html"], before_rows[url]["body_html"])
+            self.assertEqual(after["body_text"], before_rows[url]["body_text"])
+            self.assertEqual(after["title"], before_rows[url]["title"])
+            self.assertNotEqual(after["body_markdown"], before_rows[url]["body_markdown"])
+            self.assertIn(
+                local_image_url(f"https://www.ustc.edu.cn/images/repair-{urls.index(url)}.png"),
+                after["body_markdown"],
+            )
+
+        outbox_rows = store_core(self.store).execute(
+            "SELECT payload_json,object_manifest_json FROM sync_outbox"
+        ).fetchall()
+        self.assertEqual(len(outbox_rows), 2)
+        for row in outbox_rows:
+            payload = json.loads(row["payload_json"])
+            self.assertEqual(len(payload["imageSources"]), 1)
+            self.assertNotIn(
+                "media",
+                {item["kind"] for item in json.loads(row["object_manifest_json"])},
+            )
 
     def test_reindex_drops_article_after_redirect_to_unowned_host(self) -> None:
         requested_url = "https://www.ustc.edu.cn/info/1/3.htm"
@@ -570,6 +708,7 @@ class ReindexSchemeTwinTests(unittest.TestCase):
         result = self.store.reindex_extractions({"set"})
 
         self.assertEqual(result["articles"], 1)
+        self.assertEqual(result["enqueued"], 1)
         self.assertEqual(result["removed"], 1)
         canonical = store_core(self.store).execute(
             "SELECT title FROM articles WHERE url=?", (https_url,)
@@ -589,6 +728,12 @@ class ReindexSchemeTwinTests(unittest.TestCase):
         self.assertTrue(
             any(
                 payload.get("tombstone") and payload.get("canonicalUrl") == http_url
+                for payload in tombstones
+            )
+        )
+        self.assertTrue(
+            any(
+                not payload.get("tombstone") and payload.get("canonicalUrl") == https_url
                 for payload in tombstones
             )
         )
