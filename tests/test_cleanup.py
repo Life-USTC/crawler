@@ -594,6 +594,117 @@ class ReindexSchemeTwinTests(unittest.TestCase):
         )
 
 
+class ReindexContentDuplicateTests(unittest.TestCase):
+    """Same-body pages saved before the #82 crawl-time content dedup.
+
+    pnp's Indico renders one event at /event/N/, /event/N/overview and
+    /event/N/?note=M with per-request markup, so the byte-level sha256 dedup
+    never fires and the 2026-08 crawl (pre-#82) saved one article per URL.
+    Reindexing must resolve these historical duplicates by content hash the
+    same way the crawl path now does.
+    """
+
+    def setUp(self) -> None:
+        self.temp_dir = TemporaryDirectory()
+        root = Path(self.temp_dir.name)
+        self.data_dir = root / "data"
+        self.db_path = self.data_dir / "crawler.sqlite"
+        self.store = Store(self.db_path, self.data_dir)
+        self.store.add_source(
+            SourceConfig(
+                id="pnp",
+                name="核科学技术学院",
+                organization_level="college",
+                seed_urls=["https://indico.pnp.ustc.edu.cn/"],
+                allowed_hosts=["indico.pnp.ustc.edu.cn"],
+            )
+        )
+
+    def tearDown(self) -> None:
+        self.store.close()
+        self.temp_dir.cleanup()
+
+    def _save_event_page(self, url: str, csrf: str, body_paragraphs: str) -> None:
+        html = f"""<html><head><title>SCEP Weekly meeting @ 2023-12-26</title></head><body>
+        <article data-csrf='{csrf}'><h1>SCEP Weekly meeting @ 2023-12-26</h1>
+        <time>发布时间：2023-12-26</time>
+        {body_paragraphs}
+        </article></body></html>"""
+        page = extract_page(url, html, source_id="pnp")
+        self.assertIsNotNone(page.article)
+        assert page.article is not None
+        page.raw_body = html.encode()
+        self.store.save_page(page, "pnp", 1)
+        # The historical state: both URL variants already hold an article row.
+        self.store.save_article(page.article)
+
+    def test_reindex_merges_same_body_event_urls(self) -> None:
+        bare_url = "https://indico.pnp.ustc.edu.cn/event/1278/"
+        note_url = "https://indico.pnp.ustc.edu.cn/event/1278/?note=77"
+        body = """
+        <p>本周组会讨论超导量子比特读出链路的噪声来源，重点分析室温放大器引入的附加噪声对读出保真度的影响。</p>
+        <p>会议确认了下一阶段的实验安排，包括低温链路的参数复测、读出谐振腔的带宽标定以及新一轮数据采集的时间窗口。</p>
+        <p>与会人员还讨论了与合作单位共享数据的格式规范，决定沿用现有的事例记录模板并在下周例会前完成文档更新。</p>
+        <p>最后安排了值周报告顺序，要求每位报告人提前一天将幻灯片上传到组内共享目录以便会前审阅，并在报告结束后及时整理会议纪要。</p>
+        """
+        # Per-request markup differs (csrf attribute), so the raw bytes -
+        # and therefore the sha256 page dedup - never match.
+        self._save_event_page(bare_url, "csrf-a", body)
+        self._save_event_page(note_url, "csrf-b", body)
+
+        result = self.store.reindex_extractions({"pnp"})
+
+        self.assertEqual(result["content_duplicates"], 1)
+        self.assertEqual(result["articles"], 1)
+        self.assertEqual(result["removed"], 1)
+        self.assertIsNotNone(
+            store_core(self.store).execute(
+                "SELECT url FROM articles WHERE url=?", (bare_url,)
+            ).fetchone()
+        )
+        self.assertIsNone(
+            store_core(self.store).execute(
+                "SELECT url FROM articles WHERE url=?", (note_url,)
+            ).fetchone()
+        )
+        duplicate = store_core(self.store).execute(
+            "SELECT duplicate_of FROM pages WHERE url=?", (note_url,)
+        ).fetchone()
+        self.assertEqual(duplicate["duplicate_of"], bare_url)
+        tombstones = [
+            json.loads(row["payload_json"])
+            for row in store_core(self.store).execute("SELECT payload_json FROM sync_outbox")
+        ]
+        self.assertTrue(
+            any(
+                payload.get("tombstone") and payload.get("canonicalUrl") == note_url
+                for payload in tombstones
+            )
+        )
+
+    def test_reindex_content_dedup_ignores_short_bodies(self) -> None:
+        # Indico contribution pages share a tiny boilerplate body ("报告人：…"
+        # below the 200-char floor) while remaining distinct talks; merging
+        # them by content hash would delete real pages.  The crawl-time floor
+        # applies to reindexing too.
+        first_url = "https://indico.pnp.ustc.edu.cn/event/2562/contributions/14687/"
+        second_url = "https://indico.pnp.ustc.edu.cn/event/2562/contributions/14688/"
+        body = "<p>报告人：张三。地点：物质科研楼C座。</p>"
+        self._save_event_page(first_url, "csrf-a", body)
+        self._save_event_page(second_url, "csrf-b", body)
+
+        result = self.store.reindex_extractions({"pnp"})
+
+        self.assertEqual(result["content_duplicates"], 0)
+        self.assertEqual(result["articles"], 2)
+        for url in (first_url, second_url):
+            self.assertIsNotNone(
+                store_core(self.store).execute(
+                    "SELECT url FROM articles WHERE url=?", (url,)
+                ).fetchone()
+            )
+
+
 class CleanupCliTests(unittest.TestCase):
     def test_cli_dry_run_reports_counts(self) -> None:
         with TemporaryDirectory() as temp:

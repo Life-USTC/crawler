@@ -38,6 +38,11 @@ def sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def _canonical_url_rank(url: str) -> tuple[int, str]:
+    """Rank duplicate-content URLs: https first, then lexicographic order."""
+    return (0 if url.startswith("https://") else 1, url)
+
+
 def _atomic_write_bytes(target: Path, body: bytes) -> None:
     """Write bytes to a temp file, fsync, then atomically replace the target.
 
@@ -1968,7 +1973,7 @@ class Store:
         Source and page subsets let targeted repairs finish without rescanning
         the entire archive after an extraction or classification change.
         """
-        from .crawl import _decode
+        from .crawl import MIN_DEDUP_BODY_TEXT_CHARS, _decode
         from .extract import extract_page
         from .scoring import document_asset_url, score_page
 
@@ -1976,6 +1981,7 @@ class Store:
         articles = 0
         removed = 0
         document_articles_removed = 0
+        content_duplicates = 0
         tombstones: dict[str, tuple[str, str]] = {}
         # Article removal is deferred to a second phase.  A page saved under
         # its normalized canonical URL (http -> https scheme upgrade) can be
@@ -2057,6 +2063,29 @@ class Store:
                 duplicate_first.setdefault(digest, duplicate_seen[digest])
             else:
                 duplicate_seen[digest] = url
+        # Byte-identical twins are only one duplicate shape.  Indico event
+        # pages (pnp) render the same body at /event/N/, /event/N/overview
+        # and /event/N/?note=M with per-request markup, and mcip mirrors some
+        # articles at several list.htm URLs; the crawl-time content dedup
+        # (#82) cannot retroactively separate rows earlier runs already
+        # saved.  Seed a per-source keeper map from the article table so the
+        # same-content check below resolves those historical duplicates too.
+        # The crawl-time MIN_DEDUP_BODY_TEXT_CHARS floor applies here as
+        # well: image-only photo albums share tiny (even empty) bodies and
+        # must never be merged.  Prefer https, then the shortest/earliest
+        # URL, so the bare /event/N/ wins over ?note= and /overview twins.
+        content_keeper: dict[tuple[str, str], str] = {}
+        for content_row in self._core.execute(
+            """SELECT source_id,content_hash,url FROM articles
+               WHERE content_hash IS NOT NULL AND content_hash != ''
+               AND length(body_text) >= ?""",
+            (MIN_DEDUP_BODY_TEXT_CHARS,),
+        ):
+            content_key = (str(content_row["source_id"]), str(content_row["content_hash"]))
+            candidate = str(content_row["url"])
+            existing = content_keeper.get(content_key)
+            if existing is None or _canonical_url_rank(candidate) < _canonical_url_rank(existing):
+                content_keeper[content_key] = candidate
         page_query = "SELECT * FROM pages WHERE status=200 AND raw_path IS NOT NULL AND raw_path != ''"
         page_params: tuple[str, ...] = ()
         if source_ids:
@@ -2139,16 +2168,42 @@ class Store:
             duplicate_of = duplicate_first.get(sha256_bytes(body))
             if duplicate_of == row["url"]:
                 duplicate_of = None
+            article = page.article
+            if article:
+                # A redirect can make the extracted canonical URL leave the
+                # source that fetched the page.  Reindexing must apply the
+                # same host ownership rule as network crawling instead of
+                # persisting a publication under the wrong source.
+                owner_id = source_id_for_url(article.url, source_hosts)
+                if not owner_id:
+                    article = None
+                else:
+                    article.source_id = owner_id
+            if (
+                article
+                and not duplicate_of
+                and len(article.body_text.strip()) >= MIN_DEDUP_BODY_TEXT_CHARS
+            ):
+                content_key = (
+                    article.source_id,
+                    sha256_bytes(article.body_text.encode("utf-8", errors="replace")),
+                )
+                keeper = content_keeper.get(content_key)
+                if keeper is not None and keeper != article.url:
+                    duplicate_of = keeper
+                    content_duplicates += 1
+                else:
+                    content_keeper[content_key] = article.url
             result = score_page(
                 url=row["url"],
                 final_url=row["final_url"] or row["url"],
                 title=page.title,
-                body_text=page.article.body_text if page.article else "",
+                body_text=article.body_text if article else "",
                 html=html,
                 status=row["status"],
                 content_type=content_type or "text/html",
-                has_article=page.article is not None,
-                published_at=page.article.published_at if page.article else "",
+                has_article=article is not None,
+                published_at=article.published_at if article else "",
                 link_count=len(page.links),
                 document_link_count=sum(1 for target in page.links if document_asset_url(target)),
                 duplicate=bool(duplicate_of),
@@ -2180,17 +2235,6 @@ class Store:
             for target, published_at in page.link_dates.items():
                 self.save_article_hint(target, published_at, row["url"])
             keys = {row["url"], row["final_url"], row["canonical_url"]}
-            article = page.article
-            if article:
-                # A redirect can make the extracted canonical URL leave the
-                # source that fetched the page.  Reindexing must apply the
-                # same host ownership rule as network crawling instead of
-                # persisting a publication under the wrong source.
-                owner_id = source_id_for_url(article.url, source_hosts)
-                if not owner_id:
-                    article = None
-                else:
-                    article.source_id = owner_id
             if article and result.value_score >= 16 and not duplicate_of:
                 cap = (source_caps or {}).get(article.source_id)
                 if cap and cap > 0:
@@ -2288,4 +2332,5 @@ class Store:
             "articles": articles,
             "removed": removed,
             "document_articles_removed": document_articles_removed,
+            "content_duplicates": content_duplicates,
         }
