@@ -9,6 +9,8 @@ from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
+from markdown_it import MarkdownIt
+from markdown_it.token import Token
 from pydantic import (
     BaseModel,
     BeforeValidator,
@@ -498,9 +500,26 @@ def image_sources_for_article(article: ArticleDocument) -> dict[str, str]:
     return dict(sorted(result.items()))
 
 
-_MARKDOWN_IMAGE_DESTINATION = re.compile(
-    r"!\[[^\]]*\]\(\s*(?:<([^>]+)>|([^\s)]+))",
-)
+_MARKDOWN_PARSER = MarkdownIt("commonmark")
+
+
+def _walk_markdown_tokens(tokens: Iterable[Token]) -> Iterable[Token]:
+    for token in tokens:
+        if token.type == "image":
+            yield token
+        if token.children:
+            yield from _walk_markdown_tokens(token.children)
+
+
+def _markdown_image_tokens(markdown: str) -> Iterable[Token]:
+    """Yield parsed Markdown image tokens, including reference images.
+
+    The parser's block stream stores inline tokens in ``children``. Walking
+    those children means escaped image-like text and code spans/fences remain
+    text/code tokens, while both inline and reference-style images produce a
+    real ``image`` token with its resolved ``src`` attribute.
+    """
+    yield from _walk_markdown_tokens(_MARKDOWN_PARSER.parse(markdown))
 
 
 def _validate_markdown_image_sources(
@@ -509,8 +528,8 @@ def _validate_markdown_image_sources(
 ) -> None:
     """Require every Markdown image destination to use a registered proxy."""
 
-    for match in _MARKDOWN_IMAGE_DESTINATION.finditer(body_markdown):
-        destination = match.group(1) or match.group(2) or ""
+    for token in _markdown_image_tokens(body_markdown):
+        destination = str(token.attrGet("src") or "")
         if not destination.startswith(IMAGE_PROXY_PREFIX):
             raise ValueError("body_markdown image URL must use the local image proxy")
         digest = destination[len(IMAGE_PROXY_PREFIX) :]

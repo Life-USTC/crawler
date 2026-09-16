@@ -250,6 +250,81 @@ class IngestionProtocolTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "local image proxy"):
             build_publication(article)
 
+    def test_publication_accepts_literal_image_like_text_and_code(self) -> None:
+        article = ArticleDocument(
+            url="https://example.edu/news/literal-markdown",
+            source_id="source",
+            title="Literal Markdown",
+            author="",
+            published_at="",
+            updated_at="",
+            category="",
+            summary="",
+            body_html="<p>正文</p>",
+            body_text="正文",
+            body_markdown=(
+                r"告诉我吧\![我是](https://example.edu/image.png)"
+                "\n\n`![代码](https://example.edu/code.png)`"
+                "\n\n```\n![围栏](https://example.edu/fence.png)\n```"
+            ),
+            extraction_method="html",
+            source_page_url="https://example.edu/news/literal-markdown",
+        )
+
+        publication = build_publication(article)
+
+        self.assertEqual(publication.image_sources, {})
+
+    def test_publication_accepts_reference_image_with_registered_source(self) -> None:
+        source_url = "https://example.edu/uploads/reference.png"
+        article = ArticleDocument(
+            url="https://example.edu/news/reference-image",
+            source_id="source",
+            title="Reference image",
+            author="",
+            published_at="",
+            updated_at="",
+            category="",
+            summary="",
+            body_html="<p>正文</p>",
+            body_text="正文",
+            body_markdown=(
+                f"![参考图][hero]\n\n[hero]: {local_image_url(source_url)}"
+            ),
+            extraction_method="html",
+            source_page_url="https://example.edu/news/reference-image",
+            images=[ImageRef(url=source_url, alt="参考图")],
+        )
+
+        publication = build_publication(article)
+
+        self.assertEqual(
+            publication.image_sources,
+            {image_source_hash(source_url): source_url},
+        )
+
+    def test_publication_rejects_image_with_missing_source_mapping(self) -> None:
+        source_url = "https://example.edu/uploads/registered.png"
+        article = ArticleDocument(
+            url="https://example.edu/news/missing-image-source",
+            source_id="source",
+            title="Missing image source",
+            author="",
+            published_at="",
+            updated_at="",
+            category="",
+            summary="",
+            body_html="<p>正文</p>",
+            body_text="正文",
+            body_markdown=f"![图]({local_image_url('https://example.edu/uploads/other.png')})",
+            extraction_method="html",
+            source_page_url="https://example.edu/news/missing-image-source",
+            images=[ImageRef(url=source_url, alt="图")],
+        )
+
+        with self.assertRaisesRegex(ValueError, "no matching image source"):
+            build_publication(article)
+
     def test_publication_wire_normalization_is_idempotent_for_server_trim(self) -> None:
         title = "T" * 999 + " " + "truncated after the protocol bound"
         article = ArticleDocument(

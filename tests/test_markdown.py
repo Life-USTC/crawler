@@ -132,6 +132,21 @@ class HtmlToMarkdownTests(unittest.TestCase):
         self.assertIn("[按钮](javascript:void(0))", md)
         self.assertIn("[锚点](#section)", md)
 
+    def test_literal_exclamation_before_mailto_link_is_escaped(self) -> None:
+        md = html_to_markdown(
+            '<p>告诉我吧!<a href="mailto:iread@ustc.edu.cn">'
+            "我是iread@ustc.edu.cn哦</a>~</p>"
+        )
+
+        self.assertIn(
+            r"告诉我吧\![我是iread@ustc.edu.cn哦](mailto:iread@ustc.edu.cn)~",
+            md,
+        )
+        self.assertNotIn(
+            "告诉我吧![我是iread@ustc.edu.cn哦]",
+            md,
+        )
+
     def test_relative_link_kept_without_base_url(self) -> None:
         html = "<div><p><a href='/_upload/x.docx'>附件</a></p></div>"
         md = html_to_markdown(html)
