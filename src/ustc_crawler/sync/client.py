@@ -39,6 +39,7 @@ from .models import (
 from .outbox import (
     DEFAULT_MAX_BATCH_BYTES,
     IngestionOutbox,
+    sanitize_error_detail,
 )
 
 if TYPE_CHECKING:
@@ -112,6 +113,10 @@ class SyncTransientError(SyncClientError):
 
 class SyncPermanentError(SyncClientError):
     """A response or local invariant failure that must be reported."""
+
+    def __init__(self, code: str, detail: str | None = None) -> None:
+        self.detail = detail
+        super().__init__(code)
 
 
 class SyncProtocolError(SyncPermanentError):
@@ -189,6 +194,24 @@ def _retry_after(response: httpx.Response, now: Callable[[], float]) -> float | 
             return max(0.0, target.timestamp() - now())
         except (TypeError, ValueError, OverflowError):
             return None
+
+
+def _error_detail(response: httpx.Response, *, secret: str) -> str | None:
+    """Extract a bounded, flattened, secret-redacted excerpt of an error body.
+
+    The ingestion server explains validation failures (e.g. zod issues) in
+    the response body; persisting a sanitized excerpt makes a rejected batch
+    diagnosable without replaying it.  The machine secret should never appear
+    in a server response, but any occurrence is defensively redacted.
+    """
+
+    try:
+        text = response.text
+    except (UnicodeDecodeError, ValueError):
+        return None
+    if secret:
+        text = text.replace(secret, "[redacted]")
+    return sanitize_error_detail(text) or None
 
 
 class IngestionSyncClient:
@@ -496,7 +519,7 @@ class IngestionSyncClient:
             return DeliveryResult(status, len(accepted_identities), len(rejected_identities))
         except SyncPermanentError as exc:
             self.outbox.mark_batch(batch.batch_id, status="failed")
-            self.outbox.mark_batch_error(batch.batch_id, exc.code)
+            self.outbox.mark_batch_error(batch.batch_id, exc.code, detail=exc.detail or "")
             raise
         except SyncTransientError as exc:
             self.outbox.mark_batch_error(batch.batch_id, exc.code)
@@ -872,8 +895,7 @@ class IngestionSyncClient:
                 continue
             return response
 
-    @staticmethod
-    def _require_success(response: httpx.Response) -> None:
+    def _require_success(self, response: httpx.Response) -> None:
         if 200 <= response.status_code < 300:
             return
         if 300 <= response.status_code < 400:
@@ -882,7 +904,10 @@ class IngestionSyncClient:
             # same batch forever, so fail it terminally with a safe code.
             raise SyncPermanentError("http_redirect")
         if 400 <= response.status_code < 500:
-            raise SyncPermanentError(_error_code(response))
+            raise SyncPermanentError(
+                _error_code(response),
+                detail=_error_detail(response, secret=self._ingestion_secret),
+            )
         raise SyncTransientError(f"http_{response.status_code}")
 
     def _start_run(self, run_id: str) -> None:

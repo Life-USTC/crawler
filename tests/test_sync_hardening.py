@@ -26,7 +26,7 @@ from ustc_crawler.sync.client import (
     SyncOptions,
 )
 from ustc_crawler.sync.models import LocalObjectManifest
-from ustc_crawler.sync.outbox import IngestionOutbox
+from ustc_crawler.sync.outbox import MAX_ERROR_DETAIL_CHARS, IngestionOutbox
 
 
 class SyncHardeningTestCase(unittest.TestCase):
@@ -896,6 +896,140 @@ class ExitCodeTests(SyncHardeningTestCase):
             self.assertEqual(main(["crawl"]), 0)
             run_crawl.return_value = {"processed": 1, "errors": 3}
             self.assertEqual(main(["crawl"]), 2)
+
+
+class ErrorDetailPersistenceTests(SyncHardeningTestCase):
+    def _run_sync(self, store: Store, handler) -> dict:
+        client = httpx.Client(transport=httpx.MockTransport(handler))
+        sync = IngestionSyncClient(
+            store.database,
+            store.data_dir,
+            self.server,
+            self.ingestion_secret,
+            http_client=client,
+        )
+        try:
+            return sync.sync()
+        finally:
+            sync.close()
+
+    def test_4xx_persists_sanitized_response_excerpt(self) -> None:
+        body = (
+            '{"issues": ['
+            '{"path": ["items", 0, "title"], "message": "Required"}, '
+            '{"path": ["items", 0, "publishedAt"], "message": "Invalid date"}'
+            "]}"
+        )
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                content=body.encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                request=request,
+            )
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            try:
+                store.enqueue_article_for_sync(self._article(1))
+                summary = self._run_sync(store, handler)
+
+                self.assertEqual(summary["failed"], 1)
+                with store.database.session_factory() as session:
+                    batch = session.scalar(select(SyncBatch))
+                    row = session.scalar(select(SyncOutbox))
+                    self.assertEqual(batch.status, "failed")
+                    self.assertEqual(batch.last_error, "http_400")
+                    persisted = json.loads(batch.response_json)
+                    self.assertEqual(persisted["error"], "http_400")
+                    self.assertIn('"title"', persisted["detail"])
+                    self.assertIn("Required", persisted["detail"])
+                    self.assertIn("publishedAt", persisted["detail"])
+                    # The event rows keep the error code only.
+                    self.assertEqual(row.last_error, "http_400")
+                    self.assertIsNone(row.response_json)
+            finally:
+                store.close()
+
+    def test_excerpt_is_flattened_and_truncated(self) -> None:
+        body = "  " + "verbose detail with\nnewlines\tand   spaces  " * 40
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                content=body.encode("utf-8"),
+                headers={"Content-Type": "text/plain"},
+                request=request,
+            )
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            try:
+                store.enqueue_article_for_sync(self._article(1))
+                summary = self._run_sync(store, handler)
+
+                self.assertEqual(summary["failed"], 1)
+                with store.database.session_factory() as session:
+                    batch = session.scalar(select(SyncBatch))
+                    persisted = json.loads(batch.response_json)
+                    detail = persisted["detail"]
+                    self.assertLessEqual(len(detail), MAX_ERROR_DETAIL_CHARS)
+                    self.assertGreater(len(detail), MAX_ERROR_DETAIL_CHARS - 10)
+                    self.assertNotIn("\n", detail)
+                    self.assertNotIn("\t", detail)
+                    self.assertNotIn("  ", detail)
+            finally:
+                store.close()
+
+    def test_excerpt_redacts_ingestion_secret(self) -> None:
+        body = f"authentication failed for token {self.ingestion_secret} on account 42"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                400,
+                content=body.encode("utf-8"),
+                headers={"Content-Type": "text/plain"},
+                request=request,
+            )
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            try:
+                store.enqueue_article_for_sync(self._article(1))
+                summary = self._run_sync(store, handler)
+
+                self.assertEqual(summary["failed"], 1)
+                with store.database.session_factory() as session:
+                    batch = session.scalar(select(SyncBatch))
+                    self.assertNotIn(self.ingestion_secret, batch.response_json)
+                    persisted = json.loads(batch.response_json)
+                    self.assertIn("[redacted]", persisted["detail"])
+                    self.assertIn("authentication failed for token", persisted["detail"])
+            finally:
+                store.close()
+
+    def test_empty_error_body_keeps_response_json_empty(self) -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(400, content=b"", request=request)
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            try:
+                store.enqueue_article_for_sync(self._article(1))
+                summary = self._run_sync(store, handler)
+
+                self.assertEqual(summary["failed"], 1)
+                with store.database.session_factory() as session:
+                    batch = session.scalar(select(SyncBatch))
+                    self.assertEqual(batch.last_error, "http_400")
+                    self.assertIsNone(batch.response_json)
+            finally:
+                store.close()
 
 
 if __name__ == "__main__":

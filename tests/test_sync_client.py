@@ -1238,11 +1238,14 @@ class SyncClientTests(unittest.TestCase):
                 sync.close()
                 store.close()
 
-    def test_nonretryable_response_marks_batch_failed_without_body(self) -> None:
+    def test_nonretryable_response_persists_sanitized_body_excerpt(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(
                 400,
-                json={"error": "invalid_batch", "message": "contains secret-token"},
+                json={
+                    "error": "invalid_batch",
+                    "message": f"contains {self.ingestion_secret} and detail",
+                },
                 request=request,
             )
 
@@ -1266,9 +1269,12 @@ class SyncClientTests(unittest.TestCase):
                     row = session.scalar(select(SyncOutbox))
                     self.assertEqual(batch.status, "failed")
                     self.assertEqual(batch.last_error, "invalid_batch")
-                    self.assertIsNone(batch.response_json)
+                    persisted = json.loads(batch.response_json)
+                    self.assertEqual(persisted["error"], "invalid_batch")
+                    self.assertIn("[redacted]", persisted["detail"])
+                    self.assertNotIn(self.ingestion_secret, batch.response_json)
                     self.assertEqual(row.last_error, "invalid_batch")
-                    self.assertNotIn("secret-token", row.payload_json)
+                    self.assertNotIn(self.ingestion_secret, row.payload_json)
             finally:
                 sync.close()
                 store.close()
