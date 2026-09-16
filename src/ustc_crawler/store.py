@@ -108,14 +108,12 @@ def _article_image_refs(
 
     The normalized body HTML is authoritative for which image sources are
     present and their order.  The existing bundle only supplies metadata for
-    those sources and any parser-created references that are not recoverable
-    from the HTML alone (for example a legacy PDF viewer expansion).
+    those sources.
     """
 
     bundle_refs = _bundle_image_refs(data_dir, article_url) or []
     bundle_by_url = {image.url: image for image in bundle_refs}
     refs: list[ImageRef] = []
-    known: set[str] = set()
     for source_url in image_source_urls(
         body_html,
         base_url=source_page_url or article_url,
@@ -130,11 +128,6 @@ def _article_image_refs(
                 article_url=article_url,
             )
         )
-        known.add(source_url)
-    for image in bundle_refs:
-        if image.url not in known:
-            refs.append(image)
-            known.add(image.url)
     for image in refs:
         image.article_url = article_url
     return refs
@@ -1144,12 +1137,7 @@ class Store:
                 cursor = article.url
                 scanned += 1
                 try:
-                    images = _article_image_refs(
-                        self.data_dir,
-                        article.url,
-                        article.body_html,
-                        article.source_page_url or article.url,
-                    )
+                    images = article.images
                     image_sources = {
                         image_source_hash(image.url): image.url
                         for image in images
@@ -1169,33 +1157,7 @@ class Store:
                         self._core.commit()
                         changed += 1
                     article.body_markdown = body_markdown
-                    article.images = images
                     self.write_article_bundle(article)
-                    self._core.execute(
-                        "DELETE FROM article_media WHERE article_url=?", (article.url,)
-                    )
-                    for image in images:
-                        media_row = self._core.execute(
-                            "SELECT local_path FROM media WHERE url=?", (image.url,)
-                        ).fetchone()
-                        if not media_row:
-                            continue
-                        self._core.execute(
-                            """INSERT INTO article_media(article_url,image_url,local_path,alt,title,caption,created_at)
-                               VALUES(?,?,?,?,?,?,?)
-                               ON CONFLICT(article_url,image_url) DO UPDATE SET
-                               local_path=excluded.local_path,alt=excluded.alt,title=excluded.title,
-                               caption=excluded.caption""",
-                            (
-                                article.url,
-                                image.url,
-                                media_row["local_path"] or "",
-                                image.alt,
-                                image.title,
-                                image.caption,
-                                utc_now(),
-                            ),
-                        )
                     self._core.commit()
                     # The Core connection is the single pooled SQLite
                     # connection.  Release it before the ORM-backed outbox

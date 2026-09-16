@@ -1808,6 +1808,7 @@ class SyncClientTests(unittest.TestCase):
                 articles = [self._article(1), self._article(2)]
                 for article in articles:
                     article.images = [shared_image]
+                    article.body_html += f'<p><img src="{shared_image.url}" alt="shared"></p>'
                     store.save_article(article)
                 media_path = store.save_media(
                     shared_image,
