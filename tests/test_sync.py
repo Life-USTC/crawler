@@ -674,6 +674,51 @@ class OrmAndOutboxTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_replayed_batch_preserves_claim_time_item_order(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = Store(root / "crawler.sqlite", root / "data")
+            try:
+                store.add_source(self._source())
+                source = store.source_descriptor("source")
+                outbox = IngestionOutbox(store.database)
+                for index in range(3):
+                    tombstone = TombstonePublication(
+                        sourceId="source",
+                        canonicalUrl=f"https://example.edu/news/removed-{index}",
+                        revisionHash=f"{index}" * 64,
+                        observedAt="2026-08-20",
+                    )
+                    outbox.enqueue_publication(
+                        tombstone,
+                        source=source,
+                        created_at=f"2026-08-20T00:00:0{index}+08:00",
+                    )
+
+                claimed = outbox.build_batch(
+                    run_id="run",
+                    batch_id="ordered-batch",
+                    producer_version="test",
+                    observed_at="2026-08-20",
+                )
+                assert claimed is not None
+                self.assertEqual(len(claimed.items), 3)
+
+                replayed = outbox.build_batch(
+                    run_id="different-run",
+                    batch_id="ordered-batch",
+                    producer_version="different-producer",
+                    observed_at="2030-01-01",
+                )
+                assert replayed is not None
+                self.assertEqual(replayed.payload_sha256(), claimed.payload_sha256())
+                self.assertEqual(
+                    [item.canonical_url for item in replayed.items],
+                    [item.canonical_url for item in claimed.items],
+                )
+            finally:
+                store.close()
+
     def test_discovery_only_source_is_rejected_at_outbox_boundary(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
