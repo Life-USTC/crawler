@@ -29,6 +29,7 @@ def _parse_html(html: str) -> BeautifulSoup:
         warnings.simplefilter("ignore", XMLParsedAsHTMLWarning)
         return BeautifulSoup(html, "html.parser")
 
+
 DATE_PATTERNS = (
     re.compile(
         r"(?P<y>20\d{2})[年./-](?P<m>\d{1,2})[月./-](?P<d>\d{1,2})日?(?:[ T](?P<h>\d{1,2}):(?P<mi>\d{2})(?::(?P<s>\d{2}))?)?"
@@ -425,10 +426,37 @@ def _text(value: Any) -> str:
 
 
 _BLOCK_TAGS = (
-    "address", "article", "aside", "blockquote", "dd", "details", "div", "dl",
-    "dt", "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4",
-    "h5", "h6", "header", "hr", "li", "main", "nav", "ol", "p", "pre",
-    "section", "table", "tr", "ul",
+    "address",
+    "article",
+    "aside",
+    "blockquote",
+    "dd",
+    "details",
+    "div",
+    "dl",
+    "dt",
+    "figcaption",
+    "figure",
+    "footer",
+    "form",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hr",
+    "li",
+    "main",
+    "nav",
+    "ol",
+    "p",
+    "pre",
+    "section",
+    "table",
+    "tr",
+    "ul",
 )
 
 
@@ -629,7 +657,7 @@ def _clean_signature_value(value: str) -> str:
     return value
 
 
-def _trailing_publication_signature(body_text: str) -> str:
+def _trailing_publication_attribution(body_text: str) -> dict[str, str]:
     """Extract reporter/source/editor signatures from the end of article body.
 
     Targets Chinese publication signatures commonly appended to reposted
@@ -645,7 +673,7 @@ def _trailing_publication_signature(body_text: str) -> str:
     common delimiters, and only the trailing portion of the body is inspected.
     """
     if not body_text:
-        return ""
+        return {"author": "", "reporter": "", "editor": "", "originalPublisher": ""}
 
     tail = body_text[-800:]
     # Characters that end a person/source name (quotes and brackets included).
@@ -654,6 +682,7 @@ def _trailing_publication_signature(body_text: str) -> str:
     label_stop = r"(?:来源|记者|编辑|作者|文/|图片|摄影|摄像|日期|时间|http|www|原文|链接|发布|责任编辑|剪辑|审核|校对|素材|文章|通讯员|\d{4}|\d{1,2}:\d{2})"
 
     reporter = ""
+    author = ""
     source = ""
     editor = ""
 
@@ -673,29 +702,28 @@ def _trailing_publication_signature(body_text: str) -> str:
             reporter = _clean_signature_value(match.group(1))
 
     # 3. Author label: 作者：XXX
-    if not reporter:
+    if not author:
         for match in re.finditer(
             rf"作者\s*[:：]\s*([^{stop}\d]+)(?=(?:{label_stop})|$|[{stop}])",
             tail,
         ):
-            reporter = _clean_signature_value(match.group(1))
+            author = _clean_signature_value(match.group(1))
 
     # 4. Writer label/slash: 文：XXX or 文/XXX (but not 论文/研究… funding
     # acknowledgements)
-    if not reporter:
+    if not author:
         for match in re.finditer(
             rf"(?<!论)文\s*[:：/]\s*([^{stop}\d]+)(?=(?:{label_stop})|$|[{stop}])",
             tail,
         ):
-            reporter = _clean_signature_value(match.group(1))
+            author = _clean_signature_value(match.group(1))
 
     # 5. Editor: 编辑：XXX or 责任编辑：XXX
-    if not reporter:
-        for match in re.finditer(
-            rf"(?:责任)?编辑\s*[:：]\s*([^{stop}\d]+)(?=(?:{label_stop})|$|[{stop}])",
-            tail,
-        ):
-            editor = _clean_signature_value(match.group(1))
+    for match in re.finditer(
+        rf"(?:责任)?编辑\s*[:：]\s*([^{stop}\d]+)(?=(?:{label_stop})|$|[{stop}])",
+        tail,
+    ):
+        editor = _clean_signature_value(match.group(1))
 
     # 6. Source: 来源：XXX (skip ``素材来源``/``文章来源``/``资金来源``;
     # prefer the last source)
@@ -704,15 +732,6 @@ def _trailing_publication_signature(body_text: str) -> str:
         tail,
     ):
         source = _clean_signature_value(match.group(1))
-
-    if reporter and source:
-        return f"{reporter} / {source}"
-    if reporter:
-        return reporter
-    if source:
-        return source
-    if editor:
-        return editor
 
     # 7. Parenthesized organization at the very end: （人力资源部）, （生命科学与医学部）
     # Only accept it when the content looks like an organization/unit name.
@@ -725,10 +744,10 @@ def _trailing_publication_signature(body_text: str) -> str:
         tail.strip(),
     ):
         value = _clean_signature_value(match.group(1))
-        if value and re.search(org_keywords, value):
-            return value
+        if not source and value and re.search(org_keywords, value):
+            source = value
 
-    return ""
+    return {"author": author, "reporter": reporter, "editor": editor, "originalPublisher": source}
 
 
 def _title_from_document(
@@ -750,8 +769,7 @@ def _title_from_document(
 
     candidates: list[str] = []
     for node in soup.select(
-        "article h1, article h2, article h3.title, "
-        "main h1, main h2, main h3.title, .bt01"
+        "article h1, article h2, article h3.title, main h1, main h2, main h3.title, .bt01"
     ):
         value = _text(node.get_text(" ", strip=True))
         if value and value not in candidates:
@@ -1011,7 +1029,9 @@ def _content_root(soup: BeautifulSoup) -> Tag:
                 for image in node.find_all("img")
             )
             has_embedded_document = bool(
-                node.select_one("[pdfsrc], [swsrc], [vurl], [sudy-wp-src], video[src], audio[src], source[src]")
+                node.select_one(
+                    "[pdfsrc], [swsrc], [vurl], [sudy-wp-src], video[src], audio[src], source[src]"
+                )
             ) or any(
                 "showVsb" in script.get_text(" ", strip=True)
                 or "vsb_pdf_image_data" in script.get_text(" ", strip=True)
@@ -1112,10 +1132,7 @@ def _clean_root(root: Tag) -> None:
         value = _text(node.get_text(" ", strip=True))
         if len(value) <= 600 and (
             "皖ICP备" in value
-            or (
-                "Copyright 中国科学技术大学" in value
-                and "All Rights Reserved" in value
-            )
+            or ("Copyright 中国科学技术大学" in value and "All Rights Reserved" in value)
         ):
             node.decompose()
     for node in reversed(root.find_all(True)):
@@ -1180,7 +1197,9 @@ def _image_source_map(images: list[ImageRef]) -> dict[str, str]:
     return {image_source_hash(image.url): image.url for image in images if image.url}
 
 
-def _visual_sitebuilder_player_urls(soup: BeautifulSoup, page_url: str) -> tuple[list[str], list[str]]:
+def _visual_sitebuilder_player_urls(
+    soup: BeautifulSoup, page_url: str
+) -> tuple[list[str], list[str]]:
     """Extract media hidden in VisualSiteBuilder video/PDF player scripts."""
 
     urls: list[str] = []
@@ -1245,9 +1264,7 @@ def extract_page(
         title = _text(soup.title.get_text(" ", strip=True))
     if not title:
         h2s = [
-            node
-            for node in soup.find_all("h2")
-            if len(_text(node.get_text(" ", strip=True))) >= 4
+            node for node in soup.find_all("h2") if len(_text(node.get_text(" ", strip=True))) >= 4
         ]
         heading = max(h2s, key=lambda node: len(node.get_text(" ", strip=True)), default=None)
         title = _text(heading.get_text(" ", strip=True) if heading else "")
@@ -1337,8 +1354,7 @@ def extract_page(
             # October-CMS-style <time> elements carry the date only in the
             # datetime attribute; its text may be an English rendering.
             explicit_published = _trust_future_date(
-                parse_date(str(date_node.get("datetime") or ""))
-                or parse_date(date_text_value),
+                parse_date(str(date_node.get("datetime") or "")) or parse_date(date_text_value),
                 "unlabeled",
             )
     if not explicit_published and title_node is not None:
@@ -1398,6 +1414,13 @@ def extract_page(
     fallback_has_substantive_paragraph = any(
         len(_text(node.get_text(" ", strip=True))) >= 20 for node in root.find_all("p")
     )
+    attribution = _trailing_publication_attribution(body_text)
+    metadata_source = _clean_signature_value(_label_value(date_text, r"来源"))
+    keywords_meta = _first_meta(soup, "keywords")
+    if metadata_source and not (
+        len(metadata_source) >= 4 and keywords_meta and metadata_source in keywords_meta
+    ):
+        attribution["originalPublisher"] = metadata_source
     author = _clean_signature_value(_author(article_ld.get("author"))) or _clean_signature_value(
         _first_meta(soup, "author", "article:author")
     )
@@ -1409,9 +1432,11 @@ def extract_page(
         # so short legitimate unit names are spared, and deliberately NOT
         # applied to jsonld/meta authors above — those are explicit metadata
         # where a long organization name is a legitimate byline.
-        author = _clean_signature_value(
-            _label_value(date_text, r"作者|发布者|文章作者|来源")
-        ) or _trailing_publication_signature(body_text)
+        author = (
+            _clean_signature_value(_label_value(date_text, r"作者|发布者|文章作者"))
+            or attribution["author"]
+            or attribution["reporter"]
+        )
         keywords_meta = _first_meta(soup, "keywords")
         if author and len(author) >= 4 and keywords_meta and author in keywords_meta:
             author = ""
@@ -1479,7 +1504,10 @@ def extract_page(
         if target not in seen_links:
             seen_links.add(target)
             links.append(target)
-    attachment_shell = "attachment_id=" in urlsplit(url).query.lower() or "/attachment/" in urlsplit(url).path.lower()
+    attachment_shell = (
+        "attachment_id=" in urlsplit(url).query.lower()
+        or "/attachment/" in urlsplit(url).path.lower()
+    )
     indico_detail = bool(re.search(r"/event/\d+/(?:page|contributions)/", url, re.I))
     listing_url = bool(
         re.search(r"/(?:list|index)(?:[-_]?\d+)?(?:/|\.[^/?]+)?$", urlsplit(url).path, re.I)
@@ -1496,10 +1524,7 @@ def extract_page(
     # so pages the navigation itself links to as a section are excluded too.
     single_article_listing_url = bool(
         listing_url
-        and (
-            soup.select_one(".arti_title")
-            or soup.select_one(".wp_single, #wp_column_article")
-        )
+        and (soup.select_one(".arti_title") or soup.select_one(".wp_single, #wp_column_article"))
         and soup.select_one(".wp_articlecontent")
         and (len(body_text) > 180 or images)
         and not _is_vsb_section_landing(soup, url)
@@ -1589,7 +1614,10 @@ def extract_page(
             ),
             extraction_method="jsonld+meta+heuristic",
             source_page_url=url,
-            raw_metadata={"jsonld": metadata},
+            raw_metadata={
+                "jsonld": metadata,
+                "attribution": attribution,
+            },
             images=images,
         )
     adapter = adapter_for(source_id, url)
@@ -1647,7 +1675,10 @@ def extract_page(
                 ),
                 extraction_method=f"adapter:{adapter.name}",
                 source_page_url=url,
-                raw_metadata={"jsonld": metadata},
+                raw_metadata={
+                    "jsonld": metadata,
+                    "attribution": attribution,
+                },
                 images=images_for_article,
             )
     return PageDocument(

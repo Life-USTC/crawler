@@ -22,7 +22,9 @@ class ExtractTests(unittest.TestCase):
         )
 
     def test_sitemap_links_accept_legacy_multibyte_xml(self) -> None:
-        body = "<?xml version='1.0' encoding='gb2312'?><urlset><url><loc>/通知/1.htm</loc></url></urlset>".encode("gb2312")
+        body = "<?xml version='1.0' encoding='gb2312'?><urlset><url><loc>/通知/1.htm</loc></url></urlset>".encode(
+            "gb2312"
+        )
         self.assertEqual(
             _xml_links(
                 body,
@@ -53,14 +55,12 @@ class ExtractTests(unittest.TestCase):
         target='_blank' title='公告'>公告</a>"><span>2026-03-19</span></a></body></html>
         """
         page = extract_page("https://marx.ustc.edu.cn/main.htm", html)
-        self.assertIn(
-            "https://marx.ustc.edu.cn/2026/0319/c30301a723546/page.htm", page.links
-        )
+        self.assertIn("https://marx.ustc.edu.cn/2026/0319/c30301a723546/page.htm", page.links)
 
     def test_ignores_javascript_placeholder_links(self) -> None:
         page = extract_page(
             "https://example.ustc.edu.cn/main.htm",
-            "<html><body><a href=\"${v_link('%27/\">错误占位符</a></body></html>",
+            '<html><body><a href="${v_link(\'%27/">错误占位符</a></body></html>',
         )
         self.assertEqual(page.links, [])
 
@@ -101,7 +101,9 @@ class ExtractTests(unittest.TestCase):
         <p>第二段正文保留在本地检索索引中。</p></div></div>
         </body></html>
         """
-        page = extract_page("https://journal.ustc.edu.cn/ch/reader/view_news.aspx?id=20260602112551001", html)
+        page = extract_page(
+            "https://journal.ustc.edu.cn/ch/reader/view_news.aspx?id=20260602112551001", html
+        )
         self.assertIsNotNone(page.article)
         assert page.article is not None
         self.assertEqual(page.article.title, "真正的通知标题")
@@ -129,9 +131,14 @@ class ExtractTests(unittest.TestCase):
         )
         self.assertIsNotNone(page.article)
         assert page.article is not None
-        self.assertEqual(page.article.title, "University of Technology Sydney Delegation Visits SIAR")
+        self.assertEqual(
+            page.article.title, "University of Technology Sydney Delegation Visits SIAR"
+        )
         self.assertEqual(page.article.published_at, "2025-11-18")
-        self.assertIn("delegation from the University of Technology Sydney visited SIAR", page.article.body_text)
+        self.assertIn(
+            "delegation from the University of Technology Sydney visited SIAR",
+            page.article.body_text,
+        )
         self.assertNotIn("Links", page.article.title)
         self.assertNotIn("Site navigation", page.article.body_text)
         self.assertNotIn("Home", page.article.body_text)
@@ -563,9 +570,7 @@ class ExtractTests(unittest.TestCase):
         Copyright © 2022 中国科学技术大学就业信息网 皖ICP备05002528号</div></footer>
         </body></html>
         """
-        page = extract_page(
-            "https://www.job.ustc.edu.cn/Announcement/info.aspx?itemid=8062", html
-        )
+        page = extract_page("https://www.job.ustc.edu.cn/Announcement/info.aspx?itemid=8062", html)
         self.assertIsNone(page.article)
 
     def test_body_fallback_keeps_article_with_substantive_paragraphs(self) -> None:
@@ -634,17 +639,13 @@ class ExtractTests(unittest.TestCase):
         </div>
         <footer>地址：中国科学技术大学 保卫处</footer></body></html>
         """
-        page = extract_page(
-            "https://bwc.ustc.edu.cn/2026/0121/c39430a720167/page.htm", html
-        )
+        page = extract_page("https://bwc.ustc.edu.cn/2026/0121/c39430a720167/page.htm", html)
         self.assertIsNotNone(page.article)
         assert page.article is not None
         self.assertEqual(page.article.title, "反诈宣传视频")
         self.assertEqual(page.article.body_text, "")
         self.assertNotIn("首页", page.article.body_text)
-        self.assertIn(
-            "https://bwc.ustc.edu.cn/_upload/article/videos/anti-fraud.mp4", page.links
-        )
+        self.assertIn("https://bwc.ustc.edu.cn/_upload/article/videos/anti-fraud.mp4", page.links)
 
     def test_generic_banner_detail_shell_is_not_an_article(self) -> None:
         html = """
@@ -653,9 +654,7 @@ class ExtractTests(unittest.TestCase):
         <div class='content'><p>发布时间：2021-07-05</p></div>
         <footer>Copyright 中国科学技术大学</footer></body></html>
         """
-        page = extract_page(
-            "https://soe.ustc.edu.cn/2021/0705/c26768a705743/page.htm", html
-        )
+        page = extract_page("https://soe.ustc.edu.cn/2021/0705/c26768a705743/page.htm", html)
         self.assertIsNone(page.article)
 
     def test_scripted_pdf_player_exposes_document_and_preview_images(self) -> None:
@@ -774,9 +773,7 @@ class ExtractTests(unittest.TestCase):
         <p>第二段补充活动地点、报告主题和参会说明，避免隐藏控件污染检索内容。</p>
         </div></div></body></html>
         """
-        page = extract_page(
-            "https://indico.pnp.ustc.edu.cn/event/2026/page/42-programme", html
-        )
+        page = extract_page("https://indico.pnp.ustc.edu.cn/event/2026/page/42-programme", html)
         self.assertIsNotNone(page.article)
         assert page.article is not None
         self.assertEqual(page.article.title, "Public programme")
@@ -826,9 +823,7 @@ class ExtractTests(unittest.TestCase):
         <div class='InfoBox'></div><div class='NewsBtn'>上一篇： 下一篇：</div></div></div></div>
         </body></html>
         """
-        page = extract_page(
-            "https://soe.ustc.edu.cn/2024/0904/c36782a652493/page.htm", html
-        )
+        page = extract_page("https://soe.ustc.edu.cn/2024/0904/c36782a652493/page.htm", html)
         self.assertIsNone(page.article)
 
     def test_infobox_content_survives_template_shell_cleanup(self) -> None:
@@ -841,9 +836,7 @@ class ExtractTests(unittest.TestCase):
         </div><div class='NewsBtn'>上一篇： 下一篇：</div></div>
         </body></html>
         """
-        page = extract_page(
-            "https://soe.ustc.edu.cn/2026/0904/c1a2/page.htm", html
-        )
+        page = extract_page("https://soe.ustc.edu.cn/2026/0904/c1a2/page.htm", html)
         self.assertIsNotNone(page.article)
         assert page.article is not None
         self.assertEqual(page.article.title, "环境学院召开工作会议")
@@ -861,9 +854,7 @@ class ExtractTests(unittest.TestCase):
         <div class='entry'><p>这是足够长的真实文章正文，包含会议安排、事项说明和后续计划，应该保留在正文中。</p></div>
         </div></div></body></html>
         """
-        page = extract_page(
-            "https://example.ustc.edu.cn/2026/0904/c1a2/page.htm", html
-        )
+        page = extract_page("https://example.ustc.edu.cn/2026/0904/c1a2/page.htm", html)
         self.assertIsNotNone(page.article)
         assert page.article is not None
         self.assertEqual(page.article.title, "真实标题")
@@ -882,9 +873,7 @@ class ExtractTests(unittest.TestCase):
         <footer>深空科学技术研究院 Copyright</footer></div>
         </body></html>
         """
-        page = extract_page(
-            "https://planet.ustc.edu.cn/main/news_detail-19.html", html
-        )
+        page = extract_page("https://planet.ustc.edu.cn/main/news_detail-19.html", html)
         self.assertIsNone(page.article)
 
     def test_banner_image_only_detail_is_not_an_article(self) -> None:
@@ -895,9 +884,7 @@ class ExtractTests(unittest.TestCase):
         <div class='wp_articlecontent'><p><img src='/images/banner.png'></p></div>
         </div></body></html>
         """
-        page = extract_page(
-            "https://bwc.ustc.edu.cn/2025/0703/c18880a690023/page.htm", html
-        )
+        page = extract_page("https://bwc.ustc.edu.cn/2025/0703/c18880a690023/page.htm", html)
         self.assertIsNone(page.article)
 
     def test_image_only_detail_without_title_is_not_an_article(self) -> None:
@@ -907,9 +894,7 @@ class ExtractTests(unittest.TestCase):
         <span class='arti_metas'>发布时间：2024-05-11</span>
         </body></html>
         """
-        page = extract_page(
-            "http://physics.ustc.edu.cn/2024/0511/c12804a640625/page.htm", html
-        )
+        page = extract_page("http://physics.ustc.edu.cn/2024/0511/c12804a640625/page.htm", html)
         self.assertIsNone(page.article)
 
     def test_listing_url_is_not_an_article_with_single_article_tag(self) -> None:
@@ -1262,7 +1247,11 @@ class ExtractTests(unittest.TestCase):
         page = extract_page("https://news.ustc.edu.cn/info/1048/96005.htm", html)
         self.assertIsNotNone(page.article)
         assert page.article is not None
-        self.assertEqual(page.article.author, "王敏 / 中国科学报")
+        self.assertEqual(page.article.author, "王敏")
+        self.assertEqual(page.article.raw_metadata["attribution"]["reporter"], "王敏")
+        self.assertEqual(
+            page.article.raw_metadata["attribution"]["originalPublisher"], "中国科学报"
+        )
 
     def test_source_only_signature_at_body_end(self) -> None:
         html = """
@@ -1273,7 +1262,8 @@ class ExtractTests(unittest.TestCase):
         page = extract_page("https://news.ustc.edu.cn/info/1048/96006.htm", html)
         self.assertIsNotNone(page.article)
         assert page.article is not None
-        self.assertEqual(page.article.author, "新华网")
+        self.assertEqual(page.article.author, "")
+        self.assertEqual(page.article.raw_metadata["attribution"]["originalPublisher"], "新华网")
 
     def test_writer_slash_signature_at_body_end(self) -> None:
         html = """
@@ -1295,7 +1285,8 @@ class ExtractTests(unittest.TestCase):
         page = extract_page("https://news.ustc.edu.cn/info/1048/96008.htm", html)
         self.assertIsNotNone(page.article)
         assert page.article is not None
-        self.assertEqual(page.article.author, "李四")
+        self.assertEqual(page.article.author, "")
+        self.assertEqual(page.article.raw_metadata["attribution"]["editor"], "李四")
 
     def test_reporter_without_colon_at_body_end(self) -> None:
         html = """
@@ -1356,7 +1347,8 @@ class ExtractTests(unittest.TestCase):
         page = extract_page("https://auto.ustc.edu.cn/2026/0319/c1a2/page.htm", html)
         self.assertIsNotNone(page.article)
         assert page.article is not None
-        self.assertEqual(page.article.author, "自动化系")
+        self.assertEqual(page.article.author, "")
+        self.assertEqual(page.article.raw_metadata["attribution"]["originalPublisher"], "自动化系")
 
     def test_regular_content_does_not_trigger_author_extraction(self) -> None:
         html = """
@@ -1389,7 +1381,10 @@ class ExtractTests(unittest.TestCase):
         page = extract_page("https://news.ustc.edu.cn/info/1047/79585.htm", html)
         self.assertIsNotNone(page.article)
         assert page.article is not None
-        self.assertEqual(page.article.author, "生命科学与医学部")
+        self.assertEqual(page.article.author, "")
+        self.assertEqual(
+            page.article.raw_metadata["attribution"]["originalPublisher"], "生命科学与医学部"
+        )
 
     def test_parenthesized_person_is_not_organization_source(self) -> None:
         html = """
@@ -1553,7 +1548,9 @@ class Wave2TitleTests(unittest.TestCase):
         <p>课题组为陈子元博士举行毕业欢送会，回顾其在组期间的研究工作并合影留念。</p></div>
         </body></html>
         """
-        page = extract_page("https://quantum-materials.ustc.edu.cn/2025/1218/c36591a716747/page.htm", html)
+        page = extract_page(
+            "https://quantum-materials.ustc.edu.cn/2025/1218/c36591a716747/page.htm", html
+        )
         self.assertIsNotNone(page.article)
         assert page.article is not None
         self.assertEqual(page.article.title, "陈子元博士毕业欢送会(2025)")
@@ -1975,7 +1972,8 @@ class Wave2AuthorTests(unittest.TestCase):
         page = extract_page("https://qybx.ustc.edu.cn/2026/0803/c20980a749955/page.htm", html)
         self.assertIsNotNone(page.article)
         assert page.article is not None
-        self.assertEqual(page.article.author, "科研部")
+        self.assertEqual(page.article.author, "")
+        self.assertEqual(page.article.raw_metadata["attribution"]["originalPublisher"], "科研部")
 
 
 class Wave2ReviewTests(unittest.TestCase):

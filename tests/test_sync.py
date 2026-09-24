@@ -204,7 +204,14 @@ class IngestionProtocolTests(unittest.TestCase):
             body_markdown=f"![图表]({local_image_url(source_url)})",
             extraction_method="html",
             source_page_url="https://example.edu/news/with-image",
-            images=[ImageRef(url=source_url, alt="图表")],
+            images=[ImageRef(url=source_url, alt="图表", title="标题", caption="图片说明")],
+            raw_metadata={
+                "attribution": {
+                    "reporter": "张三",
+                    "editor": "李四",
+                    "originalPublisher": "来源单位",
+                }
+            },
         )
         markdown_manifest = ObjectManifest(
             kind="body_markdown",
@@ -217,6 +224,27 @@ class IngestionProtocolTests(unittest.TestCase):
         self.assertEqual(
             publication.image_sources,
             {image_source_hash(source_url): source_url},
+        )
+
+        self.assertEqual(publication.reporter, "张三")
+        self.assertEqual(publication.editor, "李四")
+        self.assertEqual(publication.original_publisher, "来源单位")
+        self.assertEqual(
+            publication.image_metadata,
+            {
+                image_source_hash(source_url): {
+                    "altText": "图表",
+                    "title": "标题",
+                    "caption": "图片说明",
+                }
+            },
+        )
+        changed_caption = replace(
+            article,
+            images=[ImageRef(url=source_url, alt="图表", title="标题", caption="新的图片说明")],
+        )
+        self.assertNotEqual(
+            revision_hash_for_article(article), revision_hash_for_article(changed_caption)
         )
 
         revised = replace(article, body_markdown=article.body_markdown + "\n补充说明")
@@ -288,9 +316,7 @@ class IngestionProtocolTests(unittest.TestCase):
             summary="",
             body_html="<p>正文</p>",
             body_text="正文",
-            body_markdown=(
-                f"![参考图][hero]\n\n[hero]: {local_image_url(source_url)}"
-            ),
+            body_markdown=(f"![参考图][hero]\n\n[hero]: {local_image_url(source_url)}"),
             extraction_method="html",
             source_page_url="https://example.edu/news/reference-image",
             images=[ImageRef(url=source_url, alt="参考图")],
@@ -1018,6 +1044,7 @@ class OrmAndOutboxTests(unittest.TestCase):
                         self.assertEqual(row.status, "failed")
                 finally:
                     store.close()
+
     def test_requeue_failed_batches_releases_events_for_matching_error(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
@@ -1068,9 +1095,7 @@ class OrmAndOutboxTests(unittest.TestCase):
                     self.assertTrue(all(row.batch_id is None for row in requeued))
                     self.assertTrue(all(row.last_error is None for row in requeued))
                     self.assertTrue(all(row.response_json is None for row in requeued))
-                    self.assertTrue(
-                        all(row.batch_id == "server-rejected" for row in still_failed)
-                    )
+                    self.assertTrue(all(row.batch_id == "server-rejected" for row in still_failed))
 
                 rebuilt = outbox.build_batch(
                     run_id="new-run",

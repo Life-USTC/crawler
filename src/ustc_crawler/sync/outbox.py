@@ -41,9 +41,9 @@ def sanitize_error_detail(detail: str) -> str:
     """Flatten whitespace and bound a persisted error response excerpt."""
 
     return " ".join(detail.split())[:MAX_ERROR_DETAIL_CHARS]
-BATCH_STATUSES = frozenset(
-    {"pending", "uploading", "acked", "partial", "failed", "superseded"}
-)
+
+
+BATCH_STATUSES = frozenset({"pending", "uploading", "acked", "partial", "failed", "superseded"})
 RELEASABLE_ITEM_STATUSES = frozenset({"pending", "uploading", "failed"})
 RELEASABLE_OUTBOX_STATUSES = frozenset({"pending", "batched", "uploading", "failed"})
 
@@ -69,9 +69,7 @@ def _release_batch_events(
     )
     outbox_rows = list(
         session.scalars(
-            select(SyncOutbox)
-            .where(SyncOutbox.batch_id == batch.id)
-            .order_by(SyncOutbox.event_id)
+            select(SyncOutbox).where(SyncOutbox.batch_id == batch.id).order_by(SyncOutbox.event_id)
         ).all()
     )
     if {item.item_key for item in batch_items} != {row.event_id for row in outbox_rows}:
@@ -231,7 +229,13 @@ def spool_article_objects(
         path, content_type = _media_input(value)
         if not path.is_file():
             continue
-        manifest = spool_file(path, kind="asset", content_type=content_type)
+        manifest = LocalObjectManifest.model_validate(
+            {
+                **spool_file(path, kind="asset", content_type=content_type).model_dump(),
+                "filename": path.name[:500],
+                "source_url": asset_url,
+            }
+        )
         if manifest.sha256 not in seen_assets:
             seen_assets.add(manifest.sha256)
             objects.append(manifest)
@@ -273,7 +277,9 @@ class IngestionOutbox:
         if source.id != publication.source_id:
             raise ValueError("source descriptor does not match publication sourceId")
         self._ensure_ingestion_source(source)
-        payload_json = _dump_json(publication.model_dump(by_alias=True, mode="json", exclude_none=True))
+        payload_json = _dump_json(
+            publication.model_dump(by_alias=True, mode="json", exclude_none=True)
+        )
         payload_sha256 = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
         manifests = tuple(local_objects)
         if isinstance(publication, IngestionPublication):
@@ -381,9 +387,7 @@ class IngestionOutbox:
         """
 
         with transaction(self.database) as session:
-            rows = session.scalars(
-                select(SyncOutbox).where(SyncOutbox.batch_id.is_(None))
-            ).all()
+            rows = session.scalars(select(SyncOutbox).where(SyncOutbox.batch_id.is_(None))).all()
             deleted = 0
             for row in rows:
                 if self._source(row).discovery_only:
@@ -574,8 +578,7 @@ class IngestionOutbox:
                 .order_by(SyncBatchItem.item_key)
             ).all()
             expected = {
-                (item.source_id, item.canonical_url, item.revision_hash)
-                for item in batch_items
+                (item.source_id, item.canonical_url, item.revision_hash) for item in batch_items
             }
             if expected != accepted | rejected:
                 raise ValueError("batch result membership does not match persisted items")
@@ -596,9 +599,7 @@ class IngestionOutbox:
                     row.last_error = "server_rejected"
                 row.response_json = response_json
                 row.updated_at = now
-            batch.status = (
-                "partial" if accepted and rejected else "failed" if rejected else "acked"
-            )
+            batch.status = "partial" if accepted and rejected else "failed" if rejected else "acked"
             batch.response_json = response_json
             batch.last_error = "server_rejected" if rejected else None
             batch.updated_at = now
@@ -688,10 +689,7 @@ class IngestionOutbox:
         if limit < 1:
             raise ValueError("batch limit must be positive")
         if limit > MAX_PUBLICATION_BATCH_ITEMS:
-            raise ValueError(
-                "batch limit must be between 1 and "
-                f"{MAX_PUBLICATION_BATCH_ITEMS}"
-            )
+            raise ValueError(f"batch limit must be between 1 and {MAX_PUBLICATION_BATCH_ITEMS}")
         if max_payload_bytes < 1:
             raise ValueError("max payload bytes must be positive")
         if max_payload_bytes > DEFAULT_MAX_BATCH_BYTES:
@@ -893,9 +891,7 @@ class IngestionOutbox:
                     # there is nothing left to release.  Retire the batch
                     # instead of aborting the whole requeue run.
                     batch.status = "superseded"
-                    batch.updated_at = datetime.now().astimezone().isoformat(
-                        timespec="seconds"
-                    )
+                    batch.updated_at = datetime.now().astimezone().isoformat(timespec="seconds")
                     result["skipped"] += 1
                     continue
                 result["batches"] += 1
@@ -908,21 +904,15 @@ class IngestionOutbox:
 
         item_keys = list(
             session.scalars(
-                select(SyncBatchItem.item_key).where(
-                    SyncBatchItem.batch_id == batch.id
-                )
+                select(SyncBatchItem.item_key).where(SyncBatchItem.batch_id == batch.id)
             ).all()
         )
         if not item_keys:
             return False
         rows = list(
-            session.scalars(
-                select(SyncOutbox).where(SyncOutbox.event_id.in_(item_keys))
-            ).all()
+            session.scalars(select(SyncOutbox).where(SyncOutbox.event_id.in_(item_keys))).all()
         )
-        return len(rows) == len(item_keys) and all(
-            row.batch_id != batch.id for row in rows
-        )
+        return len(rows) == len(item_keys) and all(row.batch_id != batch.id for row in rows)
 
     def mark_batch(self, batch_id: str, *, status: str, response_json: str = "") -> None:
         if status not in BATCH_STATUSES:
