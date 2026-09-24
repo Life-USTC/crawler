@@ -18,6 +18,7 @@ from pydantic import (
     Field,
     StringConstraints,
     field_validator,
+    model_validator,
 )
 
 from ..markdown import IMAGE_PROXY_PREFIX, image_source_hash
@@ -370,6 +371,14 @@ class PublicationObjectUploadResponse(ProtocolModel):
     status: Literal["linked"]
 
 
+class PublicationImageMetadata(ProtocolModel):
+    """Plain-text image metadata owned by one publication revision."""
+
+    alt_text: TrimmedOptionalText = Field(default=None, alias="altText", max_length=1_000)
+    title: TrimmedOptionalText = Field(default=None, max_length=1_000)
+    caption: TrimmedOptionalText = Field(default=None, max_length=4_000)
+
+
 class IngestionPublication(ProtocolModel):
     """A non-tombstone item in the server ingestion contract."""
 
@@ -408,7 +417,7 @@ class IngestionPublication(ProtocolModel):
     )
     raw_metadata: dict[str, Any] | None = Field(default=None, alias="rawMetadata")
     image_sources: dict[Sha256, Url] = Field(alias="imageSources", max_length=MAX_IMAGE_SOURCES)
-    image_metadata: dict[Sha256, dict[str, str | None]] | None = Field(
+    image_metadata: dict[Sha256, PublicationImageMetadata] | None = Field(
         default=None, alias="imageMetadata", max_length=MAX_IMAGE_SOURCES
     )
     objects: list[ObjectManifest] = Field(
@@ -424,6 +433,12 @@ class IngestionPublication(ProtocolModel):
     )
     _normalize_raw_metadata = field_validator("raw_metadata", mode="before")(_json_value)
     _validate_image_sources = field_validator("image_sources")(_validate_image_source_map)
+
+    @model_validator(mode="after")
+    def validate_image_metadata_sources(self) -> IngestionPublication:
+        if any(key not in self.image_sources for key in (self.image_metadata or {})):
+            raise ValueError("image metadata must reference a registered image source")
+        return self
 
 
 class TombstonePublication(ProtocolModel):

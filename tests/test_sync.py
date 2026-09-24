@@ -230,7 +230,7 @@ class IngestionProtocolTests(unittest.TestCase):
         self.assertEqual(publication.editor, "李四")
         self.assertEqual(publication.original_publisher, "来源单位")
         self.assertEqual(
-            publication.image_metadata,
+            {key: value.model_dump(by_alias=True) for key, value in publication.image_metadata.items()},
             {
                 image_source_hash(source_url): {
                     "altText": "图表",
