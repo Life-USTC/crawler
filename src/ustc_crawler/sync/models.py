@@ -18,6 +18,7 @@ from pydantic import (
     Field,
     StringConstraints,
     field_validator,
+    model_validator,
 )
 
 from ..markdown import IMAGE_PROXY_PREFIX, image_source_hash
@@ -236,6 +237,10 @@ class ObjectManifest(ProtocolModel):
     content_type: ContentType = Field(alias="contentType")
     sort_order: int | None = Field(default=None, alias="sortOrder", ge=0, le=10_000)
     alt_text: TrimmedOptionalText = Field(default=None, alias="altText", max_length=1_000)
+    filename: TrimmedOptionalText = Field(default=None, min_length=1, max_length=500)
+    source_url: Url | None = Field(default=None, alias="sourceUrl")
+
+    _validate_source_url = field_validator("source_url")(_validate_optional_url)
 
 
 class LocalObjectManifest(ObjectManifest):
@@ -366,6 +371,14 @@ class PublicationObjectUploadResponse(ProtocolModel):
     status: Literal["linked"]
 
 
+class PublicationImageMetadata(ProtocolModel):
+    """Plain-text image metadata owned by one publication revision."""
+
+    alt_text: TrimmedOptionalText = Field(default=None, alias="altText", max_length=1_000)
+    title: TrimmedOptionalText = Field(default=None, max_length=1_000)
+    caption: TrimmedOptionalText = Field(default=None, max_length=4_000)
+
+
 class IngestionPublication(ProtocolModel):
     """A non-tombstone item in the server ingestion contract."""
 
@@ -377,6 +390,11 @@ class IngestionPublication(ProtocolModel):
     publication_type: PublicationType = Field(alias="publicationType")
     title: TrimmedText = Field(min_length=1, max_length=MAX_PUBLICATION_TITLE_LENGTH)
     author: TrimmedOptionalText = Field(default=None, max_length=MAX_PUBLICATION_AUTHOR_LENGTH)
+    reporter: TrimmedOptionalText = Field(default=None, max_length=500)
+    editor: TrimmedOptionalText = Field(default=None, max_length=500)
+    original_publisher: TrimmedOptionalText = Field(
+        default=None, alias="originalPublisher", max_length=500
+    )
     published_at: str | None = Field(default=None, alias="publishedAt")
     updated_at_source: str | None = Field(default=None, alias="updatedAtSource")
     category: TrimmedOptionalText = Field(default=None, max_length=MAX_PUBLICATION_CATEGORY_LENGTH)
@@ -399,6 +417,9 @@ class IngestionPublication(ProtocolModel):
     )
     raw_metadata: dict[str, Any] | None = Field(default=None, alias="rawMetadata")
     image_sources: dict[Sha256, Url] = Field(alias="imageSources", max_length=MAX_IMAGE_SOURCES)
+    image_metadata: dict[Sha256, PublicationImageMetadata] | None = Field(
+        default=None, alias="imageMetadata", max_length=MAX_IMAGE_SOURCES
+    )
     objects: list[ObjectManifest] = Field(
         default_factory=list,
         max_length=MAX_PUBLICATION_OBJECTS,
@@ -412,6 +433,12 @@ class IngestionPublication(ProtocolModel):
     )
     _normalize_raw_metadata = field_validator("raw_metadata", mode="before")(_json_value)
     _validate_image_sources = field_validator("image_sources")(_validate_image_source_map)
+
+    @model_validator(mode="after")
+    def validate_image_metadata_sources(self) -> IngestionPublication:
+        if any(key not in self.image_sources for key in (self.image_metadata or {})):
+            raise ValueError("image metadata must reference a registered image source")
+        return self
 
 
 class TombstonePublication(ProtocolModel):
@@ -554,6 +581,19 @@ def _normalized_publication_values(
     category = _bounded_optional_text(article.category, MAX_PUBLICATION_CATEGORY_LENGTH)
     summary = _bounded_optional_text(article.summary, MAX_PUBLICATION_SUMMARY_LENGTH)
     image_sources = image_sources_for_article(article)
+    image_metadata = {}
+    for image in article.images:
+        digest = image_source_hash(sanitize_text(image.url).strip())
+        # First occurrence owns the per-article caption for a repeated source URL.
+        if digest not in image_metadata:
+            image_metadata[digest] = {
+                "altText": _bounded_optional_text(image.alt, 1_000),
+                "title": _bounded_optional_text(image.title, 1_000),
+                "caption": _bounded_optional_text(image.caption, 4_000),
+            }
+    attribution = article.raw_metadata.get("attribution", {})
+    if not isinstance(attribution, dict):
+        attribution = {}
     _validate_markdown_image_sources(article.body_markdown, image_sources)
     kind = publication_type or classify_publication(
         url=canonical_url,
@@ -567,6 +607,19 @@ def _normalized_publication_values(
         "canonicalUrl": canonical_url,
         "title": title,
         "author": author,
+        "reporter": _bounded_optional_text(
+            attribution.get("reporter") if isinstance(attribution.get("reporter"), str) else None,
+            500,
+        ),
+        "editor": _bounded_optional_text(
+            attribution.get("editor") if isinstance(attribution.get("editor"), str) else None, 500
+        ),
+        "originalPublisher": _bounded_optional_text(
+            attribution.get("originalPublisher")
+            if isinstance(attribution.get("originalPublisher"), str)
+            else None,
+            500,
+        ),
         "publishedAt": _wire_timestamp(article.published_at),
         "updatedAtSource": _wire_timestamp(article.updated_at),
         "category": category,
@@ -581,6 +634,7 @@ def _normalized_publication_values(
         "publicationType": kind,
         "rawMetadata": _json_value(article.raw_metadata),
         "imageSources": image_sources,
+        "imageMetadata": image_metadata,
         "objects": _bounded_objects(objects),
     }
 
@@ -662,6 +716,9 @@ def build_publication(
         publicationType=values["publicationType"],
         title=values["title"],
         author=values["author"],
+        reporter=values["reporter"],
+        editor=values["editor"],
+        originalPublisher=values["originalPublisher"],
         publishedAt=values["publishedAt"],
         updatedAtSource=values["updatedAtSource"],
         category=values["category"],
@@ -672,6 +729,7 @@ def build_publication(
         classifierVersion=values["classifierVersion"],
         rawMetadata=values["rawMetadata"] or None,
         imageSources=values["imageSources"],
+        imageMetadata=values["imageMetadata"],
         objects=values["objects"],
     )
 
