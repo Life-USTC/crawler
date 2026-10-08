@@ -46,7 +46,9 @@ env:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ (inputs.reindex || inputs.retext || inputs.requeue_failed || inputs.rebuild_markdown) && 240 || 45 }}
+    # The large database previously needed about 10 minutes just to save.
+    # Bound writer phases below and retain room for restore, shutdown and save.
+    timeout-minutes: ${{ (inputs.reindex || inputs.retext || inputs.requeue_failed || inputs.rebuild_markdown) && 300 || 60 }}
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.0.1
@@ -56,10 +58,22 @@ jobs:
       - run: uv sync --locked
 
       - name: Validate sync configuration
+        id: validate
         env:
+          REINDEX: ${{ inputs.reindex }}
+          RETEXT: ${{ inputs.retext }}
+          REBUILD_MARKDOWN: ${{ inputs.rebuild_markdown }}
           USTC_CRAWLER_SERVER: ${{ vars.CRAWLER_SERVER }}
           USTC_CRAWLER_INGESTION_SECRET: ${{ secrets.USTC_CRAWLER_INGESTION_SECRET }}
         run: |
+          repairs=0
+          for repair in "$REINDEX" "$RETEXT" "$REBUILD_MARKDOWN"; do
+            if [ "$repair" = true ]; then repairs=$((repairs + 1)); fi
+          done
+          if [ "$repairs" -gt 1 ]; then
+            echo '::error::Choose at most one of reindex, retext and rebuild_markdown per run'
+            exit 1
+          fi
           test -n "$USTC_CRAWLER_SERVER" || { echo "::error::vars.CRAWLER_SERVER is not set"; exit 1; }
           test -n "$USTC_CRAWLER_INGESTION_SECRET" || { echo "::error::ingestion secret is not set"; exit 1; }
 
@@ -119,7 +133,10 @@ jobs:
         shell: bash
         run: |
           set +e
-          uv run ustc-crawler reindex \
+          # Reindex has no graceful SIGTERM handler: timeout is a failure,
+          # so only a fully completed operation can replace the state cache.
+          timeout --signal=TERM --kill-after=60s 90m \
+            uv run ustc-crawler reindex \
             --source library \
             --source unit-mech-ustc-edu-cn \
             --source unit-iid-ustc-edu-cn \
@@ -131,7 +148,8 @@ jobs:
           test "${result[1]}" = 0
           echo "exit_code=${result[0]}" >> "$GITHUB_OUTPUT"
           case "${result[0]}" in 0|2) ;; *) exit "${result[0]}" ;; esac
-          uv run ustc-crawler sync-backfill 2>&1 | tee backfill.log
+          timeout --signal=TERM --kill-after=60s 10m \
+            uv run ustc-crawler sync-backfill 2>&1 | tee backfill.log
 
       - name: Retext article bodies
         id: retext
@@ -139,13 +157,15 @@ jobs:
         shell: bash
         run: |
           set +e
-          uv run ustc-crawler retext 2>&1 | tee retext.log
+          timeout --signal=TERM --kill-after=60s 90m \
+            uv run ustc-crawler retext 2>&1 | tee retext.log
           result=("${PIPESTATUS[@]}")
           set -e
           test "${result[1]}" = 0
           echo "exit_code=${result[0]}" >> "$GITHUB_OUTPUT"
           case "${result[0]}" in 0|2) ;; *) exit "${result[0]}" ;; esac
-          uv run ustc-crawler sync-backfill 2>&1 | tee backfill.log
+          timeout --signal=TERM --kill-after=60s 10m \
+            uv run ustc-crawler sync-backfill 2>&1 | tee backfill.log
 
       - name: Rebuild archived article Markdown
         id: rebuild
@@ -173,7 +193,8 @@ jobs:
         shell: bash
         run: |
           set +e
-          uv run ustc-crawler sync-requeue-failed 2>&1 | tee requeue.log
+          timeout --signal=TERM --kill-after=60s 5m \
+            uv run ustc-crawler sync-requeue-failed 2>&1 | tee requeue.log
           result=("${PIPESTATUS[@]}")
           set -e
           test "${result[1]}" = 0

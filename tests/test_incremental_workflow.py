@@ -38,6 +38,9 @@ class WorkflowRun:
             "SYNC_BUDGET_MINUTES": "1",
             "GITHUB_STEP_SUMMARY": str(root / "summary"),
             "FAKE_CODES": json.dumps(self.codes),
+            "FAKE_TIMEOUT_LOG": str(root / "timeouts.jsonl"),
+            "USTC_CRAWLER_SERVER": "https://example.test",
+            "USTC_CRAWLER_INGESTION_SECRET": "test-secret",
             "FAKE_CHECKPOINT": checkpoint,
             "FAKE_INTEGRITY": integrity,
         }
@@ -67,6 +70,8 @@ if name == 'uv':
         os.execv(sys.executable, [sys.executable, *args[2:]])
     sys.exit(json.loads(os.environ['FAKE_CODES']).get(args[2], 0))
 if name == 'timeout':
+    with open(os.environ['FAKE_TIMEOUT_LOG'], 'a') as log:
+        log.write(json.dumps(args) + '\\n')
     os.execvp(args[3], args[3:])
 if name == 'sqlite3':
     query = args[-1]
@@ -106,7 +111,8 @@ if name == 'zstd':
         start = next(
             i for i, step in enumerate(STEPS) if step.get("name") == "Upgrade database schema"
         )
-        for step in STEPS[start:]:
+        validation = next(step for step in STEPS if step.get("id") == "validate")
+        for step in [validation, *STEPS[start:]]:
             if step.get("name") == "Save crawler state" and self.cancel_at_save:
                 self.cancelled = True
             condition = step.get("if", "True")
@@ -126,7 +132,10 @@ if name == 'zstd':
             env = dict(self.env)
             for key, value in step.get("env", {}).items():
                 if key not in ("USTC_CRAWLER_SERVER", "USTC_CRAWLER_INGESTION_SECRET"):
-                    env[key] = str(self.expression(value))
+                    resolved = self.expression(value)
+                    env[key] = (
+                        str(resolved).lower() if isinstance(resolved, bool) else str(resolved)
+                    )
             output = self.root / "output"
             output.write_text("")
             env["GITHUB_OUTPUT"] = str(output)
@@ -250,7 +259,8 @@ def test_tee_failure_prevents_cache_write(tmp_path):
 @pytest.mark.parametrize("command", ["reindex", "retext", "sync-requeue-failed"])
 def test_maintenance_partial_completion_is_saved_but_not_green(tmp_path, command):
     run = WorkflowRun(tmp_path, codes={command: 2})
-    run.inputs.reindex = run.inputs.retext = run.inputs.requeue_failed = True
+    run.inputs.rebuild_markdown = False
+    setattr(run.inputs, "requeue_failed" if command == "sync-requeue-failed" else command, True)
     run.run()
     assert run.failed
     assert (tmp_path / "saved").exists()
@@ -259,6 +269,57 @@ def test_maintenance_partial_completion_is_saved_but_not_green(tmp_path, command
 def test_backfill_crash_after_completed_reindex_prevents_save(tmp_path):
     run = WorkflowRun(tmp_path, codes={"sync-backfill": 1})
     run.inputs.reindex = True
+    run.inputs.rebuild_markdown = False
     run.run()
     assert run.failed
     assert not (tmp_path / "saved").exists()
+
+
+@pytest.mark.parametrize(
+    "repairs",
+    [("reindex", "retext"), ("reindex", "rebuild_markdown"), ("retext", "rebuild_markdown")],
+)
+def test_rejects_combined_heavy_repairs_before_database_writes(tmp_path, repairs):
+    run = WorkflowRun(tmp_path)
+    run.inputs.rebuild_markdown = False
+    for repair in repairs:
+        setattr(run.inputs, repair, True)
+    run.run()
+    assert run.step("validate").outcome == "failure"
+    assert "Upgrade database schema" not in run.trace
+    assert not (tmp_path / "saved").exists()
+
+
+@pytest.mark.parametrize("command", ["reindex", "retext", "sync-backfill", "sync-requeue-failed"])
+@pytest.mark.parametrize("code", [124, 137])
+def test_uncontrolled_maintenance_timeout_does_not_save(tmp_path, command, code):
+    run = WorkflowRun(tmp_path, codes={command: code})
+    run.inputs.rebuild_markdown = False
+    setattr(
+        run.inputs,
+        {"sync-backfill": "reindex", "sync-requeue-failed": "requeue_failed"}.get(command, command),
+        True,
+    )
+    run.run()
+    assert run.failed
+    assert not (tmp_path / "saved").exists()
+
+
+@pytest.mark.parametrize("repair", [None, "reindex", "retext", "rebuild_markdown"])
+@pytest.mark.parametrize("requeue", [False, True])
+def test_writer_deadlines_leave_room_for_large_state_save(tmp_path, repair, requeue):
+    run = WorkflowRun(tmp_path)
+    run.inputs.rebuild_markdown = False
+    run.inputs.requeue_failed = requeue
+    if repair:
+        setattr(run.inputs, repair, True)
+    run.run()
+    assert not run.failed
+    timeouts = [json.loads(line) for line in (tmp_path / "timeouts.jsonl").read_text().splitlines()]
+    writer_minutes = sum(int(args[2].removesuffix("m")) for args in timeouts)
+    shutdown_minutes = len(timeouts)  # Each timeout reserves a 60-second kill-after grace.
+    job_minutes = run.expression(WORKFLOW["jobs"]["sync"]["timeout-minutes"])
+    # Sept 30's large-state save took about 10 minutes; reserve that plus 2
+    # minutes for restore and 5 for setup, diagnostics and scheduler overhead.
+    assert writer_minutes + shutdown_minutes + 10 + 2 + 5 <= job_minutes
+    assert (tmp_path / "saved").exists()

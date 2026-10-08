@@ -153,8 +153,13 @@ workflow 记录 `124`。后两种情况会先等待写入停止，执行 WAL che
 gh workflow run incremental-sync.yml -f rebuild_markdown=true
 ```
 
-`rebuild_markdown` 默认处理全部已保存文章，并将任务预算扩展到 240 分钟；重建和
-同步分别最多运行 90 和 70 分钟，预留检查、压缩和保存时间。大归档可用
+普通任务预算为 60 分钟，修复任务为 300 分钟，为大数据库的检查、压缩和缓存上传
+预留时间。每轮最多选择 `reindex`、`retext`、`rebuild_markdown` 中的一种；
+`requeue_failed` 可与它们组合。`reindex` 和 `retext` 最多运行 90 分钟，其后历史
+入队最多 10 分钟；这两种命令超时不视为安全完成，因此不保存本轮缓存。
+
+`rebuild_markdown` 默认处理全部已保存文章，重建和同步分别最多运行 90 和 70 分钟。
+大归档可用
 `rebuild_limit` 限制本轮文章数，并用日志中的最后完成游标作为下一轮
 `rebuild_after_url`。例如每轮处理 10,000 篇：
 
