@@ -2,15 +2,17 @@ import json
 import unittest
 from dataclasses import replace
 from datetime import datetime
+from html import escape
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from markdown_it import MarkdownIt
 from pydantic import ValidationError
 from sqlalchemy import func, select, text
 
 from ustc_crawler.db import ALEMBIC_HEAD
 from ustc_crawler.db.models import Article, SyncBatch, SyncBatchItem, SyncOutbox, SyncRun
-from ustc_crawler.markdown import image_source_hash, local_image_url
+from ustc_crawler.markdown import html_to_markdown, image_source_hash, local_image_url
 from ustc_crawler.models import ArticleDocument, ImageRef, SourceConfig
 from ustc_crawler.store import Store, article_bundle_path
 from ustc_crawler.sync.models import (
@@ -277,6 +279,50 @@ class IngestionProtocolTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "local image proxy"):
             build_publication(article)
+
+    def test_html_image_alt_remains_literal_through_publication_ingestion(self) -> None:
+        source_url = "https://example.edu/uploads/photo.jpg"
+        sources = {image_source_hash(source_url): source_url}
+        for alt in (
+            "![](https://example.edu/other.jpg)",
+            r"图 [说明] \\[目录] ](https://example.edu/other.jpg)",
+            r"\![转义](https://example.edu/other.jpg)",
+            "*重点* _说明_ `代码` <em>图</em> &amp;",
+        ):
+            with self.subTest(alt=alt):
+                body_html = f'<p><img src="{source_url}" alt="{escape(alt)}"></p>'
+                markdown = html_to_markdown(
+                    body_html,
+                    base_url="https://example.edu/news/image-alt",
+                    image_sources=sources,
+                    strict_image_sources=True,
+                )
+                article = ArticleDocument(
+                    url="https://example.edu/news/image-alt",
+                    source_id="source",
+                    title="Image alt text",
+                    author="",
+                    published_at="",
+                    updated_at="",
+                    category="",
+                    summary="",
+                    body_html=body_html,
+                    body_text="",
+                    body_markdown=markdown,
+                    extraction_method="html",
+                    source_page_url="https://example.edu/news/image-alt",
+                    images=[ImageRef(url=source_url, alt=alt)],
+                )
+
+                publication = build_publication(article)
+                tokens = MarkdownIt("commonmark").parseInline(markdown)[0].children or []
+
+                self.assertEqual(publication.image_sources, sources)
+                self.assertEqual([token.type for token in tokens], ["image"])
+                self.assertEqual(tokens[0].attrGet("src"), local_image_url(source_url))
+                label = tokens[0].children or []
+                self.assertTrue(all(token.type in {"text", "text_special"} for token in label))
+                self.assertEqual("".join(token.content for token in label), alt)
 
     def test_publication_accepts_literal_image_like_text_and_code(self) -> None:
         article = ArticleDocument(

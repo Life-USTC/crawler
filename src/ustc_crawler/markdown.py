@@ -61,6 +61,7 @@ _VSB_PDF_IMAGE = re.compile(
 )
 
 IMAGE_PROXY_PREFIX = "/api/publications/images/"
+_IMAGE_ALT_CONVERTER = MarkdownConverter(escape_misc=True)
 
 
 def image_source_hash(url: str) -> str:
@@ -95,6 +96,10 @@ class _ArticleConverter(MarkdownConverter):
         src = el.get("src") or ""
         if src.startswith("data:"):
             return ""
+        # markdownify inserts alt attributes directly into a Markdown label.
+        # Escape their literal text so brackets/backslashes cannot introduce
+        # nested images or close the label around the registered source URL.
+        el["alt"] = _IMAGE_ALT_CONVERTER.escape(el.get("alt") or "", parent_tags)
         return super().convert_img(el, text, parent_tags)
 
 
