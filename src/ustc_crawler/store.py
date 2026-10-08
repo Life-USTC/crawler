@@ -1165,8 +1165,10 @@ class Store:
                     # helper resolves the source descriptor.
                     if self.enqueue_article_for_sync(article) is not None:
                         enqueued += 1
-                except (OSError, ValueError, KeyError):
+                except (OSError, ValueError, KeyError) as exc:
                     errors += 1
+                    if progress is not None:
+                        progress({"url": article.url, "error": type(exc).__name__})
             if progress is not None:
                 progress({
                     "scanned": scanned,

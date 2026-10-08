@@ -660,33 +660,30 @@ class IngestionOutbox:
         when an even newer body event exists.
         """
 
-        rows = session.execute(
-            select(SyncOutbox.event_id, SyncOutbox.entity_key, SyncOutbox.created_at)
-            .where(SyncOutbox.status == "pending", SyncOutbox.batch_id.is_(None))
-            .order_by(SyncOutbox.entity_key, SyncOutbox.created_at, SyncOutbox.event_id)
-        ).all()
-        newest: dict[str, tuple[str, str]] = {}
-        for event_id, entity_key, created_at in rows:
-            rank = (created_at, event_id)
-            if entity_key not in newest or rank > newest[entity_key]:
-                newest[entity_key] = rank
-        stale = [
-            event_id
-            for event_id, entity_key, created_at in rows
-            if (created_at, event_id) != newest[entity_key]
-        ]
-        if not stale:
-            return 0
-        session.execute(
+        # Keep ranking in SQLite: rebuilt archives can contain more stale
+        # revisions than SQLite permits bound parameters in an IN list.
+        ranked = select(
+            SyncOutbox.event_id,
+            func.row_number().over(
+                partition_by=SyncOutbox.entity_key,
+                order_by=(SyncOutbox.created_at.desc(), SyncOutbox.event_id.desc()),
+            ).label("revision_rank"),
+        ).where(
+            SyncOutbox.status == "pending", SyncOutbox.batch_id.is_(None),
+        ).subquery()
+        result = session.execute(
             update(SyncOutbox)
-            .where(SyncOutbox.event_id.in_(stale))
+            .where(SyncOutbox.event_id.in_(
+                select(ranked.c.event_id).where(ranked.c.revision_rank > 1)
+            ))
             .values(
                 status="superseded",
                 last_error="coalesced_by_newer",
                 updated_at=datetime.now().astimezone().isoformat(timespec="seconds"),
             )
+            .execution_options(synchronize_session=False)
         )
-        return len(stale)
+        return result.rowcount
 
     def build_batch(
         self,

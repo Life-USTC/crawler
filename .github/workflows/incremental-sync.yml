@@ -178,7 +178,7 @@ jobs:
         # Reserve time for optional repairs, crawling, sync and checkpointing.
         run: |
           set +e
-          timeout --signal=TERM --kill-after=60s 90m \
+          timeout --signal=TERM --kill-after=60s 120m \
             uv run ustc-crawler rebuild-markdown \
               --after-url "$REBUILD_AFTER_URL" --limit "$REBUILD_LIMIT" 2>&1 | tee rebuild-markdown.log
           result=("${PIPESTATUS[@]}")
