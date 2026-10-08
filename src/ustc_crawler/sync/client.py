@@ -23,7 +23,7 @@ from urllib.parse import quote, urlsplit
 import httpx
 
 from .. import __version__
-from ..db.models import SyncBatch, SyncRun
+from ..db.models import Article, SyncBatch, SyncBatchItem, SyncRun
 from .models import (
     MAX_OBJECT_PLAN_OBJECTS,
     MAX_PUBLICATION_BATCH_ITEMS,
@@ -243,8 +243,6 @@ class IngestionSyncClient:
         self._sleep = sleep
         self._now = now
         self.outbox = IngestionOutbox(database)
-        self._archive_object_cache: dict[str, dict[str, bytes]] = {}
-        self._archive_object_lock = threading.Lock()
 
     def close(self) -> None:
         if self._owns_http:
@@ -686,7 +684,7 @@ class IngestionSyncClient:
                         if item.upload_url is None:
                             raise SyncProtocolError("object_upload_url_missing")
                         for manifest in manifest_groups[key]:
-                            body = self._object_bytes(manifest)
+                            body = self._object_bytes(manifest, batch_id=batch_id)
                             bodies.setdefault(key, body)
 
                     pending: dict[tuple[str, str], Future[None]] = {
@@ -764,7 +762,7 @@ class IngestionSyncClient:
         if item.upload_url != expected_upload_url:
             raise SyncProtocolError("object_upload_url_mismatch")
         if body is None:
-            body = self._object_bytes(manifest)
+            body = self._object_bytes(manifest, batch_id=batch_id)
         upload = self._api_request(
             "PUT",
             upload_path,
@@ -796,60 +794,44 @@ class IngestionSyncClient:
             path = Path(*parts[1:])
         return self.data_dir / path
 
-    def _object_bytes(self, manifest: LocalObjectManifest) -> bytes:
+    def _object_bytes(self, manifest: LocalObjectManifest, *, batch_id: str) -> bytes:
         try:
             body = self._object_path(manifest.local_path).read_bytes()
         except OSError:
-            body = self._archived_object_bytes(manifest)
+            body = self._archived_object_bytes(manifest, batch_id=batch_id)
         if len(body) != manifest.size or hashlib.sha256(body).hexdigest() != manifest.sha256:
             raise ImmutableObjectChangedError("immutable_object_changed")
         return body
 
-    def _archived_object_bytes(self, manifest: LocalObjectManifest) -> bytes:
-        """Rebuild body object bytes from the articles table.
+    def _archived_object_bytes(self, manifest: LocalObjectManifest, *, batch_id: str) -> bytes:
+        """Recover exact body bytes only from articles belonging to this batch.
 
-        The spool file is missing when the event was enqueued on another
-        machine (the shared crawl state ships only the database, not the
-        object spool).  Article ``body_html``/``body_markdown`` columns hold
-        the same sanitized bytes the manifest was hashed from.  Media and
-        asset objects have no archived copy and still fail permanently.
-
-        Rows are queried on demand and pre-filtered by stored byte length
-        (sanitization only ever removes characters), and only objects that
-        actually matched a manifest digest are cached, so a large archive
-        is never materialized as a whole-table sha->bytes snapshot.
+        The shared state carries the archive database without the object spool.
+        Batch membership and article URL both have primary-key indexes, so each
+        recovery reads at most the batch's article bodies, never the full archive.
+        Historical bodies that no longer match still fail immutable verification.
+        Recovered bytes remain bounded to the active upload window.
         """
         if manifest.kind not in ("body_html", "body_markdown"):
             raise ImmutableObjectChangedError("immutable_object_changed")
-        with self._archive_object_lock:
-            body = self._archive_object_cache.get(manifest.kind, {}).get(manifest.sha256)
-        if body is not None:
-            return body
-        from sqlalchemy import text
+        from sqlalchemy import select
 
         from ..models import sanitize_text
 
-        column = manifest.kind
+        column = getattr(Article, manifest.kind)
         with self.database.session_factory() as session:
-            rows = session.execute(
-                text(
-                    f"SELECT {column} FROM articles"
-                    f" WHERE {column} IS NOT NULL AND {column} != ''"
-                    f" AND length(CAST({column} AS BLOB)) >= :size"
-                ),
-                {"size": manifest.size},
+            rows = session.scalars(
+                select(column)
+                .select_from(SyncBatchItem)
+                .join(Article, Article.url == SyncBatchItem.canonical_url)
+                .where(SyncBatchItem.batch_id == batch_id, column.is_not(None))
             )
-            for (value,) in rows:
+            for value in rows:
                 candidate = sanitize_text(str(value)).encode("utf-8")
                 if len(candidate) != manifest.size:
                     continue
-                if hashlib.sha256(candidate).hexdigest() != manifest.sha256:
-                    continue
-                with self._archive_object_lock:
-                    self._archive_object_cache.setdefault(manifest.kind, {})[
-                        manifest.sha256
-                    ] = candidate
-                return candidate
+                if hashlib.sha256(candidate).hexdigest() == manifest.sha256:
+                    return candidate
         raise ImmutableObjectChangedError("immutable_object_changed")
 
     def _api_request(

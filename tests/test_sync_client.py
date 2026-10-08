@@ -1352,7 +1352,7 @@ class SyncClientTests(unittest.TestCase):
                 )
                 try:
                     os.chdir(root)
-                    body = sync._object_bytes(manifest)
+                    body = sync._object_bytes(manifest, batch_id="unused-spooled-batch")
                 finally:
                     os.chdir(previous_cwd)
                     sync.close()
