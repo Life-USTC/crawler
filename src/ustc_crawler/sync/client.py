@@ -276,6 +276,7 @@ class IngestionSyncClient:
         if not 1 <= options.batch_concurrency <= MAX_BATCH_CONCURRENCY:
             raise ValueError(f"batch concurrency must be between 1 and {MAX_BATCH_CONCURRENCY}")
         client_run_id = run_id or uuid.uuid4().hex
+        previous_failed_events = self.outbox.failed_event_count()
         self._start_run(client_run_id)
         summary: dict[str, int | str] = {
             "runId": client_run_id,
@@ -284,6 +285,7 @@ class IngestionSyncClient:
             "created": 0,
             "acked": 0,
             "failed": 0,
+            "failed_events": 0,
             "rejected": 0,
             "pending": 0,
             "items": 0,
@@ -450,13 +452,14 @@ class IngestionSyncClient:
         finally:
             if previous_sigterm is not None:
                 signal.signal(signal.SIGTERM, previous_sigterm)
+            summary["failed_events"] = self.outbox.failed_event_count() - previous_failed_events
             summary["status"] = "partial" if interrupted else "completed"
             self._finish_run(
                 client_run_id,
                 status=str(summary["status"]),
                 batches=int(summary["batches"]),
                 items=int(summary["items"]),
-                errors=int(summary["failed"]),
+                errors=int(summary["failed"]) + int(summary["failed_events"]),
             )
         if unexpected is not None:
             raise unexpected

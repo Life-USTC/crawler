@@ -93,11 +93,13 @@ def _source_image_caps(config_path: str) -> dict[str, int]:
 
 
 def _failure_exit_code(result: dict) -> int:
-    """Exit code 2 when a command result reports failed/error counts."""
+    """Exit code 2 when a command reports errors or unfinished delivery."""
 
     failed = int(result.get("failed", 0) or 0)
     errors = int(result.get("errors", 0) or 0)
-    return 2 if failed > 0 or errors > 0 else 0
+    failed_events = int(result.get("failed_events", 0) or 0)
+    pending = int(result.get("pending", 0) or 0)
+    return 2 if failed or errors or failed_events or pending or result.get("status") == "partial" else 0
 
 
 @contextlib.contextmanager
@@ -604,11 +606,17 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "rebuild-markdown":
         store = Store(args.db, args.data_dir)
         try:
-            result = store.rebuild_markdown(
-                set(args.source) or None,
-                after_url=args.after_url,
-                limit=args.limit,
-            )
+            with _sigterm_as_keyboard_interrupt():
+                result = store.rebuild_markdown(
+                    set(args.source) or None,
+                    after_url=args.after_url,
+                    limit=args.limit,
+                    progress=lambda result: print(
+                        "Markdown rebuild: " + json.dumps(result, ensure_ascii=False),
+                        file=sys.stderr,
+                        flush=True,
+                    ),
+                )
             print(
                 json.dumps(
                     result,
@@ -616,6 +624,9 @@ def main(argv: list[str] | None = None) -> int:
                     indent=2,
                 )
             )
+        except KeyboardInterrupt:
+            print("Markdown rebuild interrupted; completed articles are saved.", file=sys.stderr)
+            return 130
         finally:
             store.close()
         return _failure_exit_code(result)
