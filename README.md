@@ -136,6 +136,42 @@ uv run ustc-crawler sync \
 批次默认最多 50 篇、单次请求上限 100 篇且正文约 2 MiB，断点重跑使用同一批次和幂等键；上传对象先从本地内容寻址 spool 校验 SHA-256/大小，再按服务端返回的请求头上传。未配置服务密钥时命令会以安全错误码退出。
 同一批次内的对象上传和完成确认默认使用最多 8 个受限工作线程，并按计划顺序验证结果；可通过 `--object-concurrency` 或 `SyncOptions.object_concurrency` 调整到 1 至 64。批次默认串行投递；可通过 `--batch-concurrency` 或 `SyncOptions.batch_concurrency` 调整到 1 至 16。批次始终由协调线程串行认领并持久化，只有已认领的不可变批次并行投递；已保存的重试批次全部完成后才会认领新批次。`--max-batches` 仍按本次运行认领的批次数精确限制。
 
+### 定时同步与修复
+
+GitHub Actions 的 `Incremental sync` 每 6 小时运行一次。同步退出码 `0` 表示本轮
+完成，`2` 表示仍有待重试批次、未发送事件或本轮事件校验失败；受控时间预算耗尽时
+workflow 记录 `124`。后两种情况会先等待写入停止，执行 WAL checkpoint 和数据库
+完整性检查，再保存缓存，最后将 workflow 标为失败。命令崩溃、强制终止、取消任务或
+数据库检查失败时不覆盖上一份缓存。任务摘要和诊断附件列出退出码、队列计数，以及
+未能组成批次的失败事件；历史失败事件的计数本身不会让后续已完成的同步继续失败。
+抓取的逐来源错误会显示警告，并继续同步已归档内容。
+
+旧事件不符合当前必填字段（例如 `imageSources`）时，重新入队失败批次无法重建其
+内容。需要从归档文章生成当前格式事件，可手动运行：
+
+```bash
+gh workflow run incremental-sync.yml -f rebuild_markdown=true
+```
+
+普通任务预算为 60 分钟，修复任务为 300 分钟，为大数据库的检查、压缩和缓存上传
+预留时间。每轮最多选择 `reindex`、`retext`、`rebuild_markdown` 中的一种；
+`requeue_failed` 可与它们组合。`reindex` 和 `retext` 最多运行 90 分钟，其后历史
+入队最多 10 分钟；这两种命令超时不视为安全完成，因此不保存本轮缓存。
+
+`rebuild_markdown` 默认处理全部已保存文章，重建和同步分别最多运行 90 和 70 分钟。
+大归档可用
+`rebuild_limit` 限制本轮文章数，并用日志中的最后完成游标作为下一轮
+`rebuild_after_url`。例如每轮处理 10,000 篇：
+
+```bash
+gh workflow run incremental-sync.yml \
+  -f rebuild_markdown=true -f rebuild_limit=10000 \
+  -f rebuild_after_url="$LAST_ARTICLE_URL"
+```
+
+重建的文章进入正常同步队列；部分完成或受控超时已保存的进度会留在新缓存中。
+重建超时后应带游标继续剩余文章；普通同步重跑会继续处理已经入队的事件。
+
 ## 本地数据
 
 `data/` 完全排除在 Git 之外。主要内容包括：

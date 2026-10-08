@@ -200,6 +200,176 @@ class PoisonPillTests(SyncHardeningTestCase):
                 store.close()
 
 
+class InvalidEventTests(SyncHardeningTestCase):
+    @staticmethod
+    def _invalidate(store: Store, number: int, *, kind: str = "missing_field") -> tuple[str, str]:
+        with store.database.session_factory.begin() as session:
+            row = session.scalar(select(SyncOutbox).where(
+                SyncOutbox.entity_key == f"source:https://example.edu/news/{number}"
+            ))
+            payload = json.loads(row.payload_json)
+            if kind == "missing_field":
+                del payload["imageSources"]
+            elif kind == "revision":
+                payload["revisionHash"] = "f" * 64
+            elif kind == "source":
+                row.source_json = "{}"
+            elif kind == "source_id":
+                source = json.loads(row.source_json)
+                source["id"] = "different-source"
+                row.source_json = json.dumps(source)
+            row.payload_json = json.dumps(payload) if kind != "json" else "{invalid"
+            row.payload_sha256 = hashlib.sha256(row.payload_json.encode()).hexdigest()
+            if kind == "digest":
+                row.payload_sha256 = "0" * 64
+            row.created_at = f"2030-01-01T00:00:{number:02}+00:00"
+            return row.payload_json, row.payload_sha256
+
+    def test_invalid_event_does_not_block_healthy_delivery_or_mutate_payload(self) -> None:
+        for kind in ("missing_field", "json", "revision", "source", "source_id", "digest"):
+            with self.subTest(kind=kind), TemporaryDirectory() as temp:
+                store = self._store(Path(temp))
+                try:
+                    for number in (1, 2):
+                        store.enqueue_article_for_sync(self._article(number))
+                    payload, digest = self._invalidate(store, 1, kind=kind)
+                    outbox = IngestionOutbox(store.database)
+                    batch = outbox.build_batch(
+                        run_id="run", batch_id="batch", producer_version="test",
+                        observed_at="2026-10-08", limit=1,
+                    )
+                    self.assertEqual([item.canonical_url for item in batch.items],
+                                     ["https://example.edu/news/2"])
+                    with store.database.session_factory() as session:
+                        bad = session.scalar(select(SyncOutbox).where(
+                            SyncOutbox.entity_key == "source:https://example.edu/news/1"
+                        ))
+                        self.assertEqual(bad.status, "failed")
+                        self.assertEqual(bad.last_error, "invalid_event")
+                        self.assertIsNone(bad.batch_id)
+                        self.assertEqual((bad.payload_json, bad.payload_sha256), (payload, digest))
+                    self.assertEqual(outbox.failed_event_count(), 1)
+                finally:
+                    store.close()
+
+    def test_full_invalid_pages_continue_and_run_reports_only_new_event_failures(self) -> None:
+        with TemporaryDirectory() as temp:
+            store = self._store(Path(temp))
+            try:
+                for number in range(6):
+                    store.enqueue_article_for_sync(self._article(number))
+                    if number:
+                        self._invalidate(store, number)
+                sync = IngestionSyncClient(store.database, store.data_dir,
+                                           self.server, self.ingestion_secret)
+                delivered = []
+
+                def deliver(batch, _options):
+                    delivered.extend(item.canonical_url for item in batch.items)
+                    sync.outbox.mark_batch(batch.batch_id, status="acked")
+                    return DeliveryResult("acked", len(batch.items), 0)
+
+                sync._deliver = deliver
+                try:
+                    summary = sync.sync(options=SyncOptions(batch_size=2))
+                    self.assertEqual(delivered, ["https://example.edu/news/0"])
+                    self.assertEqual(summary["acked"], 1)
+                    self.assertEqual(summary["failed_events"], 5)
+                    self.assertEqual(summary["failed"], 0)
+                    self.assertEqual(cli._failure_exit_code(summary), 2)
+                    with store.database.session_factory() as session:
+                        self.assertEqual(session.get(SyncRun, summary["runId"]).errors, 5)
+                    self.assertEqual(sync.sync()["failed_events"], 0)
+                finally:
+                    sync.close()
+            finally:
+                store.close()
+
+    def test_source_descriptor_revisions_are_delivered_in_separate_batches(self) -> None:
+        with TemporaryDirectory() as temp:
+            store = self._store(Path(temp))
+            try:
+                for number in (1, 2):
+                    store.enqueue_article_for_sync(self._article(number))
+                with store.database.session_factory.begin() as session:
+                    row = session.scalar(select(SyncOutbox).where(
+                        SyncOutbox.entity_key == "source:https://example.edu/news/1"
+                    ))
+                    source = json.loads(row.source_json)
+                    source["name"] = "Previous source name"
+                    row.source_json = json.dumps(source)
+                outbox = IngestionOutbox(store.database)
+                batches = [outbox.build_batch(run_id="run", batch_id=f"batch-{i}",
+                            producer_version="test", observed_at="2026-10-08") for i in (1, 2)]
+                self.assertEqual([len(batch.items) for batch in batches], [1, 1])
+                self.assertEqual({item.canonical_url for batch in batches for item in batch.items},
+                                 {self._article(i).url for i in (1, 2)})
+                self.assertEqual(outbox.failed_event_count(), 0)
+            finally:
+                store.close()
+
+    def test_invalid_batch_arguments_do_not_retire_events(self) -> None:
+        with TemporaryDirectory() as temp:
+            store = self._store(Path(temp))
+            try:
+                store.enqueue_article_for_sync(self._article(1))
+                outbox = IngestionOutbox(store.database)
+                with self.assertRaises(ValueError):
+                    outbox.build_batch(run_id="run", batch_id="batch",
+                                       producer_version="", observed_at="2026-10-08")
+                with store.database.session_factory() as session:
+                    self.assertEqual(session.scalar(select(SyncOutbox)).status, "pending")
+            finally:
+                store.close()
+
+    def test_archive_rebuild_replaces_obsolete_payload_without_local_files(self) -> None:
+        import shutil
+
+        from ustc_crawler.markdown import image_source_hash, local_image_url
+
+        with TemporaryDirectory() as temp:
+            store = self._store(Path(temp))
+            try:
+                article = self._article(1)
+                article.body_html = "<p>Restored<img src='/image.png' alt='Image'></p>"
+                store.save_article_and_enqueue_for_sync(article)
+                self._invalidate(store, 1)
+                with store.database.session_factory.begin() as session:
+                    old = session.scalar(select(SyncOutbox))
+                    old.event_id = "obsolete-event"
+                    old.revision_hash = "a" * 64
+                    old.created_at = "2026-09-01T00:00:00+00:00"
+                    payload = json.loads(old.payload_json)
+                    payload["revisionHash"] = old.revision_hash
+                    old.payload_json = json.dumps(payload)
+                    old.payload_sha256 = hashlib.sha256(old.payload_json.encode()).hexdigest()
+                    old_payload = old.payload_json
+                shutil.rmtree(store.data_dir / "articles")
+                shutil.rmtree(store.data_dir / "sync-objects")
+                progress = []
+                result = store.rebuild_markdown(chunk_size=1, progress=progress.append)
+                self.assertEqual(result["errors"], 0)
+                self.assertEqual(result["enqueued"], 1)
+                self.assertEqual(progress, [result])
+                outbox = IngestionOutbox(store.database)
+                batch = outbox.build_batch(run_id="run", batch_id="batch",
+                                          producer_version="test", observed_at="2026-10-08")
+                self.assertEqual(len(batch.items), 1)
+                source = "https://example.edu/image.png"
+                self.assertEqual(batch.items[0].image_sources, {image_source_hash(source): source})
+                markdown = next(
+                    item for item in outbox.batch_objects(batch.batch_id)
+                    if item.kind == "body_markdown"
+                )
+                self.assertIn(local_image_url(source), Path(markdown.local_path).read_text())
+                with store.database.session_factory() as session:
+                    old = session.get(SyncOutbox, "obsolete-event")
+                    self.assertEqual(old.status, "superseded")
+                    self.assertEqual(old.payload_json, old_payload)
+            finally:
+                store.close()
+
+
 class ReplayIsolationTests(SyncHardeningTestCase):
     def test_unrebuildable_replay_batch_is_failed_and_does_not_wedge(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
@@ -574,6 +744,39 @@ class SigtermTests(SyncHardeningTestCase):
             finally:
                 store.close()
 
+    def test_rebuild_cli_sigterm_closes_database_and_preserves_completed_work(self) -> None:
+        import signal
+        import unittest.mock
+
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            for number in (1, 2):
+                store.save_article(self._article(number))
+            store.close()
+            original = Store.enqueue_article_for_sync
+
+            def enqueue_and_interrupt(current, article, **kwargs):
+                result = original(current, article, **kwargs)
+                os.kill(os.getpid(), signal.SIGTERM)
+                return result
+
+            before = signal.getsignal(signal.SIGTERM)
+            with unittest.mock.patch.object(Store, "enqueue_article_for_sync", enqueue_and_interrupt):
+                code = main(["rebuild-markdown", "--db", str(root / "crawler.sqlite"),
+                             "--data-dir", str(root / "data")])
+            self.assertEqual(code, 130)
+            self.assertEqual(signal.getsignal(signal.SIGTERM), before)
+            store = self._store(root)
+            try:
+                with store.database.session_factory() as session:
+                    self.assertEqual(len(session.scalars(select(SyncOutbox)).all()), 1)
+                self.assertEqual(store.rebuild_markdown()["errors"], 0)
+                with store.database.session_factory() as session:
+                    self.assertEqual(len(session.scalars(select(SyncOutbox)).all()), 2)
+            finally:
+                store.close()
+
     def test_cli_sigterm_wrapper_raises_keyboard_interrupt(self) -> None:
         import signal
 
@@ -870,8 +1073,13 @@ class ExitCodeTests(SyncHardeningTestCase):
             ):
                 FakeClient.summary = {"failed": 0}
                 self.assertEqual(main(argv), 0)
-                FakeClient.summary = {"failed": 2}
-                self.assertEqual(main(argv), 2)
+                for summary in (
+                    {"failed": 2}, {"failed_events": 1}, {"pending": 1},
+                    {"failed": 0, "pending": 0, "status": "partial"},
+                ):
+                    with self.subTest(summary=summary):
+                        FakeClient.summary = summary
+                        self.assertEqual(main(argv), 2)
 
     def test_sync_without_server_exits_cleanly_with_usage_error(self) -> None:
         with TemporaryDirectory() as temp:

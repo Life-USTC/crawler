@@ -447,6 +447,8 @@ class IngestionOutbox:
 
     @staticmethod
     def _publication(row: SyncOutbox) -> PublicationItem:
+        if hashlib.sha256(row.payload_json.encode("utf-8")).hexdigest() != row.payload_sha256:
+            raise ValueError(f"outbox payload hash mismatch: {row.event_id}")
         value = json.loads(row.payload_json)
         if isinstance(value, dict) and value.get("tombstone") is True:
             parsed: PublicationItem = TombstonePublication.model_validate(value)
@@ -455,6 +457,18 @@ class IngestionOutbox:
         if parsed.revision_hash != row.revision_hash:
             raise ValueError(f"outbox revision hash mismatch: {row.event_id}")
         return parsed
+
+    def failed_event_count(self) -> int:
+        """Count terminal events rejected before they could join a batch."""
+
+        with self.database.session_factory() as session:
+            return session.scalar(
+                select(func.count()).select_from(SyncOutbox).where(
+                    SyncOutbox.status == "failed",
+                    SyncOutbox.batch_id.is_(None),
+                    SyncOutbox.last_error.in_(("invalid_event", "event_too_large")),
+                )
+            ) or 0
 
     @staticmethod
     def _source(row: SyncOutbox) -> PublicationSourceDescriptor:
@@ -718,43 +732,63 @@ class IngestionOutbox:
                 return batch
 
             self._coalesce_pending_events(session)
-            candidate_rows = session.scalars(
-                select(SyncOutbox)
-                .where(SyncOutbox.status == "pending", SyncOutbox.batch_id.is_(None))
-                .order_by(SyncOutbox.created_at.desc(), SyncOutbox.event_id)
-                .limit(limit)
-            ).all()
-            if not candidate_rows:
-                return None
             rows: list[SyncOutbox] = []
             publications: list[PublicationItem] = []
-            for candidate in candidate_rows:
-                candidate_rows_for_batch = [*rows, candidate]
-                candidate_publications = [*publications, self._publication(candidate)]
-                candidate_batch = build_ingestion_batch(
-                    candidate_publications,
-                    sources=self._sources(candidate_rows_for_batch),
-                    client_run_id=run_id,
-                    batch_id=batch_id,
-                    observed_at=observed_at,
-                    producer_version=producer_version,
-                )
-                if len(candidate_batch.payload_bytes()) > max_payload_bytes:
-                    if not rows:
-                        # Poison pill isolation: an event that can never fit
-                        # an empty batch would wedge the queue forever, so
-                        # fail it terminally and skip to the next candidate.
+            # A full page of invalid events is not an empty queue. Continue
+            # until a usable batch is assembled or no pending events remain.
+            while not rows:
+                candidate_rows = session.scalars(
+                    select(SyncOutbox)
+                    .where(SyncOutbox.status == "pending", SyncOutbox.batch_id.is_(None))
+                    .order_by(SyncOutbox.created_at.desc(), SyncOutbox.event_id)
+                    .limit(limit)
+                ).all()
+                if not candidate_rows:
+                    return None
+                for candidate in candidate_rows:
+                    candidate_rows_for_batch = [*rows, candidate]
+                    try:
+                        publication = self._publication(candidate)
+                        source = self._source(candidate)
+                        self._ensure_ingestion_source(source)
+                        if source.id != publication.source_id:
+                            raise ValueError("outbox source does not match publication")
+                    except ValueError:
+                        # Keep immutable payloads for diagnosis; retire only
+                        # the invalid event, without accepting an old schema.
                         candidate.status = "failed"
-                        candidate.last_error = "event_too_large"
+                        candidate.last_error = "invalid_event"
                         candidate.updated_at = (
                             datetime.now().astimezone().isoformat(timespec="seconds")
                         )
                         continue
-                    break
-                rows = candidate_rows_for_batch
-                publications = candidate_publications
-            if not rows:
-                return None
+                    try:
+                        sources = self._sources(candidate_rows_for_batch)
+                    except ValueError:
+                        # Valid immutable snapshots of the same source can
+                        # differ. Send them in separate batches, retaining both.
+                        break
+                    candidate_publications = [*publications, publication]
+                    candidate_batch = build_ingestion_batch(
+                        candidate_publications,
+                        sources=sources,
+                        client_run_id=run_id,
+                        batch_id=batch_id,
+                        observed_at=observed_at,
+                        producer_version=producer_version,
+                    )
+                    if len(candidate_batch.payload_bytes()) > max_payload_bytes:
+                        if not rows:
+                            candidate.status = "failed"
+                            candidate.last_error = "event_too_large"
+                            candidate.updated_at = (
+                                datetime.now().astimezone().isoformat(timespec="seconds")
+                            )
+                            continue
+                        break
+                    rows = candidate_rows_for_batch
+                    publications = candidate_publications
+                session.flush()
             sources = self._sources(rows)
             batch = build_ingestion_batch(
                 publications,

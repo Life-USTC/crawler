@@ -5,7 +5,7 @@ import json
 import mimetypes
 import os
 import tempfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -1107,6 +1107,7 @@ class Store:
         after_url: str = "",
         limit: int = 0,
         chunk_size: int = 100,
+        progress: Callable[[dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         """Rebuild article Markdown from archived body HTML and enqueue it.
 
@@ -1166,6 +1167,14 @@ class Store:
                         enqueued += 1
                 except (OSError, ValueError, KeyError):
                     errors += 1
+            if progress is not None:
+                progress({
+                    "scanned": scanned,
+                    "last_url": cursor,
+                    "changed": changed,
+                    "enqueued": enqueued,
+                    "errors": errors,
+                })
             if remaining:
                 remaining -= len(snapshots)
                 if remaining <= 0:
