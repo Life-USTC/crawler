@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -144,6 +145,53 @@ class FreshFirstTests(unittest.TestCase):
                     self.assertEqual(stale.payload_sha256, stale_sha)
                 # Nothing left to batch.
                 self.assertIsNone(self._build(outbox, "batch-2"))
+            finally:
+                store.close()
+
+    def test_coalescing_exceeds_sqlite_bind_limit_and_preserves_exclusions(self) -> None:
+        with TemporaryDirectory() as temp:
+            store = self._store(Path(temp))
+            try:
+                outbox = IngestionOutbox(store.database)
+                store.enqueue_article_for_sync(self._article(3))
+                self._build(outbox, "already-claimed")
+                for number in range(105):
+                    store.enqueue_article_for_sync(self._article(1, suffix=f" v{number}"))
+                store.enqueue_article_for_sync(self._article(2))
+                key = "source:https://example.edu/news/1"
+                with store.database.session_factory.begin() as session:
+                    rows = session.scalars(
+                        select(SyncOutbox).where(SyncOutbox.entity_key == key)
+                        .order_by(SyncOutbox.event_id)
+                    ).all()
+                    # Equal timestamps exercise the event ID tie-breaker.
+                    for row in rows:
+                        row.created_at = "2026-08-20T00:00:00+08:00"
+                    excluded = rows[-4:]
+                    for row, status in zip(excluded, ("pending", "batched", "failed", "acked")):
+                        row.status = status
+                        row.created_at = "2026-08-21T00:00:00+08:00"
+                    excluded[0].batch_id = "already-claimed"
+                    expected_title = json.loads(rows[-5].payload_json)["title"]
+                    original = {row.event_id: (row.payload_json, row.payload_sha256) for row in rows}
+                    excluded_states = {row.event_id: (row.status, row.batch_id) for row in excluded}
+                    driver = session.connection().connection.driver_connection
+                previous_limit = driver.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 64)
+                try:
+                    batch = self._build(outbox, "large-batch")
+                    self.assertEqual({item.title for item in batch.items}, {expected_title, "Notice 2"})
+                    with store.database.session_factory.begin() as session:
+                        rows = session.scalars(
+                            select(SyncOutbox).where(SyncOutbox.entity_key == key)
+                        ).all()
+                        self.assertEqual(sum(row.status == "superseded" for row in rows), 100)
+                        for row in rows:
+                            self.assertEqual((row.payload_json, row.payload_sha256), original[row.event_id])
+                            if row.event_id in excluded_states:
+                                self.assertEqual((row.status, row.batch_id), excluded_states[row.event_id])
+                        self.assertEqual(outbox._coalesce_pending_events(session), 0)
+                finally:
+                    driver.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, previous_limit)
             finally:
                 store.close()
 

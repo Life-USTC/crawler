@@ -369,6 +369,25 @@ class InvalidEventTests(SyncHardeningTestCase):
             finally:
                 store.close()
 
+    def test_rebuild_reports_error_location_and_continues(self) -> None:
+        from unittest.mock import patch
+
+        with TemporaryDirectory() as temp:
+            store = self._store(Path(temp))
+            try:
+                for number in (1, 2):
+                    store.save_article_and_enqueue_for_sync(self._article(number))
+                progress = []
+                with patch.object(store, "write_article_bundle", side_effect=[ValueError("private body"), None]):
+                    result = store.rebuild_markdown(progress=progress.append)
+                self.assertEqual(result["scanned"], 2)
+                self.assertEqual(result["errors"], 1)
+                self.assertEqual(progress, [
+                    {"url": "https://example.edu/news/1", "error": "ValueError"}, result,
+                ])
+            finally:
+                store.close()
+
 
 class ReplayIsolationTests(SyncHardeningTestCase):
     def test_unrebuildable_replay_batch_is_failed_and_does_not_wedge(self) -> None:
