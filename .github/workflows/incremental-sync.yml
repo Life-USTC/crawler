@@ -223,9 +223,10 @@ jobs:
           SYNC_BUDGET_MINUTES: ${{ inputs.rebuild_markdown && 70 || (inputs.reindex || inputs.retext || inputs.requeue_failed) && 160 || 30 }}
         # Capture completed partial/timeout results without failing this step:
         # checkpoint and save their progress before the final job status gate.
+        # Let an active 60-second HTTP operation finish before finalizing SQLite.
         run: |
           set +e
-          timeout --signal=TERM --kill-after=60s "${SYNC_BUDGET_MINUTES}m" \
+          timeout --signal=TERM --kill-after=120s "${SYNC_BUDGET_MINUTES}m" \
             uv run ustc-crawler sync 2>&1 | tee sync.log
           result=("${PIPESTATUS[@]}")
           set -e

@@ -4,7 +4,9 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import threading
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -14,7 +16,7 @@ from pydantic import ValidationError
 from sqlalchemy import event, func, select
 
 from ustc_crawler.cli import build_parser
-from ustc_crawler.db.models import Media, SyncBatch, SyncBatchItem, SyncOutbox
+from ustc_crawler.db.models import Media, SyncBatch, SyncBatchItem, SyncOutbox, SyncRun
 from ustc_crawler.models import ArticleDocument, ImageRef, SourceConfig
 from ustc_crawler.store import Store
 from ustc_crawler.sync.client import (
@@ -1443,6 +1445,108 @@ class SyncClientTests(unittest.TestCase):
                 self.assertEqual(summary["acked"], 1)
             finally:
                 store.close()
+
+    def test_sigterm_preserves_uploads_and_replays_after_retry_or_archive_work(self) -> None:
+        for phase in ("upload", "retry", "archive"):
+            with self.subTest(phase=phase), TemporaryDirectory() as temp:
+                store = self._store(Path(temp))
+                stopping = True
+                puts: list[str] = []
+                requests: list[bytes] = []
+                timers: list[threading.Timer] = []
+
+                def interrupt() -> None:
+                    os.kill(os.getpid(), signal.SIGTERM)
+
+                def handler(request: httpx.Request) -> httpx.Response:
+                    if request.url.path == "/api/ingestion/publications/batches":
+                        requests.append(request.content)
+                        return httpx.Response(200, json=self._batch_response(request))
+                    if request.url.path == "/api/ingestion/publications/objects/plan":
+                        return httpx.Response(200, json=self._plan_response(request, upload=True))
+                    if request.method == "PUT":
+                        puts.append(request.url.path)
+                        if stopping and len(puts) == 1:
+                            if phase == "retry":
+                                timer = threading.Timer(0.05, interrupt)
+                                timers.append(timer)
+                                timer.start()
+                                return httpx.Response(429, headers={"Retry-After": "2"})
+                            if phase == "upload":
+                                interrupt()
+                                # Let the main thread handle the real signal
+                                # before this in-flight response completes.
+                                time.sleep(0.05)
+                        return httpx.Response(200, json=self._upload_response(request))
+                    raise AssertionError(f"unexpected request: {request.url}")
+
+                archive_reads = 0
+
+                def interrupt_archive(_connection, _cursor, statement, *_args):
+                    nonlocal archive_reads
+                    if stopping and statement.startswith("SELECT articles.body_"):
+                        archive_reads += 1
+                        interrupt()
+                        time.sleep(0.05)
+
+                http = httpx.Client(transport=httpx.MockTransport(handler))
+                sync = IngestionSyncClient(
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
+                    http_client=http,
+                )
+                before = signal.getsignal(signal.SIGTERM)
+                try:
+                    for number in range(2):
+                        store.save_article_and_enqueue_for_sync(self._article(number))
+                    if phase == "archive":
+                        with store.database.session_factory() as session:
+                            for row in session.scalars(select(SyncOutbox)):
+                                for manifest in json.loads(row.object_manifest_json):
+                                    Path(manifest["local_path"]).unlink()
+                        event.listen(store.database.engine, "before_cursor_execute", interrupt_archive)
+                    started = time.monotonic()
+                    summary = sync.sync(options=SyncOptions(batch_size=1, object_concurrency=1))
+                    elapsed = time.monotonic() - started
+                    self.assertLess(elapsed, 1.5)
+                    self.assertEqual(summary["status"], "partial")
+                    self.assertEqual(summary["acked"], 0)
+                    self.assertEqual(summary["failed"], 0)
+                    self.assertEqual(summary["pending"], 1)
+                    self.assertEqual(len(puts), 0 if phase == "archive" else 1)
+                    if phase == "archive":
+                        self.assertEqual(archive_reads, 1)
+                    with store.database.session_factory() as session:
+                        batch = session.scalar(select(SyncBatch))
+                        self.assertEqual(batch.status, "uploading")
+                        self.assertEqual(batch.last_error, "sync_interrupted")
+                        self.assertEqual(
+                            sorted(row.status for row in session.scalars(select(SyncOutbox))),
+                            ["pending", "uploading"],
+                        )
+                        run = session.get(SyncRun, summary["runId"])
+                        self.assertEqual(run.status, "partial")
+                        self.assertIsNotNone(run.finished_at)
+                    self.assertEqual(signal.getsignal(signal.SIGTERM), before)
+
+                    # Reuse the client: cancellation must be cleared and the
+                    # interrupted immutable request must be replayed unchanged.
+                    stopping = False
+                    recovered = sync.sync(options=SyncOptions(batch_size=1, object_concurrency=1))
+                    self.assertEqual(recovered["acked"], 2)
+                    self.assertEqual(recovered["replayed"], 1)
+                    self.assertEqual(requests[0], requests[1])
+                finally:
+                    for timer in timers:
+                        timer.cancel()
+                        timer.join()
+                    if phase == "archive":
+                        event.remove(store.database.engine, "before_cursor_execute", interrupt_archive)
+                    http.close()
+                    sync.close()
+                    store.close()
 
     def test_item_result_parses_optional_objects_needing_upload(self) -> None:
         base = {

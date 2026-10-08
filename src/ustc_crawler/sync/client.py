@@ -242,6 +242,7 @@ class IngestionSyncClient:
         self._owns_http = http_client is None
         self._sleep = sleep
         self._now = now
+        self._stop_requested = threading.Event()
         self.outbox = IngestionOutbox(database)
 
     def close(self) -> None:
@@ -273,6 +274,7 @@ class IngestionSyncClient:
             raise ValueError(f"object concurrency must be between 1 and {MAX_OBJECT_CONCURRENCY}")
         if not 1 <= options.batch_concurrency <= MAX_BATCH_CONCURRENCY:
             raise ValueError(f"batch concurrency must be between 1 and {MAX_BATCH_CONCURRENCY}")
+        self._stop_requested.clear()
         client_run_id = run_id or uuid.uuid4().hex
         previous_failed_events = self.outbox.failed_event_count()
         self._start_run(client_run_id)
@@ -310,12 +312,12 @@ class IngestionSyncClient:
 
         previous_sigterm: Any = None
         if threading.current_thread() is threading.main_thread():
-            # SIGTERM (e.g. `timeout --signal=TERM`) flips the same interrupted
-            # flag a transient failure uses, so the run drains in-flight
-            # batches and records its summary instead of dying mid-flight.
+            # Stop worker loops as well as new claims. A batch can contain
+            # minutes of archive reads, upload windows and HTTP retries.
             def _sigterm_interrupt(_signum: int, _frame: Any) -> None:
                 nonlocal interrupted
                 interrupted = True
+                self._stop_requested.set()
 
             previous_sigterm = signal.signal(signal.SIGTERM, _sigterm_interrupt)
 
@@ -450,6 +452,8 @@ class IngestionSyncClient:
         finally:
             if previous_sigterm is not None:
                 signal.signal(signal.SIGTERM, previous_sigterm)
+            if self._stop_requested.is_set():
+                print("sync interrupted by SIGTERM; active work stopped", file=sys.stderr, flush=True)
             summary["failed_events"] = self.outbox.failed_event_count() - previous_failed_events
             summary["status"] = "partial" if interrupted else "completed"
             self._finish_run(
@@ -603,6 +607,7 @@ class IngestionSyncClient:
         partial_item_keys: set[str] | None = None,
         needed_objects: set[tuple[str, str]] | None = None,
     ) -> None:
+        self._raise_if_stopping()
         local_manifests = list(
             self.outbox.batch_objects(
                 batch_id,
@@ -654,12 +659,14 @@ class IngestionSyncClient:
             # objects need signed URLs, and any URL that cannot start in the
             # first concurrency window is refreshed immediately before use.
             for start in range(0, len(object_items), MAX_OBJECT_PLAN_OBJECTS):
+                self._raise_if_stopping()
                 chunk = object_items[start : start + MAX_OBJECT_PLAN_OBJECTS]
                 initial_plan = self._plan_objects(batch_id, chunk, options)
                 missing = sorted(
                     key for key, item in initial_plan.items() if item.status == "upload_required"
                 )
                 for window_start in range(0, len(missing), plan_window):
+                    self._raise_if_stopping()
                     window_keys = missing[window_start : window_start + plan_window]
                     if window_start == 0:
                         planned = {key: initial_plan[key] for key in window_keys}
@@ -746,6 +753,7 @@ class IngestionSyncClient:
         options: SyncOptions,
         body: bytes | None = None,
     ) -> None:
+        self._raise_if_stopping()
         if item.status == "already_present":
             return
         if item.upload_url is None:
@@ -795,6 +803,7 @@ class IngestionSyncClient:
         return self.data_dir / path
 
     def _object_bytes(self, manifest: LocalObjectManifest, *, batch_id: str) -> bytes:
+        self._raise_if_stopping()
         try:
             body = self._object_path(manifest.local_path).read_bytes()
         except OSError:
@@ -812,6 +821,7 @@ class IngestionSyncClient:
         Historical bodies that no longer match still fail immutable verification.
         Recovered bytes remain bounded to the active upload window.
         """
+        self._raise_if_stopping()
         if manifest.kind not in ("body_html", "body_markdown"):
             raise ImmutableObjectChangedError("immutable_object_changed")
         from sqlalchemy import select
@@ -827,12 +837,26 @@ class IngestionSyncClient:
                 .where(SyncBatchItem.batch_id == batch_id, column.is_not(None))
             )
             for value in rows:
+                self._raise_if_stopping()
                 candidate = sanitize_text(str(value)).encode("utf-8")
                 if len(candidate) != manifest.size:
                     continue
                 if hashlib.sha256(candidate).hexdigest() == manifest.sha256:
                     return candidate
+        self._raise_if_stopping()
         raise ImmutableObjectChangedError("immutable_object_changed")
+
+    def _raise_if_stopping(self) -> None:
+        if self._stop_requested.is_set():
+            raise SyncTransientError("sync_interrupted")
+
+    def _wait_before_retry(self, delay: float) -> None:
+        self._raise_if_stopping()
+        if self._sleep is time.sleep:
+            self._stop_requested.wait(delay)
+        else:
+            self._sleep(delay)
+        self._raise_if_stopping()
 
     def _api_request(
         self,
@@ -865,18 +889,21 @@ class IngestionSyncClient:
         **kwargs: Any,
     ) -> httpx.Response:
         for attempt in range(options.max_retries + 1):
+            self._raise_if_stopping()
             try:
                 response = self.http.request(method, url, headers=headers, **kwargs)
             except RETRYABLE_HTTP_ERRORS as exc:
                 if attempt >= options.max_retries:
                     raise SyncTransientError("network_error") from exc
-                self._sleep(min(options.max_backoff, 2**attempt))
+                self._wait_before_retry(min(options.max_backoff, 2**attempt))
                 continue
             if response.status_code in RETRY_STATUS_CODES or response.status_code >= 500:
                 if attempt >= options.max_retries:
                     raise SyncTransientError(f"retry_exhausted_http_{response.status_code}")
                 delay = _retry_after(response, self._now)
-                self._sleep(min(options.max_backoff, delay if delay is not None else 2**attempt))
+                self._wait_before_retry(
+                    min(options.max_backoff, delay if delay is not None else 2**attempt)
+                )
                 continue
             return response
 
