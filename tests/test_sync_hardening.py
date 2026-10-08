@@ -496,91 +496,135 @@ class RecoverOversizedCliTests(SyncHardeningTestCase):
 
 
 class ArchivedObjectBytesTests(SyncHardeningTestCase):
-    def test_archive_lookup_caches_only_hits_and_reuses_them(self) -> None:
+    def _archive_batch(self, store: Store, *numbers: int) -> tuple[str, LocalObjectManifest]:
+        for number in numbers:
+            store.enqueue_article_for_sync(self._article(number))
+        outbox = IngestionOutbox(store.database)
+        batch = outbox.build_batch(
+            run_id="archive-run",
+            batch_id="archive-batch",
+            producer_version="test",
+            observed_at="2026-10-08T00:00:00+08:00",
+        )
+        self.assertIsNotNone(batch)
+        manifest = next(item for item in outbox.batch_objects(batch.batch_id) if item.kind == "body_html")
+        Path(manifest.local_path).unlink()
+        return batch.batch_id, manifest
+
+    def test_archive_lookup_reads_only_indexed_batch_articles(self) -> None:
+        from unittest.mock import patch
+
+        from ustc_crawler.models import sanitize_text
+
         with TemporaryDirectory() as temp:
-            root = Path(temp)
-            store = self._store(root)
+            store = self._store(Path(temp))
             try:
-                for number in range(3):
-                    article = self._article(number)
-                    store.save_article(article)
-                target = self._article(1)
-                store.enqueue_article_for_sync(target)
-                with store.database.session_factory() as session:
-                    row = session.scalar(select(SyncOutbox))
-                    manifests = json.loads(row.object_manifest_json)
-                manifest = next(
-                    LocalObjectManifest.model_validate(value)
-                    for value in manifests
-                    if value["kind"] == "body_html"
-                )
-                Path(manifest.local_path).unlink()
+                # Same-sized unrelated bodies would all pass the old length
+                # filter. Recovery must not inspect them to find the batch body.
+                for number in range(100, 300):
+                    store.save_article(self._article(number))
+                store.save_article(self._article(999))
+                batch_id, manifest = self._archive_batch(store, 999)
                 sync = IngestionSyncClient(
-                    store.database,
-                    store.data_dir,
-                    self.server,
-                    self.ingestion_secret,
+                    store.database, store.data_dir, self.server, self.ingestion_secret,
+                )
+                statements: list[tuple[str, object]] = []
+
+                def record_query(_connection, _cursor, statement, parameters, _context, _executemany):
+                    if statement.lstrip().upper().startswith("SELECT"):
+                        statements.append((statement, parameters))
+
+                event.listen(store.database.engine, "before_cursor_execute", record_query)
+                try:
+                    with patch("ustc_crawler.models.sanitize_text", wraps=sanitize_text) as sanitize:
+                        body = sync._object_bytes(manifest, batch_id=batch_id)
+                    self.assertEqual(body, self._article(999).body_html.encode())
+                    self.assertEqual(sanitize.call_count, 1)
+                    self.assertEqual(sanitize.call_args.args, (self._article(999).body_html,))
+                finally:
+                    event.remove(store.database.engine, "before_cursor_execute", record_query)
+                    sync.close()
+                self.assertEqual(len(statements), 1)
+                with store.database.engine.connect() as connection:
+                    plans = connection.exec_driver_sql(
+                        "EXPLAIN QUERY PLAN " + statements[0][0], statements[0][1],
+                    ).all()
+                details = [row[3] for row in plans]
+                self.assertTrue(any("SEARCH sync_batch_items USING INDEX" in detail for detail in details))
+                self.assertTrue(any("SEARCH articles USING INDEX" in detail for detail in details))
+                self.assertFalse(any("SCAN" in detail for detail in details))
+            finally:
+                store.close()
+
+    def test_archive_lookup_rejects_changed_size_digest_and_missing_batch(self) -> None:
+        with TemporaryDirectory() as temp:
+            store = self._store(Path(temp))
+            try:
+                store.save_article(self._article(1))
+                batch_id, manifest = self._archive_batch(store, 1)
+                sync = IngestionSyncClient(
+                    store.database, store.data_dir, self.server, self.ingestion_secret,
                 )
                 try:
-                    body = sync._archived_object_bytes(manifest)
-                    self.assertEqual(
-                        hashlib.sha256(body).hexdigest(),
-                        manifest.sha256,
-                    )
-                    # The cache holds only objects that actually matched,
-                    # never a whole-table sha->bytes snapshot.
-                    self.assertEqual(len(sync._archive_object_cache["body_html"]), 1)
-
-                    statements: list[str] = []
-
-                    def count_selects(
-                        _connection, _cursor, statement, _parameters, _context, _executemany
+                    for invalid in (
+                        manifest.model_copy(update={"size": manifest.size + 10}),
+                        manifest.model_copy(update={"sha256": "0" * 64}),
                     ):
-                        if statement.lstrip().upper().startswith("SELECT"):
-                            statements.append(statement)
-
-                    event.listen(store.database.engine, "before_cursor_execute", count_selects)
-                    try:
-                        again = sync._archived_object_bytes(manifest)
-                    finally:
-                        event.remove(store.database.engine, "before_cursor_execute", count_selects)
-                    self.assertEqual(again, body)
-                    self.assertEqual(statements, [])
+                        with self.subTest(manifest=invalid.kind):
+                            with self.assertRaises(ImmutableObjectChangedError):
+                                sync._archived_object_bytes(invalid, batch_id=batch_id)
+                    with self.assertRaises(ImmutableObjectChangedError):
+                        sync._archived_object_bytes(manifest, batch_id="missing-batch")
                 finally:
                     sync.close()
             finally:
                 store.close()
 
-    def test_archive_lookup_rebuilds_only_size_plausible_rows(self) -> None:
+    def test_archive_lookup_rejects_historical_body_only_present_outside_batch(self) -> None:
         with TemporaryDirectory() as temp:
-            root = Path(temp)
-            store = self._store(root)
+            store = self._store(Path(temp))
             try:
-                article = self._article(1)
-                store.save_article(article)
-                store.enqueue_article_for_sync(article)
-                with store.database.session_factory() as session:
-                    row = session.scalar(select(SyncOutbox))
-                    manifests = json.loads(row.object_manifest_json)
-                manifest = next(
-                    LocalObjectManifest.model_validate(value)
-                    for value in manifests
-                    if value["kind"] == "body_html"
-                )
-                Path(manifest.local_path).unlink()
+                original = self._article(1)
+                store.save_article(original)
+                batch_id, manifest = self._archive_batch(store, 1)
+                unrelated = self._article(2)
+                unrelated.body_html = original.body_html
+                store.save_article(unrelated)
+                original.body_html = "<p>Changed after the immutable event</p>"
+                store.save_article(original)
                 sync = IngestionSyncClient(
-                    store.database,
-                    store.data_dir,
-                    self.server,
-                    self.ingestion_secret,
+                    store.database, store.data_dir, self.server, self.ingestion_secret,
                 )
                 try:
-                    wrong_size = manifest.model_copy(update={"size": manifest.size + 10})
                     with self.assertRaises(ImmutableObjectChangedError):
-                        sync._archived_object_bytes(wrong_size)
-                    wrong_digest = manifest.model_copy(update={"sha256": "0" * 64})
-                    with self.assertRaises(ImmutableObjectChangedError):
-                        sync._archived_object_bytes(wrong_digest)
+                        sync._object_bytes(manifest, batch_id=batch_id)
+                finally:
+                    sync.close()
+            finally:
+                store.close()
+
+    def test_archive_lookup_can_recover_shared_bytes_from_another_batch_article(self) -> None:
+        with TemporaryDirectory() as temp:
+            store = self._store(Path(temp))
+            try:
+                batch_id, manifest = self._archive_batch(store, 1, 2)
+                original_number = next(
+                    number for number in (1, 2)
+                    if hashlib.sha256(self._article(number).body_html.encode()).hexdigest() == manifest.sha256
+                )
+                other = self._article(3 - original_number)
+                other.body_html = self._article(original_number).body_html
+                # The owning article is no longer archived. Another member
+                # still holds the exact shared bytes, which remain valid.
+                store.save_article(other)
+                sync = IngestionSyncClient(
+                    store.database, store.data_dir, self.server, self.ingestion_secret,
+                )
+                try:
+                    self.assertEqual(
+                        sync._object_bytes(manifest, batch_id=batch_id),
+                        other.body_html.encode(),
+                    )
                 finally:
                     sync.close()
             finally:
@@ -883,10 +927,10 @@ class ObjectReadTests(SyncHardeningTestCase):
                 reads = 0
                 original = sync._object_bytes
 
-                def counted(manifest):
+                def counted(manifest, *, batch_id):
                     nonlocal reads
                     reads += 1
-                    return original(manifest)
+                    return original(manifest, batch_id=batch_id)
 
                 sync._object_bytes = counted
                 try:

@@ -317,7 +317,7 @@ def test_writer_deadlines_leave_room_for_large_state_save(tmp_path, repair, requ
     assert not run.failed
     timeouts = [json.loads(line) for line in (tmp_path / "timeouts.jsonl").read_text().splitlines()]
     writer_minutes = sum(int(args[2].removesuffix("m")) for args in timeouts)
-    shutdown_minutes = len(timeouts)  # Each timeout reserves a 60-second kill-after grace.
+    shutdown_minutes = sum(int(args[1].split("=")[1].removesuffix("s")) / 60 for args in timeouts)
     job_minutes = run.expression(WORKFLOW["jobs"]["sync"]["timeout-minutes"])
     # Sept 30's large-state save took about 10 minutes; reserve that plus 2
     # minutes for restore and 5 for setup, diagnostics and scheduler overhead.
