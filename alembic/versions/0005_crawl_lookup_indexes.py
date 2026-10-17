@@ -7,16 +7,17 @@ The legacy frontier_pending_idx was also a full duplicate of
 frontier_priority_idx; it is now a partial index over pending rows only.
 """
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy import inspect
 
+from alembic import op
+
 revision: str = "0005_crawl_lookup_indexes"
-down_revision: Union[str, Sequence[str], None] = "0004_sync_snapshots_and_indexes"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "0004_sync_snapshots_and_indexes"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 _FRONTIER_PENDING_SQL = (
     "CREATE INDEX IF NOT EXISTS frontier_pending_idx "

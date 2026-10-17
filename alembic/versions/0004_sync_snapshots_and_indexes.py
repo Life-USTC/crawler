@@ -1,15 +1,16 @@
 """Persist immutable source and batch snapshots for the sync outbox."""
 
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import sqlalchemy as sa
-from alembic import op
 from sqlalchemy import inspect
 
+from alembic import op
+
 revision: str = "0004_sync_snapshots_and_indexes"
-down_revision: Union[str, Sequence[str], None] = "0003_legacy_crawl_fields"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "0003_legacy_crawl_fields"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def _add_missing(table: str, definitions: dict[str, sa.Column]) -> None:
