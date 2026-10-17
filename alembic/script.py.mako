@@ -1,20 +1,34 @@
-"""${message}
+<%!
+def _render(value):
+    """repr() with double quotes so the output matches ruff format."""
+    if value is None:
+        return "None"
+    if isinstance(value, str):
+        return '"%s"' % value
+    if isinstance(value, tuple):
+        return "(%s)" % ", ".join(_render(item) for item in value)
+    return repr(value)
+%>"""${message}
 
 Revision ID: ${up_revision}
 Revises: ${down_revision | comma,n}
 Create Date: ${create_date}
 """
-from typing import Sequence, Union
+
+from collections.abc import Sequence
+% if imports:
+
+${imports}
+% endif
+% if upgrades or downgrades:
 
 from alembic import op
-import sqlalchemy as sa
+% endif
 
-${imports if imports else ""}
-
-revision: str = ${repr(up_revision)}
-down_revision: Union[str, Sequence[str], None] = ${repr(down_revision)}
-branch_labels: Union[str, Sequence[str], None] = ${repr(branch_labels)}
-depends_on: Union[str, Sequence[str], None] = ${repr(depends_on)}
+revision: str = ${_render(up_revision)}
+down_revision: str | Sequence[str] | None = ${_render(down_revision)}
+branch_labels: str | Sequence[str] | None = ${_render(branch_labels)}
+depends_on: str | Sequence[str] | None = ${_render(depends_on)}
 
 
 def upgrade() -> None:
