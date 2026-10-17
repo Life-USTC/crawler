@@ -51,7 +51,7 @@ jobs:
     timeout-minutes: ${{ (inputs.reindex || inputs.retext || inputs.requeue_failed || inputs.rebuild_markdown) && 300 || 60 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           enable-cache: true
           python-version: "3.13"
@@ -79,7 +79,7 @@ jobs:
 
       - name: Restore crawler state from cache
         id: restore
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.DB_ARCHIVE }}
           key: crawler-state-${{ github.run_id }}
