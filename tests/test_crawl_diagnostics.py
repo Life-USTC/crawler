@@ -3,6 +3,7 @@ import json
 import sqlite3
 
 import httpx
+import pytest
 
 from ustc_crawler import crawl
 from ustc_crawler.cli import main
@@ -10,8 +11,9 @@ from ustc_crawler.crawl_diagnostics import CrawlFailureDiagnostics
 from ustc_crawler.http import Fetcher
 
 
+@pytest.mark.parametrize("write_report", [False, True])
 def test_crawl_reports_three_current_failures_and_keeps_healthy_progress(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, write_report
 ):
     config = tmp_path / "sources.json"
     config.write_text(
@@ -73,8 +75,7 @@ def test_crawl_reports_three_current_failures_and_keeps_healthy_progress(
             str(tmp_path / "data"),
             "--max-pages",
             "20",
-            "--failure-report",
-            str(report),
+            *(["--failure-report", str(report)] if write_report else []),
         ]
     )
     captured = capsys.readouterr()
@@ -82,7 +83,20 @@ def test_crawl_reports_three_current_failures_and_keeps_healthy_progress(
     assert code == 2
     assert output["processed"] >= 4  # Includes automatic discovery feeds.
     assert output["errors"] == 3
-    diagnostic = json.loads(report.read_text())
+    messages = [
+        json.loads(line)
+        for line in captured.err.splitlines()
+        if line.startswith('{"event": "crawl.')
+    ]
+    summary = next(message for message in messages if message["event"] == "crawl.failure_summary")
+    diagnostic = {
+        **summary,
+        "failures": [message for message in messages if message["event"] == "crawl.failure"],
+    }
+    if write_report:
+        assert json.loads(report.read_text()) == diagnostic
+    else:
+        assert not report.exists()
     assert diagnostic["errors"] == diagnostic["reported"] == 3
     assert diagnostic["completed"] is True
     assert diagnostic["omitted"] == 0
@@ -94,8 +108,8 @@ def test_crawl_reports_three_current_failures_and_keeps_healthy_progress(
     assert failures["processing_exception"]["exception_type"] == "ValueError"
     assert failures["processing_exception"]["location"]["function"] == "parse"
     assert all(entry["run_id"] == diagnostic["run_id"] for entry in failures.values())
-    assert "raw-response-secret" not in report.read_text() + captured.err
-    assert "raw-parser-payload-secret" not in report.read_text() + captured.err
+    assert "raw-response-secret" not in json.dumps(diagnostic) + captured.err
+    assert "raw-parser-payload-secret" not in json.dumps(diagnostic) + captured.err
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT COUNT(*) FROM failures").fetchone()[0] == 3
         assert (
