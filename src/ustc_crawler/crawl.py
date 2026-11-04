@@ -13,6 +13,7 @@ from xml.etree import ElementTree
 
 from .canonicalize import looks_like_asset, looks_like_binary, normalize_url
 from .config import load_config
+from .crawl_diagnostics import CrawlFailureDiagnostics
 from .discover import discover_units, unit_sources
 from .extract import extract_page
 from .http import Fetcher
@@ -102,6 +103,7 @@ class CrawlOptions:
     since: str = ""
     incremental: bool = False
     source_ids: list[str] = field(default_factory=list)
+    failure_report: str = ""
 
 
 def _decode(body: bytes, headers: dict[str, str]) -> str:
@@ -192,6 +194,7 @@ class AsyncCrawler:
         self._counter_lock = asyncio.Lock()
         self.source_since: dict[str, datetime] = {}
         self.sync_run_id = uuid.uuid4().hex
+        self.failure_diagnostics = CrawlFailureDiagnostics(self.sync_run_id, options.failure_report)
         self.sync_run_started = False
         # Unique stop sentinel: workers exit only after the queue has been
         # fully drained and one sentinel per worker is delivered, so idle
@@ -526,6 +529,20 @@ class AsyncCrawler:
             self.store.mark_done(url, page.error)
             self.store.failure(url, source_id, page.error, response.status)
             self.errors += 1
+            self.failure_diagnostics.record(
+                url,
+                source_id,
+                kind=(
+                    "robots_disallowed"
+                    if response.blocked_by_robots
+                    else "http_status"
+                    if response.status >= 400
+                    else "body_size_limit"
+                    if response.error.startswith("body exceeds ")
+                    else "transport_error"
+                ),
+                status=response.status,
+            )
             return
         if _is_xml(response.content_type, response.final_url):
             xml_text = _decode(response.body, response.headers)
@@ -763,11 +780,15 @@ class AsyncCrawler:
                     self.errors += 1
                     self.store.mark_done(item[2], f"{type(exc).__name__}: {exc}")
                     self.store.failure(item[2], item[3], f"{type(exc).__name__}: {exc}")
+                    self.failure_diagnostics.record(
+                        item[2], item[3], kind="processing_exception", exception=exc
+                    )
             finally:
                 self.queue.task_done()
 
     async def run(self) -> dict[str, int]:
         workers: list[asyncio.Task[None]] = []
+        completed = False
         try:
             self.prepare()
             await self._seed_queue()
@@ -793,6 +814,7 @@ class AsyncCrawler:
                 media=self.media,
                 errors=self.errors,
             )
+            completed = True
             return result
         except BaseException as exc:
             for worker in workers:
@@ -811,6 +833,8 @@ class AsyncCrawler:
                     last_error=f"{type(exc).__name__}: {exc}",
                 )
             raise
+        finally:
+            self.failure_diagnostics.summary(completed=completed)
 
 
 def run_crawl(options: CrawlOptions) -> dict[str, int]:

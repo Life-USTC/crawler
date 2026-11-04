@@ -207,7 +207,7 @@ jobs:
         run: |
           set +e
           timeout --signal=TERM --kill-after=60s 8m \
-            uv run ustc-crawler crawl --incremental 2>&1 | tee crawl.log
+            uv run ustc-crawler crawl --incremental --failure-report diag/crawl-failures.json 2>&1 | tee crawl.log
           result=("${PIPESTATUS[@]}")
           set -e
           test "${result[1]}" = 0
