@@ -30,6 +30,7 @@ class WorkflowRun:
         self.failed = False
         self.steps = {}
         self.trace = []
+        self.artifacts = {}
         self.codes = codes or {}
         self.env = {
             **os.environ,
@@ -68,6 +69,10 @@ args = sys.argv[1:]
 if name == 'uv':
     if args[1] == 'python':
         os.execv(sys.executable, [sys.executable, *args[2:]])
+    if args[2] == 'crawl' and '--failure-report' in args:
+        report = pathlib.Path(args[args.index('--failure-report') + 1])
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(os.environ.get('FAKE_CRAWL_REPORT', '{{"errors": 0}}'))
     sys.exit(json.loads(os.environ['FAKE_CODES']).get(args[2], 0))
 if name == 'timeout':
     with open(os.environ['FAKE_TIMEOUT_LOG'], 'a') as log:
@@ -128,6 +133,12 @@ if name == 'zstd':
             if "uses" in step:
                 if step["uses"].startswith("actions/cache/save"):
                     (self.root / "saved").write_bytes(Path(self.env["DB_ARCHIVE"]).read_bytes())
+                if name == "Upload sync diagnostics":
+                    self.artifacts[name] = {
+                        path.name: path.read_text()
+                        for path in (self.root / step["with"]["path"]).glob("*")
+                        if path.is_file()
+                    }
                 continue
             env = dict(self.env)
             for key, value in step.get("env", {}).items():
@@ -233,6 +244,11 @@ def test_pending_and_failed_events_are_reported(tmp_path):
 
 def test_historical_failed_events_and_crawl_item_errors_do_not_mask_success(tmp_path):
     run = WorkflowRun(tmp_path, codes={"crawl": 2})
+    current_failures = {
+        "run_id": "current-crawl", "errors": 3, "reported": 3, "omitted": 0,
+        "sources": [{"source_id": "news", "errors": 3}],
+    }
+    run.env["FAKE_CRAWL_REPORT"] = json.dumps(current_failures)
     connection = sqlite3.connect(run.env["DB_PATH"])
     connection.execute(
         "INSERT INTO sync_outbox VALUES (?, ?, ?, ?, ?, ?)",
@@ -244,6 +260,9 @@ def test_historical_failed_events_and_crawl_item_errors_do_not_mask_success(tmp_
     assert not run.failed
     assert (tmp_path / "saved").exists()
     assert run.step("diagnostics").outputs["failed"] == "1"
+    assert run.step("crawl").outputs["exit_code"] == "2"
+    assert json.loads(run.artifacts["Upload sync diagnostics"]["crawl-failures.json"]) == current_failures
+    assert "Upload logs" not in run.trace  # Warning runs publish the safe report, not raw logs.
 
 
 def test_tee_failure_prevents_cache_write(tmp_path):

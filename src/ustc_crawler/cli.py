@@ -139,6 +139,9 @@ def build_parser() -> argparse.ArgumentParser:
     crawl.add_argument("--config", default="config/sources.yaml", type=_path)
     crawl.add_argument("--db", default="data/crawler.sqlite", type=_path)
     crawl.add_argument("--data-dir", default="data", type=_path)
+    crawl.add_argument(
+        "--failure-report", default="", type=_path, help="write a bounded source failure report"
+    )
     crawl.add_argument("--units", default="data/discovered_units.json", type=_path)
     crawl.add_argument("--include-units", action="store_true")
     crawl.add_argument(
@@ -562,6 +565,7 @@ def main(argv: list[str] | None = None) -> int:
             since=args.since,
             incremental=args.incremental,
             source_ids=args.source,
+            failure_report=args.failure_report,
         )
         try:
             with _sigterm_as_keyboard_interrupt():
