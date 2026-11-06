@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import unicodedata
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
 
 
@@ -144,6 +145,13 @@ def sanitize_article_document(article: ArticleDocument) -> ArticleDocument:
     return article
 
 
+class RobotsBlockReason(StrEnum):
+    RULE_DISALLOWED = "rule_disallowed"
+    HTTP_ERROR = "http_error"
+    TRANSPORT_ERROR = "transport_error"
+    DECODING_ERROR = "decoding_error"
+
+
 @dataclass(slots=True)
 class FetchResponse:
     requested_url: str
@@ -154,3 +162,5 @@ class FetchResponse:
     body: bytes
     error: str = ""
     blocked_by_robots: bool = False
+    robots_reason: RobotsBlockReason | None = None
+    robots_status: int | None = None

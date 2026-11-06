@@ -9,6 +9,8 @@ from collections import Counter
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
+from .models import RobotsBlockReason
+
 MAX_FAILURE_DETAILS = 50
 
 
@@ -27,6 +29,8 @@ class CrawlFailureDiagnostics:
         kind: str,
         status: int | None = None,
         exception: Exception | None = None,
+        robots_reason: RobotsBlockReason | None = None,
+        robots_status: int | None = None,
     ) -> None:
         self.sources[source_id] += 1
         if len(self.details) >= MAX_FAILURE_DETAILS:
@@ -47,6 +51,9 @@ class CrawlFailureDiagnostics:
             "kind": kind,
             "status": status,
         }
+        if isinstance(robots_reason, RobotsBlockReason):
+            detail["robots_reason"] = robots_reason.value
+            detail["robots_status"] = robots_status
         if exception is not None:
             detail["exception_type"] = type(exception).__name__[:64]
             trace = exception.__traceback__
