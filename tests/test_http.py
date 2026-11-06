@@ -119,7 +119,29 @@ class FetchBehaviorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(blocked.blocked_by_robots)
         self.assertEqual(blocked.status, 0)
+        self.assertEqual(blocked.robots_reason, "rule_disallowed")
+        self.assertEqual(blocked.robots_status, 200)
         self.assertEqual(allowed.status, 200)
+        self.assertIsNone(allowed.robots_reason)
+        self.assertIsNone(allowed.robots_status)
+
+    async def test_ignore_robots_never_fetches_policy_or_attaches_reason(self) -> None:
+        calls: list[str] = []
+
+        def handler(request):
+            calls.append(request.url.path)
+            return httpx.Response(200, text="page")
+
+        fetcher = _fetcher(handler, ignore_robots=True)
+        try:
+            response = await fetcher.fetch("https://example.test/page")
+        finally:
+            await fetcher.close()
+        self.assertEqual(calls, ["/page"])
+        self.assertEqual(response.status, 200)
+        self.assertFalse(response.blocked_by_robots)
+        self.assertIsNone(response.robots_reason)
+        self.assertIsNone(response.robots_status)
 
     async def test_transport_error_converges_to_status_zero(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
@@ -140,6 +162,8 @@ class FetchBehaviorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status, 0)
         self.assertIn("ConnectError", response.error)
+        self.assertIsNone(response.robots_reason)
+        self.assertIsNone(response.robots_status)
 
 
 if __name__ == "__main__":

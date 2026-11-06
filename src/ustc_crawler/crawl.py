@@ -542,6 +542,8 @@ class AsyncCrawler:
                     else "transport_error"
                 ),
                 status=response.status,
+                robots_reason=response.robots_reason,
+                robots_status=response.robots_status,
             )
             return
         if _is_xml(response.content_type, response.final_url):

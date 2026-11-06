@@ -149,6 +149,10 @@ workflow 记录 `124`。后两种情况会先等待写入停止，执行 WAL che
 以及逐来源错误计数；每轮最多记录 50 条明细，超出数量会明确汇总。结构化诊断不包含响应正文、
 请求头或异常原文。workflow 通过 `--failure-report diag/crawl-failures.json` 将准确的本轮结果
 保留在诊断附件中，即使抓取退出码为 `2` 而同步成功也保留，不混入历史失败记录。
+`robots_disallowed` 表示 robots 访问门控停止，并不一定是已解析规则明确拒绝。
+新增的 `robots_reason` 区分 `rule_disallowed`、`http_error`、`transport_error` 和
+`decoding_error`；`robots_status` 单独记录已取得的 robots 响应状态，未取得时为 `null`。
+未请求目标页面的 `status` 仍为 `0`，现有访问策略、缓存及临时失败后的重新检查行为不变。
 
 旧事件不符合当前必填字段（例如 `imageSources`）时，重新入队失败批次无法重建其
 内容。需要从归档文章生成当前格式事件，可手动运行：

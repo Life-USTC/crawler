@@ -91,7 +91,8 @@ class Fetcher:
         await self.client.aclose()
 
     async def fetch(self, url: str, *, max_bytes: int | None = None) -> FetchResponse:
-        if not self.ignore_robots and not await self.robots.allowed(url):
+        robots = None if self.ignore_robots else await self.robots.decision(url)
+        if robots is not None and not robots.allowed:
             return FetchResponse(
                 requested_url=url,
                 final_url=url,
@@ -101,6 +102,8 @@ class Fetcher:
                 body=b"",
                 error="blocked by robots.txt",
                 blocked_by_robots=True,
+                robots_reason=robots.reason,
+                robots_status=robots.http_status,
             )
         host = (urlsplit(url).hostname or "").lower()
         limit = max_bytes or self.max_body_bytes
