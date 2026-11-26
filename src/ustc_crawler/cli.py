@@ -11,7 +11,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from .crawl import CrawlOptions, run_crawl
-from .db import upgrade_database
+from .db import create_database, upgrade_database
 from .discover import discover_units
 from .media import MediaOptions, download_saved_images
 from .store import Store
@@ -351,6 +351,20 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"items per ingestion request (default: 50, max: {MAX_PUBLICATION_BATCH_ITEMS})",
     )
     sync.add_argument("--max-payload-bytes", type=int, default=2 * 1024 * 1024)
+    sync.add_argument(
+        "--archive-db",
+        default=None,
+        type=_path,
+        help="separate archive database used to recover objects for a repair outbox",
+    )
+    sync.add_argument(
+        "--missing-only",
+        action="store_true",
+        help=(
+            "create only publications missing on the server; for a separate repair database, "
+            "never the live outbox"
+        ),
+    )
     sync.add_argument("--max-batches", type=int, default=0, help="0 means all pending batches")
     sync.add_argument("--max-retries", type=int, default=3)
     sync.add_argument(
@@ -379,6 +393,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="enqueue existing articles for later sync without making network requests",
     )
     _sync_storage_args(sync_backfill_command)
+    sync_backfill_command.add_argument(
+        "--outbox-db",
+        default=None,
+        type=_path,
+        help="write repair events to a separate outbox database instead of the archive database",
+    )
     sync_backfill_command.add_argument("--chunk-size", type=int, default=100)
     sync_backfill_command.add_argument(
         "--source",
@@ -451,10 +471,28 @@ def main(argv: list[str] | None = None) -> int:
                     f"({Path(args.data_dir) / 'sync.lock'} held); skipping this run",
                     file=sys.stderr,
                 )
+                print(
+                    json.dumps(
+                        {
+                            "status": "skipped",
+                            "health": "degraded",
+                            "reason": "sync_already_running",
+                        },
+                        sort_keys=True,
+                    )
+                )
                 return 0
             store = Store(args.db, args.data_dir)
+            archive_store = None
             try:
-                client = IngestionSyncClient(store.database, args.data_dir, server, secret)
+                archive_store = Store(args.archive_db, args.data_dir) if args.archive_db else None
+                client = IngestionSyncClient(
+                    store.database,
+                    args.data_dir,
+                    server,
+                    secret,
+                    archive_database=archive_store.database if archive_store else None,
+                )
                 try:
                     summary = client.sync(
                         options=SyncOptions(
@@ -464,6 +502,7 @@ def main(argv: list[str] | None = None) -> int:
                             max_retries=args.max_retries,
                             object_concurrency=args.object_concurrency,
                             batch_concurrency=args.batch_concurrency,
+                            missing_only=args.missing_only,
                         )
                     )
                     print(
@@ -477,14 +516,19 @@ def main(argv: list[str] | None = None) -> int:
                     client.close()
             finally:
                 store.close()
+                if archive_store is not None:
+                    archive_store.close()
         return _failure_exit_code(summary)
     if args.command == "sync-backfill":
         store = Store(args.db, args.data_dir)
+        outbox_database = None
         try:
+            outbox_database = create_database(args.outbox_db) if args.outbox_db else None
             print(
                 json.dumps(
                     sync_backfill(
                         store,
+                        outbox=IngestionOutbox(outbox_database) if outbox_database else None,
                         chunk_size=args.chunk_size,
                         source_ids=set(args.source) or None,
                         after_url=args.after_url,
@@ -496,6 +540,8 @@ def main(argv: list[str] | None = None) -> int:
             )
         finally:
             store.close()
+            if outbox_database is not None:
+                outbox_database.close()
         return 0
     if args.command == "sync-requeue-failed":
         store = Store(args.db, args.data_dir)

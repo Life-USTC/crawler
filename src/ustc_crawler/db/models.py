@@ -235,6 +235,9 @@ class SyncBatch(Base):
     observed_at: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
     payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     protocol_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    revision_policy: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="observedAt", server_default="observedAt"
+    )
     producer_version: Mapped[str] = mapped_column(String(128), nullable=False)
     status: Mapped[str] = mapped_column(Text, nullable=False, default="pending", server_default="pending")
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
