@@ -458,6 +458,14 @@ class IngestionOutbox:
             raise ValueError(f"outbox revision hash mismatch: {row.event_id}")
         return parsed
 
+    def failed_backlog_count(self) -> int:
+        """Count all terminal events retained for health reporting and repair."""
+
+        with self.database.session_factory() as session:
+            return session.scalar(
+                select(func.count()).select_from(SyncOutbox).where(SyncOutbox.status == "failed")
+            ) or 0
+
     def failed_event_count(self) -> int:
         """Count terminal events rejected before they could join a batch."""
 
@@ -694,6 +702,7 @@ class IngestionOutbox:
         observed_at: str | date | datetime,
         limit: int = 50,
         max_payload_bytes: int = DEFAULT_MAX_BATCH_BYTES,
+        missing_only: bool = False,
     ) -> IngestionBatch | None:
         """Claim pending events and persist their exact immutable batch body."""
 
@@ -723,6 +732,7 @@ class IngestionOutbox:
                     batch_id=existing.id,
                     observed_at=existing.observed_at,
                     producer_version=existing.producer_version,
+                    missing_only=existing.revision_policy == "missingOnly",
                 )
                 if batch.payload_sha256() != existing.payload_sha256:
                     raise ValueError(f"immutable batch payload changed: {batch_id}")
@@ -773,6 +783,7 @@ class IngestionOutbox:
                         batch_id=batch_id,
                         observed_at=observed_at,
                         producer_version=producer_version,
+                        missing_only=missing_only,
                     )
                     if len(candidate_batch.payload_bytes()) > max_payload_bytes:
                         if not rows:
@@ -794,6 +805,7 @@ class IngestionOutbox:
                 batch_id=batch_id,
                 observed_at=observed_at,
                 producer_version=producer_version,
+                missing_only=missing_only,
             )
             now = datetime.now().astimezone().isoformat(timespec="seconds")
             session.add(
@@ -805,6 +817,7 @@ class IngestionOutbox:
                     observed_at=batch.observed_at,
                     payload_sha256=batch.payload_sha256(),
                     protocol_version=INGESTION_PROTOCOL_VERSION,
+                    revision_policy="missingOnly" if missing_only else "observedAt",
                     producer_version=producer_version,
                     status="pending",
                     attempts=0,

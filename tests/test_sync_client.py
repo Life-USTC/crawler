@@ -1834,6 +1834,67 @@ class SyncClientTests(unittest.TestCase):
             finally:
                 store.close()
 
+    def test_backfill_separate_outbox_preserves_missing_only_policy_on_replay(self) -> None:
+        with TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = self._store(root)
+            repair = Store(root / "repair.sqlite", root / "repair-data")
+            try:
+                article = self._article(1)
+                with store.database.session_factory.begin() as session:
+                    Store._save_article_record(
+                        session,
+                        article,
+                        hashlib.sha256(article.body_text.encode()).hexdigest(),
+                        "2026-08-20T00:00:00+08:00",
+                    )
+                repair_outbox = IngestionOutbox(repair.database)
+                self.assertEqual(
+                    sync_backfill(store, outbox=repair_outbox),
+                    {"scanned": 1, "enqueued": 1, "errors": 0},
+                )
+                with store.database.session_factory() as session:
+                    self.assertEqual(
+                        session.scalar(select(func.count()).select_from(SyncOutbox)),
+                        0,
+                    )
+                batch = repair_outbox.build_batch(
+                    run_id="repair-run",
+                    batch_id="repair-batch",
+                    producer_version="test",
+                    observed_at="2026-08-20",
+                    missing_only=True,
+                )
+                assert batch is not None
+                self.assertEqual(batch.payload_dict()["revisionPolicy"], "missingOnly")
+                replayed = repair_outbox.build_batch(
+                    run_id="repair-run",
+                    batch_id="repair-batch",
+                    producer_version="test",
+                    observed_at="2026-08-20",
+                )
+                assert replayed is not None
+                self.assertEqual(replayed.payload_bytes(), batch.payload_bytes())
+                manifest = repair_outbox.batch_objects("repair-batch")[0]
+                Path(manifest.local_path).unlink()
+                client = IngestionSyncClient(
+                    repair.database,
+                    root / "repair-data",
+                    self.server,
+                    self.ingestion_secret,
+                    archive_database=store.database,
+                )
+                try:
+                    self.assertEqual(
+                        client._object_bytes(manifest, batch_id="repair-batch"),
+                        article.body_html.encode(),
+                    )
+                finally:
+                    client.close()
+            finally:
+                store.close()
+                repair.close()
+
     def test_backfill_supports_source_cursor_and_limit_for_historical_repair(self) -> None:
         with TemporaryDirectory() as temp:
             root = Path(temp)
