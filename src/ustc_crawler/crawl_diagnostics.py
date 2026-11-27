@@ -19,7 +19,11 @@ class CrawlFailureDiagnostics:
         self.run_id = run_id
         self.report_path = report_path
         self.sources: Counter[str] = Counter()
+        self.expected_sources: Counter[str] = Counter()
         self.details: list[dict] = []
+
+    def record_expected_unavailable(self, source_id: str) -> None:
+        self.expected_sources[source_id] += 1
 
     def record(
         self,
@@ -82,8 +86,14 @@ class CrawlFailureDiagnostics:
                 for source, count in sorted(self.sources.items())[:MAX_FAILURE_DETAILS]
             ],
             "omitted_sources": max(0, len(self.sources) - MAX_FAILURE_DETAILS),
+            "expected_unavailable_pages": self.expected_sources.total(),
+            "expected_unavailable_sources": [
+                {"source_id": source[:128], "reason": "rule_disallowed", "pages": count}
+                for source, count in sorted(self.expected_sources.items())[:MAX_FAILURE_DETAILS]
+            ],
+            "omitted_expected_sources": max(0, len(self.expected_sources) - MAX_FAILURE_DETAILS),
         }
-        if total:
+        if total or self.expected_sources:
             print(json.dumps(summary, ensure_ascii=False), file=sys.stderr)
         if self.report_path:
             path = Path(self.report_path)

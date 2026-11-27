@@ -155,6 +155,12 @@ workflow 记录 `124`。后两种情况会先等待写入停止，执行 WAL che
 新增的 `robots_reason` 区分 `rule_disallowed`、`http_error`、`transport_error` 和
 `decoding_error`；`robots_status` 单独记录已取得的 robots 响应状态，未取得时为 `null`。
 未请求目标页面的 `status` 仍为 `0`，现有访问策略、缓存及临时失败后的重新检查行为不变。
+对已知受 robots 规则限制的来源，可声明 `expected_robots_disallow: true`（目前仅 course）。
+每轮仍检查 robots；只有明确的 `rule_disallowed` 不计入失败或触发抓取错误告警。
+归档仍保留受限页面记录，摘要中的 `expected_unavailable_pages` 和
+`expected_unavailable_sources` 明确报告这些跳过，后者最多列出 50 个来源。
+robots 的 HTTP、网络或解码错误、目标页面的 HTTP 错误及未声明来源的规则拒绝仍计为故障；
+规则恢复允许后会正常抓取，不需要移除该声明。
 
 旧事件不符合当前必填字段（例如 `imageSources`）时，重新入队失败批次无法重建其
 内容。需要从归档文章生成当前格式事件，可手动运行：

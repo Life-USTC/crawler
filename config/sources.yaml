@@ -52,6 +52,8 @@ sources:
     organization_level: service
     seed_urls: [https://course.ustc.edu.cn/portal]
     allowed_hosts: [course.ustc.edu.cn]
+    # Keep checking robots; only an explicit rule denial is expected here.
+    expected_robots_disallow: true
   - id: teaching
     name: 教务处
     organization_level: office
