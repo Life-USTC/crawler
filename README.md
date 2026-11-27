@@ -116,7 +116,7 @@ uv run ustc-crawler sync-backfill \
 
 ## 同步到服务端
 
-同步客户端使用部署在爬虫机器上的服务密钥，不依赖任何个人账号或本地密钥环。服务器地址和服务密钥分别通过环境变量提供；密钥只在内存中用于发送 `X-Publication-Ingestion-Secret` 请求头，不会写入 SQLite、归档、命令参数、输出或日志：
+同步客户端使用独立服务密钥，不依赖任何个人账号或本地密钥环。服务器地址和服务密钥分别通过环境变量提供；密钥只在内存中用于发送 `X-Publication-Ingestion-Secret` 请求头，不会写入 SQLite、归档、命令参数、输出或日志：
 
 ```bash
 export USTC_CRAWLER_SERVER=https://example.invalid
@@ -138,9 +138,8 @@ uv run ustc-crawler sync \
 
 ### 定时同步与修复
 
-生产环境由爬虫机器上的 `ustc-crawler-sync.timer` 每 30 分钟执行一次增量抓取和同步，
-GitHub Actions 的 `Incremental sync` 只保留手动恢复入口，避免两个独立 outbox 同时作为
-生产写入者。同步退出码 `0` 表示本轮完成，`2` 表示仍有待重试批次、未发送事件或本轮事件校验失败；受控时间预算耗尽时
+定时同步必须保持单一生产写入者。GitHub Actions 的 `Incremental sync` 只保留手动恢复入口，
+避免两个独立 outbox 同时作为生产写入者。同步退出码 `0` 表示本轮完成，`2` 表示仍有待重试批次、未发送事件或本轮事件校验失败；受控时间预算耗尽时
 workflow 记录 `124`。后两种情况会先等待写入停止，执行 WAL checkpoint 和数据库
 完整性检查，再保存缓存，最后将 workflow 标为失败。命令崩溃、强制终止、取消任务或
 数据库检查失败时不覆盖上一份缓存。任务摘要和诊断附件列出退出码、队列计数，以及
