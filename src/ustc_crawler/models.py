@@ -49,6 +49,7 @@ class SourceConfig:
     aliases: list[str] = field(default_factory=list)
     discovery_only: bool = False
     max_images_per_page: int | None = None
+    expected_robots_disallow: bool = False
 
 
 @dataclass(slots=True)

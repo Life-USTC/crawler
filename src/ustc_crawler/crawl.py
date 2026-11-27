@@ -17,7 +17,7 @@ from .crawl_diagnostics import CrawlFailureDiagnostics
 from .discover import discover_units, unit_sources
 from .extract import extract_page
 from .http import Fetcher
-from .models import PageDocument, SourceConfig
+from .models import PageDocument, RobotsBlockReason, SourceConfig
 from .routing import source_id_for_url
 from .scoring import (
     _date_from_url,
@@ -241,6 +241,7 @@ class AsyncCrawler:
                         "aliases": sorted(source.aliases),
                         "discovery_only": source.discovery_only,
                         "max_images_per_page": source.max_images_per_page,
+                        "expected_robots_disallow": source.expected_robots_disallow,
                     }
                     for source in sorted(self.configured_sources.values(), key=lambda item: item.id)
                 ],
@@ -524,6 +525,14 @@ class AsyncCrawler:
             page.score_reasons = result.score_reasons
             page.published_at = result.published_at
             self.store.save_page(page, source_id, depth, parent)
+            if (
+                source.expected_robots_disallow
+                and response.blocked_by_robots
+                and response.robots_reason is RobotsBlockReason.RULE_DISALLOWED
+            ):
+                self.store.mark_done(url)
+                self.failure_diagnostics.record_expected_unavailable(source_id)
+                return
             self.store.mark_done(url, page.error)
             self.store.failure(url, source_id, page.error, response.status)
             self.errors += 1
@@ -802,6 +811,7 @@ class AsyncCrawler:
                 "articles": self.articles,
                 "media": self.media,
                 "errors": self.errors,
+                "expected_unavailable_pages": self.failure_diagnostics.expected_sources.total(),
                 **self.store.stats(),
             }
             self.store.finish_sync_run(

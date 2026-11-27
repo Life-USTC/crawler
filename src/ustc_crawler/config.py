@@ -21,6 +21,9 @@ def load_config(
     for item in source_items:
         seed_urls = [normalize_url(str(url)) for url in item.get("seed_urls", [])]
         max_images = item.get("max_images_per_page")
+        expected_robots_disallow = item.get("expected_robots_disallow", False)
+        if not isinstance(expected_robots_disallow, bool):
+            raise ValueError("expected_robots_disallow must be a boolean")
         sources.append(
             SourceConfig(
                 id=str(item["id"]),
@@ -32,6 +35,7 @@ def load_config(
                 aliases=[str(alias) for alias in item.get("aliases", [])],
                 discovery_only=bool(item.get("discovery_only", False)),
                 max_images_per_page=int(max_images) if max_images is not None else None,
+                expected_robots_disallow=expected_robots_disallow,
             )
         )
     directory = raw.get("directory", {}) or {}
