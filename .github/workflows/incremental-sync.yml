@@ -43,7 +43,7 @@ env:
 
 jobs:
   sync:
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     # The large database previously needed about 10 minutes just to save.
     # Bound writer phases below and retain room for restore, shutdown and save.
     timeout-minutes: ${{ (inputs.reindex || inputs.retext || inputs.requeue_failed || inputs.rebuild_markdown) && 300 || 60 }}
