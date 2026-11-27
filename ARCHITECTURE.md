@@ -52,7 +52,7 @@ SQLite is the source of truth for crawl state and relationships. Files under `da
 - Every extracted Markdown image uses `/api/publications/images/{sha256}` and its source URL appears in the article's sync `imageSources` map.
 - `rebuild-markdown` reads article `body_html` by article URL keyset, preserves the source HTML and other article fields, and queues the rebuilt canonical article directly.
 - Normal batches retain observedAt revision ordering; an explicit repair outbox may persist `missingOnly` so a replay cannot advance an existing publication to stale content.
-- The local systemd timer is the only scheduled production writer; the Actions workflow is a manual recovery path.
+- A single scheduled writer owns production synchronization; the Actions workflow is a manual recovery path.
 - `articles.content_hash` is the SHA-256 of `body_text` and is not the archive identity.
 - Raw page filenames match their stored response SHA-256.
 - The dashboard opens SQLite read-only and never performs network requests.
