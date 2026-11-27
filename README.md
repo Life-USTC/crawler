@@ -116,7 +116,7 @@ uv run ustc-crawler sync-backfill \
 
 ## 同步到服务端
 
-同步客户端使用部署在爬虫机器上的服务密钥，不依赖任何个人账号或本地密钥环。服务器地址和服务密钥分别通过环境变量提供；密钥只在内存中用于发送 `X-Publication-Ingestion-Secret` 请求头，不会写入 SQLite、归档、命令参数、输出或日志：
+同步客户端使用独立服务密钥，不依赖任何个人账号或本地密钥环。服务器地址和服务密钥分别通过环境变量提供；密钥只在内存中用于发送 `X-Publication-Ingestion-Secret` 请求头，不会写入 SQLite、归档、命令参数、输出或日志：
 
 ```bash
 export USTC_CRAWLER_SERVER=https://example.invalid
@@ -138,12 +138,14 @@ uv run ustc-crawler sync \
 
 ### 定时同步与修复
 
-GitHub Actions 的 `Incremental sync` 每 6 小时运行一次。同步退出码 `0` 表示本轮
-完成，`2` 表示仍有待重试批次、未发送事件或本轮事件校验失败；受控时间预算耗尽时
+定时同步必须保持单一生产写入者。GitHub Actions 的 `Incremental sync` 只保留手动恢复入口，
+避免两个独立 outbox 同时作为生产写入者。同步退出码 `0` 表示本轮完成，`2` 表示仍有待重试批次、未发送事件或本轮事件校验失败；受控时间预算耗尽时
 workflow 记录 `124`。后两种情况会先等待写入停止，执行 WAL checkpoint 和数据库
 完整性检查，再保存缓存，最后将 workflow 标为失败。命令崩溃、强制终止、取消任务或
 数据库检查失败时不覆盖上一份缓存。任务摘要和诊断附件列出退出码、队列计数，以及
 未能组成批次的失败事件；历史失败事件的计数本身不会让后续已完成的同步继续失败。
+同步 JSON 摘要中的 `health` 区分 `healthy` 和 `degraded`，`failed_backlog` 保留全部历史
+失败事件数；锁被其他进程占用时输出 `status=skipped`，但保持 timer 的退出码 `0`。
 抓取的逐来源错误会显示警告，并继续同步已归档内容。
 抓取日志会记录本轮 run ID、来源、去除凭据和查询参数的 URL、HTTP 状态或处理异常类型，
 以及逐来源错误计数；每轮最多记录 50 条明细，超出数量会明确汇总。结构化诊断不包含响应正文、
@@ -179,6 +181,20 @@ gh workflow run incremental-sync.yml \
 
 重建的文章进入正常同步队列；部分完成或受控超时已保存的进度会留在新缓存中。
 重建超时后应带游标继续剩余文章；普通同步重跑会继续处理已经入队的事件。
+
+只补齐平台缺失文章而不改变已有文章当前版本时，使用独立修复 outbox 和
+`--missing-only`。归档文章仍从主数据库读取，修复事件不会污染主同步队列：
+
+```bash
+uv run ustc-crawler sync-backfill \
+  --db data/crawler.sqlite --data-dir data \
+  --outbox-db data/repair.sqlite --chunk-size 100
+uv run ustc-crawler sync --missing-only \
+  --db data/repair.sqlite --archive-db data/crawler.sqlite --data-dir data
+```
+
+该模式要求服务端支持 `revisionPolicy: missingOnly`，应先部署服务端再运行修复。
+普通增量同步不要使用这个选项。
 
 ## 本地数据
 

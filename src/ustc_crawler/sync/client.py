@@ -17,13 +17,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from urllib.parse import quote, urlsplit
 
 import httpx
 
 from .. import __version__
 from ..db.models import Article, SyncBatch, SyncBatchItem, SyncRun
+from .backfill import sync_backfill
 from .models import (
     MAX_OBJECT_PLAN_OBJECTS,
     MAX_PUBLICATION_BATCH_ITEMS,
@@ -41,9 +42,6 @@ from .outbox import (
     IngestionOutbox,
     sanitize_error_detail,
 )
-
-if TYPE_CHECKING:
-    from ..store import Store
 
 BATCH_ENDPOINT = "/api/ingestion/publications/batches"
 OBJECT_PLAN_ENDPOINT = "/api/ingestion/publications/objects/plan"
@@ -149,6 +147,7 @@ class SyncOptions:
     max_backoff: float = 30.0
     object_concurrency: int = DEFAULT_OBJECT_CONCURRENCY
     batch_concurrency: int = DEFAULT_BATCH_CONCURRENCY
+    missing_only: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -224,6 +223,7 @@ class IngestionSyncClient:
         server: str,
         ingestion_secret: str,
         *,
+        archive_database: Any | None = None,
         http_client: httpx.Client | None = None,
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], float] = time.time,
@@ -231,6 +231,7 @@ class IngestionSyncClient:
         if not isinstance(ingestion_secret, str) or not ingestion_secret.strip():
             raise ValueError("ingestion secret must not be empty")
         self.database = database
+        self.archive_database = archive_database or database
         self.data_dir = Path(data_dir)
         self.server = _server_base(server)
         self._ingestion_secret = ingestion_secret
@@ -277,6 +278,7 @@ class IngestionSyncClient:
         self._stop_requested.clear()
         client_run_id = run_id or uuid.uuid4().hex
         previous_failed_events = self.outbox.failed_event_count()
+        failed_backlog = self.outbox.failed_backlog_count()
         self._start_run(client_run_id)
         summary: dict[str, int | str] = {
             "runId": client_run_id,
@@ -286,6 +288,7 @@ class IngestionSyncClient:
             "acked": 0,
             "failed": 0,
             "failed_events": 0,
+            "failed_backlog": failed_backlog,
             "rejected": 0,
             "pending": 0,
             "items": 0,
@@ -393,6 +396,7 @@ class IngestionSyncClient:
                                 .isoformat(timespec="seconds"),
                                 limit=options.batch_size,
                                 max_payload_bytes=options.max_payload_bytes,
+                                missing_only=options.missing_only,
                             )
                         except Exception:
                             # One unrebuildable persisted batch (e.g. a legacy
@@ -427,6 +431,7 @@ class IngestionSyncClient:
                             .isoformat(timespec="seconds"),
                             limit=options.batch_size,
                             max_payload_bytes=options.max_payload_bytes,
+                            missing_only=options.missing_only,
                         )
                         if batch is None:
                             new_batches_exhausted = True
@@ -456,6 +461,15 @@ class IngestionSyncClient:
                 print("sync interrupted by SIGTERM; active work stopped", file=sys.stderr, flush=True)
             summary["failed_events"] = self.outbox.failed_event_count() - previous_failed_events
             summary["status"] = "partial" if interrupted else "completed"
+            summary["failed_backlog"] = self.outbox.failed_backlog_count()
+            summary["health"] = (
+                "degraded"
+                if interrupted
+                or int(summary["failed"])
+                or int(summary["failed_events"])
+                or int(summary["failed_backlog"])
+                else "healthy"
+            )
             self._finish_run(
                 client_run_id,
                 status=str(summary["status"]),
@@ -829,20 +843,35 @@ class IngestionSyncClient:
         from ..models import sanitize_text
 
         column = getattr(Article, manifest.kind)
-        with self.database.session_factory() as session:
-            rows = session.scalars(
-                select(column)
-                .select_from(SyncBatchItem)
-                .join(Article, Article.url == SyncBatchItem.canonical_url)
-                .where(SyncBatchItem.batch_id == batch_id, column.is_not(None))
-            )
-            for value in rows:
-                self._raise_if_stopping()
-                candidate = sanitize_text(str(value)).encode("utf-8")
-                if len(candidate) != manifest.size:
-                    continue
-                if hashlib.sha256(candidate).hexdigest() == manifest.sha256:
-                    return candidate
+        if self.archive_database is self.database:
+            with self.database.session_factory() as session:
+                rows = session.scalars(
+                    select(column)
+                    .select_from(SyncBatchItem)
+                    .join(Article, Article.url == SyncBatchItem.canonical_url)
+                    .where(SyncBatchItem.batch_id == batch_id, column.is_not(None))
+                ).all()
+        else:
+            with self.database.session_factory() as session:
+                urls = session.scalars(
+                    select(SyncBatchItem.canonical_url).where(
+                        SyncBatchItem.batch_id == batch_id
+                    )
+                ).all()
+            with self.archive_database.session_factory() as session:
+                rows = session.scalars(
+                    select(column).where(
+                        Article.url.in_(urls),
+                        column.is_not(None),
+                    )
+                ).all()
+        for value in rows:
+            self._raise_if_stopping()
+            candidate = sanitize_text(str(value)).encode("utf-8")
+            if len(candidate) != manifest.size:
+                continue
+            if hashlib.sha256(candidate).hexdigest() == manifest.sha256:
+                return candidate
         self._raise_if_stopping()
         raise ImmutableObjectChangedError("immutable_object_changed")
 
@@ -952,68 +981,6 @@ class IngestionSyncClient:
             run.pages = batches
             run.articles = items
             run.errors = errors
-
-
-def sync_backfill(
-    store: Store,
-    *,
-    chunk_size: int = 100,
-    source_ids: set[str] | None = None,
-    after_url: str = "",
-    limit: int = 0,
-) -> dict[str, int]:
-    """Keyset-enqueue existing articles without making any network requests.
-
-    ``source_ids``, ``after_url``, and ``limit`` bound an article-keyset
-    repair.  Reindexing enqueues each successfully rebuilt canonical article
-    directly, so its page-keyset cursor is not reused for this operation.
-    """
-
-    if chunk_size < 1 or chunk_size > 1_000:
-        raise ValueError("backfill chunk size must be between 1 and 1000")
-    if limit < 0:
-        raise ValueError("backfill limit must not be negative")
-    outbox = IngestionOutbox(store.database)
-    sources: dict[str, Any] = {}
-    cursor = after_url
-    remaining = limit
-    result = {"scanned": 0, "enqueued": 0, "errors": 0}
-    while True:
-        page_limit = min(chunk_size, remaining) if remaining else chunk_size
-        snapshots = store.sync_article_snapshot_page(
-            cursor,
-            page_limit,
-            source_ids,
-        )
-        if not snapshots:
-            break
-        for snapshot in snapshots:
-            article = snapshot.article
-            result["scanned"] += 1
-            cursor = article.url
-            try:
-                source = sources.get(article.source_id)
-                if source is None:
-                    source = store.source_descriptor(article.source_id)
-                    sources[article.source_id] = source
-                if source.discovery_only:
-                    continue
-                _event_id, created = outbox.enqueue_article_with_status(
-                    article,
-                    store.data_dir,
-                    source=source,
-                    asset_paths=snapshot.asset_paths,
-                )
-            except (OSError, ValueError, KeyError):
-                result["errors"] += 1
-                continue
-            if created:
-                result["enqueued"] += 1
-        if remaining:
-            remaining -= len(snapshots)
-            if remaining <= 0:
-                break
-    return result
 
 
 SyncClient = IngestionSyncClient

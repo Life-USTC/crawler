@@ -80,6 +80,12 @@ class IngestionProtocolTests(unittest.TestCase):
                 objects=[{"kind": "body_html", "sha256": "b" * 64}] * 101,
             )
 
+    def test_missing_only_is_explicit_and_live_payload_is_unchanged(self) -> None:
+        payload = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        repair = IngestionBatch.model_validate(payload | {"revisionPolicy": "missingOnly"})
+        self.assertEqual(repair.payload_dict()["revisionPolicy"], "missingOnly")
+        self.assertNotIn("revisionPolicy", IngestionBatch.model_validate(payload).payload_dict())
+
     def test_dates_are_normalized_from_both_legacy_forms(self) -> None:
         self.assertEqual(
             normalize_publication_timestamp("2026-08-20"),
