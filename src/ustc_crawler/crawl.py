@@ -183,7 +183,9 @@ class AsyncCrawler:
         self.configured_sources: dict[str, SourceConfig] = {}
         self.sources: dict[str, SourceConfig] = {}
         self.fetcher = Fetcher(delay=options.delay, ignore_robots=options.ignore_robots)
-        self.queue: asyncio.PriorityQueue[tuple[int, int, str, str, int, str]] = asyncio.PriorityQueue()
+        self.queue: asyncio.PriorityQueue[tuple[int, int, str, str, int, str]] = (
+            asyncio.PriorityQueue()
+        )
         self.enqueued: set[str] = set()
         self._queue_sequence = 0
         self.source_counts: dict[str, int] = {}
@@ -334,11 +336,7 @@ class AsyncCrawler:
         is_sitemap = urlsplit(url).path.lower().endswith("sitemap.xml")
         is_document = document_asset_url(url)
         low_value, _ = is_obvious_low_value_url(url)
-        if (
-            not url
-            or (looks_like_asset(url) and not is_sitemap and not is_document)
-            or low_value
-        ):
+        if not url or (looks_like_asset(url) and not is_sitemap and not is_document) or low_value:
             return
         if self.options.max_depth and depth > self.options.max_depth:
             return
@@ -351,9 +349,7 @@ class AsyncCrawler:
         if self.options.incremental and not published_at and depth > 4:
             self.store.mark_filtered(url, "incremental skip: undated deep link")
             return
-        before_cutoff, cutoff_reason = self._before_cutoff(
-            url, source.id, depth, published_at
-        )
+        before_cutoff, cutoff_reason = self._before_cutoff(url, source.id, depth, published_at)
         if before_cutoff:
             self.store.mark_filtered(url, cutoff_reason)
             return
@@ -365,9 +361,7 @@ class AsyncCrawler:
             self.store.mark_filtered(url, "incremental skip: document without date hint")
             return
         priority = (
-            url_priority(url, source.id, parent, published_at)
-            if self.options.news_first
-            else 0
+            url_priority(url, source.id, parent, published_at) if self.options.news_first else 0
         )
         revive_current = bool(
             self.source_since.get(source.id)
@@ -389,7 +383,9 @@ class AsyncCrawler:
                     (-priority, self._queue_sequence, url, source.id, depth, parent)
                 )
 
-    async def _queue_existing(self, url: str, source_id: str, depth: int, parent: str, priority: int) -> None:
+    async def _queue_existing(
+        self, url: str, source_id: str, depth: int, parent: str, priority: int
+    ) -> None:
         self._queue_sequence += 1
         await self.queue.put((-priority, self._queue_sequence, url, source_id, depth, parent))
 
@@ -443,18 +439,18 @@ class AsyncCrawler:
                     f"incremental skip: existing {saved['page_kind']} page",
                 )
                 continue
-            if row["depth"] > 0 and saved and int(saved["value_score"] or 0) < self.options.min_value_score:
+            if (
+                row["depth"] > 0
+                and saved
+                and int(saved["value_score"] or 0) < self.options.min_value_score
+            ):
                 self.store.mark_filtered(
                     row["url"],
                     f"previous score {saved['value_score']} below crawl threshold ({saved['page_kind']})",
                 )
                 continue
             published_at = _date_from_url(row["url"]) or self.store.article_hint(row["url"])
-            if (
-                self.options.incremental
-                and not published_at
-                and int(row["depth"] or 0) > 4
-            ):
+            if self.options.incremental and not published_at and int(row["depth"] or 0) > 4:
                 self.store.mark_filtered(row["url"], "incremental skip: undated deep link")
                 continue
             before_cutoff, cutoff_reason = self._before_cutoff(
@@ -465,7 +461,9 @@ class AsyncCrawler:
                 continue
             priority = int(row["priority"] or 0)
             if self.options.news_first:
-                priority = url_priority(row["url"], source_id, row["discovered_from"] or "", published_at)
+                priority = url_priority(
+                    row["url"], source_id, row["discovered_from"] or "", published_at
+                )
                 # Seed URLs are given a fair turn before the legacy backlog.
                 if row["depth"] == 0 and not row["discovered_from"]:
                     priority = max(500, priority)
@@ -694,9 +692,7 @@ class AsyncCrawler:
         suppressed_by_cutoff = False
         refresh_existing_before_cutoff = False
         explicit_since = _parse_since(self.options.since)
-        if article and explicit_since and not _is_after_since(
-            article.published_at, explicit_since
-        ):
+        if article and explicit_since and not _is_after_since(article.published_at, explicit_since):
             # Keep page.article attached so save_page does not interpret a
             # caller-selected cutoff as the article disappearing from the site.
             article = None

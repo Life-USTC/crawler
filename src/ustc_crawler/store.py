@@ -247,7 +247,15 @@ class Store:
                            OR (status='filtered' AND last_error LIKE '%incremental cutoff%')
                        ))
                    )""",
-                (source_id, depth, discovered_from, priority, url, MAX_FRONTIER_ATTEMPTS, revive_current),
+                (
+                    source_id,
+                    depth,
+                    discovered_from,
+                    priority,
+                    url,
+                    MAX_FRONTIER_ATTEMPTS,
+                    revive_current,
+                ),
             )
             inserted = revived.rowcount > 0
         if not inserted:
@@ -496,9 +504,16 @@ class Store:
             saved = self._core.execute(
                 "SELECT value_score,page_kind FROM pages WHERE url=?", (url,)
             ).fetchone()
-            if int(row["depth"] or 0) > 0 and saved and int(saved["value_score"] or 0) < min_value_score:
+            if (
+                int(row["depth"] or 0) > 0
+                and saved
+                and int(saved["value_score"] or 0) < min_value_score
+            ):
                 filtered.append(
-                    (f"previous score {saved['value_score']} below crawl threshold ({saved['page_kind']})", url)
+                    (
+                        f"previous score {saved['value_score']} below crawl threshold ({saved['page_kind']})",
+                        url,
+                    )
                 )
                 continue
             priority_updates.append(
@@ -512,7 +527,11 @@ class Store:
         if priority_updates:
             self._core.executemany("UPDATE frontier SET priority=? WHERE url=?", priority_updates)
         self._core.commit()
-        return {"checked": len(rows), "filtered": len(filtered), "reprioritized": len(priority_updates)}
+        return {
+            "checked": len(rows),
+            "filtered": len(filtered),
+            "reprioritized": len(priority_updates),
+        }
 
     def mark_processing(self, url: str) -> None:
         self._core.execute(
@@ -559,7 +578,9 @@ class Store:
             old_urls = {page.requested_url, page.final_url, page.canonical_url}
             for old_url in filter(None, old_urls):
                 self._core.execute("DELETE FROM article_media WHERE article_url=?", (old_url,))
-                self._core.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (old_url,))
+                self._core.execute(
+                    "UPDATE media SET article_url=NULL WHERE article_url=?", (old_url,)
+                )
                 self._core.execute("DELETE FROM articles WHERE url=?", (old_url,))
         self._core.execute(
             """INSERT INTO pages(url,source_id,final_url,status,content_type,fetched_at,depth,discovered_from,
@@ -662,7 +683,11 @@ class Store:
         error = error or ("empty response body" if not body else "")
         status = "error" if error else "ok"
         if body and not error:
-            extension = mimetypes.guess_extension(mime_type.split(";", 1)[0]) or Path(urlsplit(url).path).suffix.lower() or ".bin"
+            extension = (
+                mimetypes.guess_extension(mime_type.split(";", 1)[0])
+                or Path(urlsplit(url).path).suffix.lower()
+                or ".bin"
+            )
             extension = extension if len(extension) <= 8 else ".bin"
             local_path = self.data_dir / "assets" / digest[:2] / f"{digest}{extension}"
             local_path.parent.mkdir(parents=True, exist_ok=True)
@@ -739,8 +764,7 @@ class Store:
 
     def article_exists(self, url: str) -> bool:
         return (
-            self._core.execute("SELECT 1 FROM articles WHERE url=?", (url,)).fetchone()
-            is not None
+            self._core.execute("SELECT 1 FROM articles WHERE url=?", (url,)).fetchone() is not None
         )
 
     def article_alias_exists(self, url: str) -> bool:
@@ -921,7 +945,10 @@ class Store:
                 .order_by(Media.url)
             ).all()
             return {
-                str(row.url): (str(row.local_path), str(row.mime_type or "application/octet-stream"))
+                str(row.url): (
+                    str(row.local_path),
+                    str(row.mime_type or "application/octet-stream"),
+                )
                 for row in rows
                 if row.local_path and Path(row.local_path).is_file()
             }
@@ -943,7 +970,10 @@ class Store:
                 .order_by(Asset.url)
             ).all()
             return {
-                str(row.url): (str(row.local_path), str(row.mime_type or "application/octet-stream"))
+                str(row.url): (
+                    str(row.local_path),
+                    str(row.mime_type or "application/octet-stream"),
+                )
                 for row in rows
                 if row.local_path and Path(row.local_path).is_file()
             }
@@ -994,10 +1024,7 @@ class Store:
                 return []
 
             source_urls = {
-                url
-                for row in rows
-                for url in (row.url, row.source_page_url or row.url)
-                if url
+                url for row in rows for url in (row.url, row.source_page_url or row.url) if url
             }
             asset_rows = []
             if source_urls:
@@ -1140,9 +1167,7 @@ class Store:
                 try:
                     images = article.images
                     image_sources = {
-                        image_source_hash(image.url): image.url
-                        for image in images
-                        if image.url
+                        image_source_hash(image.url): image.url for image in images if image.url
                     }
                     body_markdown = html_to_markdown(
                         article.body_html,
@@ -1170,13 +1195,15 @@ class Store:
                     if progress is not None:
                         progress({"url": article.url, "error": type(exc).__name__})
             if progress is not None:
-                progress({
-                    "scanned": scanned,
-                    "last_url": cursor,
-                    "changed": changed,
-                    "enqueued": enqueued,
-                    "errors": errors,
-                })
+                progress(
+                    {
+                        "scanned": scanned,
+                        "last_url": cursor,
+                        "changed": changed,
+                        "enqueued": enqueued,
+                        "errors": errors,
+                    }
+                )
             if remaining:
                 remaining -= len(snapshots)
                 if remaining <= 0:
@@ -1443,9 +1470,7 @@ class Store:
             ).fetchone()
             if not article_row:
                 dangling += 1
-                self._core.execute(
-                    "UPDATE media SET article_url=NULL WHERE url=?", (row["url"],)
-                )
+                self._core.execute("UPDATE media SET article_url=NULL WHERE url=?", (row["url"],))
                 continue
             bundle = article_bundle_path(self.data_dir, article_url)
             if not bundle.exists():
@@ -1586,8 +1611,12 @@ class Store:
             elif not matched:
                 if commit:
                     self._core.execute("DELETE FROM article_media WHERE article_url=?", (url,))
-                    self._core.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (url,))
-                    deleted += self._core.execute("DELETE FROM articles WHERE url=?", (url,)).rowcount
+                    self._core.execute(
+                        "UPDATE media SET article_url=NULL WHERE article_url=?", (url,)
+                    )
+                    deleted += self._core.execute(
+                        "DELETE FROM articles WHERE url=?", (url,)
+                    ).rowcount
                 else:
                     deleted += 1
         if commit and (reassigned or deleted):
@@ -1720,7 +1749,9 @@ class Store:
             for name, table in names.items()
         }
         result["frontier_filtered"] = int(
-            self._core.execute("SELECT COUNT(*) FROM frontier WHERE status='filtered'").fetchone()[0]
+            self._core.execute("SELECT COUNT(*) FROM frontier WHERE status='filtered'").fetchone()[
+                0
+            ]
         )
         result["pages_indexable"] = int(
             self._core.execute("SELECT COUNT(*) FROM pages WHERE value_score >= 16").fetchone()[0]
@@ -1730,7 +1761,9 @@ class Store:
     def export_jsonl(self, output: str | Path) -> Path:
         target = Path(output)
         target.parent.mkdir(parents=True, exist_ok=True)
-        rows = self._core.execute("SELECT * FROM articles ORDER BY published_at DESC, url").fetchall()
+        rows = self._core.execute(
+            "SELECT * FROM articles ORDER BY published_at DESC, url"
+        ).fetchall()
         images_by_article: dict[str, list[dict[str, Any]]] = {}
         urls = [str(row["url"]) for row in rows]
         for offset in range(0, len(urls), 500):
@@ -1959,9 +1992,8 @@ class Store:
         ).fetchall():
             target = row["final_url"] or row["url"]
             content_type = (row["content_type"] or "").lower()
-            if (
-                not document_asset_url(target)
-                or content_type.startswith(("text/html", "application/xhtml", "text/xml", "application/xml", "application/rss"))
+            if not document_asset_url(target) or content_type.startswith(
+                ("text/html", "application/xhtml", "text/xml", "application/xml", "application/rss")
             ):
                 continue
             path = Path(row["raw_path"])
@@ -2021,7 +2053,7 @@ class Store:
             params.append(batch_size)
             rows = self._core.execute(
                 f"""SELECT url,body_html,body_text FROM articles
-                    WHERE {' AND '.join(clauses)} ORDER BY url LIMIT ?""",
+                    WHERE {" AND ".join(clauses)} ORDER BY url LIMIT ?""",
                 params,
             ).fetchall()
             if not rows:
@@ -2089,9 +2121,7 @@ class Store:
                 json.loads(row["allowed_hosts"] or "[]"),
                 json.loads(row["blocked_hosts"] or "[]"),
             )
-            for row in self._core.execute(
-                "SELECT id,allowed_hosts,blocked_hosts FROM sources"
-            )
+            for row in self._core.execute("SELECT id,allowed_hosts,blocked_hosts FROM sources")
         }
 
         def remove_article(url: str) -> int:
@@ -2132,6 +2162,7 @@ class Store:
             self._core.execute("UPDATE media SET article_url=NULL WHERE article_url=?", (url,))
             deleted = remove_article(url)
             return deleted
+
         # Avoid one duplicate lookup query per page.  The archive is large
         # enough that the old ``duplicate_page_url`` call turned reindexing
         # into an hours-long sequence of random SQLite reads.  Build a small
@@ -2178,7 +2209,9 @@ class Store:
             existing = content_keeper.get(content_key)
             if existing is None or _canonical_url_rank(candidate) < _canonical_url_rank(existing):
                 content_keeper[content_key] = candidate
-        page_query = "SELECT * FROM pages WHERE status=200 AND raw_path IS NOT NULL AND raw_path != ''"
+        page_query = (
+            "SELECT * FROM pages WHERE status=200 AND raw_path IS NOT NULL AND raw_path != ''"
+        )
         page_params: tuple[str, ...] = ()
         if source_ids:
             placeholders = ",".join("?" for _ in source_ids)
@@ -2385,9 +2418,7 @@ class Store:
                 # orphan left behind by the https scheme upgrade).  Deferred:
                 # a later twin page's removal keys must not delete the row
                 # just saved.
-                pending_removals.update(
-                    key for key in filter(None, keys) if key != article.url
-                )
+                pending_removals.update(key for key in filter(None, keys) if key != article.url)
             else:
                 pending_removals.update(filter(None, keys))
             # Committing once per page turns this pass into millions of

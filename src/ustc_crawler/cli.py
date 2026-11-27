@@ -99,7 +99,11 @@ def _failure_exit_code(result: dict) -> int:
     errors = int(result.get("errors", 0) or 0)
     failed_events = int(result.get("failed_events", 0) or 0)
     pending = int(result.get("pending", 0) or 0)
-    return 2 if failed or errors or failed_events or pending or result.get("status") == "partial" else 0
+    return (
+        2
+        if failed or errors or failed_events or pending or result.get("status") == "partial"
+        else 0
+    )
 
 
 @contextlib.contextmanager

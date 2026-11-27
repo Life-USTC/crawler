@@ -61,15 +61,9 @@ def _record_error(result: dict[str, Any], code: str, detail: str) -> None:
     result["status"] = "fail"
 
 
-def _page_for_article(
-    connection: sqlite3.Connection, article: sqlite3.Row
-) -> sqlite3.Row | None:
+def _page_for_article(connection: sqlite3.Connection, article: sqlite3.Row) -> sqlite3.Row | None:
     aliases = tuple(
-        dict.fromkeys(
-            value
-            for value in (article["source_page_url"], article["url"])
-            if value
-        )
+        dict.fromkeys(value for value in (article["source_page_url"], article["url"]) if value)
     )
     if not aliases:
         return None
@@ -86,9 +80,7 @@ def _page_for_article(
     ).fetchone()
 
 
-def _check_raw(
-    result: dict[str, Any], page: sqlite3.Row, data_dir: Path
-) -> bytes | None:
+def _check_raw(result: dict[str, Any], page: sqlite3.Row, data_dir: Path) -> bytes | None:
     result["checks"]["page"] = {
         "url": page["url"],
         "status": page["status"],
@@ -124,7 +116,9 @@ def _check_bundle(
     html_path = article_bundle_path(data_dir, str(article["url"]), ".html")
     result["checks"]["bundle"] = {"json": str(json_path), "html": str(html_path)}
     if not json_path.is_file() or not html_path.is_file():
-        _record_error(result, "bundle_missing", f"json={json_path.is_file()} html={html_path.is_file()}")
+        _record_error(
+            result, "bundle_missing", f"json={json_path.is_file()} html={html_path.is_file()}"
+        )
         return None
     try:
         payload = json.loads(json_path.read_text(encoding="utf-8"))
@@ -136,7 +130,9 @@ def _check_bundle(
         _record_error(result, "bundle_archive_key_mismatch", str(payload.get("archive_key")))
     body_hash = hashlib.sha256(str(article["body_text"] or "").encode()).hexdigest()
     if body_hash != article["content_hash"] or payload.get("content_hash") != body_hash:
-        _record_error(result, "body_hash_mismatch", f"computed={body_hash} db={article['content_hash']}")
+        _record_error(
+            result, "body_hash_mismatch", f"computed={body_hash} db={article['content_hash']}"
+        )
     for field in ARTICLE_FIELDS:
         if payload.get(field, "") != (article[field] or ""):
             _record_error(result, "bundle_field_mismatch", field)
@@ -165,7 +161,9 @@ def _check_reextract(
         str(article["source_id"]),
     ).article
     if parsed is None:
-        _record_error(result, "reextract_missing_article", "raw HTML no longer parses as an article")
+        _record_error(
+            result, "reextract_missing_article", "raw HTML no longer parses as an article"
+        )
         return
     mismatches = []
     for field in (
@@ -230,9 +228,7 @@ def validate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     config_sources, _ = load_config(args.config, include_supplemental=True)
     sources = config_sources + unit_sources(args.units)
     expected = {source.id: source for source in sources}
-    source_hosts = {
-        source.id: (source.allowed_hosts, source.blocked_hosts) for source in sources
-    }
+    source_hosts = {source.id: (source.allowed_hosts, source.blocked_hosts) for source in sources}
     before = _snapshot_file(db_path)
     connection = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
@@ -283,7 +279,9 @@ def validate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     }
     global_errors: list[dict[str, str]] = []
     if missing or extra:
-        global_errors.append({"code": "source_inventory_mismatch", "detail": f"missing={missing} extra={extra}"})
+        global_errors.append(
+            {"code": "source_inventory_mismatch", "detail": f"missing={missing} extra={extra}"}
+        )
     if metadata_mismatches:
         global_errors.append(
             {"code": "source_metadata_mismatch", "detail": str(metadata_mismatches)}

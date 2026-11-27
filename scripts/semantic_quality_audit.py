@@ -29,8 +29,10 @@ def _archive_path(data_dir: Path, value: str) -> Path:
 
 def _shell_contaminated(body: str) -> bool:
     tail = body[-1000:]
-    copyright_footer = "皖ICP备" in tail or "皖公网安备" in tail or (
-        "Copyright 中国科学技术大学" in tail and "All Rights Reserved" in tail
+    copyright_footer = (
+        "皖ICP备" in tail
+        or "皖公网安备" in tail
+        or ("Copyright 中国科学技术大学" in tail and "All Rights Reserved" in tail)
     )
     navigation = all(marker in body for marker in ("科大新闻", "学校概况", "院系介绍"))
     return copyright_footer or navigation
@@ -96,7 +98,9 @@ def audit(args: argparse.Namespace) -> dict[str, Any]:
             body = str(row["body_text"] or "")
             if SITE_TITLE_SUFFIX.search(title):
                 counts["stored_site_title_suffix"] += 1
-                _sample(samples, "stored_site_title_suffix", common | {"title": title}, args.samples)
+                _sample(
+                    samples, "stored_site_title_suffix", common | {"title": title}, args.samples
+                )
             if _shell_contaminated(body):
                 counts["stored_page_shell"] += 1
                 _sample(samples, "stored_page_shell", common, args.samples)
@@ -208,7 +212,9 @@ def main() -> int:
     args = parser.parse_args()
     report = audit(args)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    args.output.write_text(
+        json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
     print(json.dumps(report["counts"], ensure_ascii=False, indent=2))
     print(args.output)
     return 0

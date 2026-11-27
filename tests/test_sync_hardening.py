@@ -150,8 +150,7 @@ class PoisonPillTests(SyncHardeningTestCase):
                 self.assertEqual(batch.items[0].canonical_url, "https://example.edu/news/2")
                 with store.database.session_factory() as session:
                     rows = {
-                        row.entity_key: row
-                        for row in session.scalars(select(SyncOutbox)).all()
+                        row.entity_key: row for row in session.scalars(select(SyncOutbox)).all()
                     }
                     poison = rows["source:https://example.edu/news/1"]
                     self.assertEqual(poison.status, "failed")
@@ -204,9 +203,11 @@ class InvalidEventTests(SyncHardeningTestCase):
     @staticmethod
     def _invalidate(store: Store, number: int, *, kind: str = "missing_field") -> tuple[str, str]:
         with store.database.session_factory.begin() as session:
-            row = session.scalar(select(SyncOutbox).where(
-                SyncOutbox.entity_key == f"source:https://example.edu/news/{number}"
-            ))
+            row = session.scalar(
+                select(SyncOutbox).where(
+                    SyncOutbox.entity_key == f"source:https://example.edu/news/{number}"
+                )
+            )
             payload = json.loads(row.payload_json)
             if kind == "missing_field":
                 del payload["imageSources"]
@@ -235,15 +236,21 @@ class InvalidEventTests(SyncHardeningTestCase):
                     payload, digest = self._invalidate(store, 1, kind=kind)
                     outbox = IngestionOutbox(store.database)
                     batch = outbox.build_batch(
-                        run_id="run", batch_id="batch", producer_version="test",
-                        observed_at="2026-10-08", limit=1,
+                        run_id="run",
+                        batch_id="batch",
+                        producer_version="test",
+                        observed_at="2026-10-08",
+                        limit=1,
                     )
-                    self.assertEqual([item.canonical_url for item in batch.items],
-                                     ["https://example.edu/news/2"])
+                    self.assertEqual(
+                        [item.canonical_url for item in batch.items], ["https://example.edu/news/2"]
+                    )
                     with store.database.session_factory() as session:
-                        bad = session.scalar(select(SyncOutbox).where(
-                            SyncOutbox.entity_key == "source:https://example.edu/news/1"
-                        ))
+                        bad = session.scalar(
+                            select(SyncOutbox).where(
+                                SyncOutbox.entity_key == "source:https://example.edu/news/1"
+                            )
+                        )
                         self.assertEqual(bad.status, "failed")
                         self.assertEqual(bad.last_error, "invalid_event")
                         self.assertIsNone(bad.batch_id)
@@ -260,8 +267,9 @@ class InvalidEventTests(SyncHardeningTestCase):
                     store.enqueue_article_for_sync(self._article(number))
                     if number:
                         self._invalidate(store, number)
-                sync = IngestionSyncClient(store.database, store.data_dir,
-                                           self.server, self.ingestion_secret)
+                sync = IngestionSyncClient(
+                    store.database, store.data_dir, self.server, self.ingestion_secret
+                )
                 delivered = []
 
                 def deliver(batch, _options):
@@ -292,18 +300,29 @@ class InvalidEventTests(SyncHardeningTestCase):
                 for number in (1, 2):
                     store.enqueue_article_for_sync(self._article(number))
                 with store.database.session_factory.begin() as session:
-                    row = session.scalar(select(SyncOutbox).where(
-                        SyncOutbox.entity_key == "source:https://example.edu/news/1"
-                    ))
+                    row = session.scalar(
+                        select(SyncOutbox).where(
+                            SyncOutbox.entity_key == "source:https://example.edu/news/1"
+                        )
+                    )
                     source = json.loads(row.source_json)
                     source["name"] = "Previous source name"
                     row.source_json = json.dumps(source)
                 outbox = IngestionOutbox(store.database)
-                batches = [outbox.build_batch(run_id="run", batch_id=f"batch-{i}",
-                            producer_version="test", observed_at="2026-10-08") for i in (1, 2)]
+                batches = [
+                    outbox.build_batch(
+                        run_id="run",
+                        batch_id=f"batch-{i}",
+                        producer_version="test",
+                        observed_at="2026-10-08",
+                    )
+                    for i in (1, 2)
+                ]
                 self.assertEqual([len(batch.items) for batch in batches], [1, 1])
-                self.assertEqual({item.canonical_url for batch in batches for item in batch.items},
-                                 {self._article(i).url for i in (1, 2)})
+                self.assertEqual(
+                    {item.canonical_url for batch in batches for item in batch.items},
+                    {self._article(i).url for i in (1, 2)},
+                )
                 self.assertEqual(outbox.failed_event_count(), 0)
             finally:
                 store.close()
@@ -315,8 +334,12 @@ class InvalidEventTests(SyncHardeningTestCase):
                 store.enqueue_article_for_sync(self._article(1))
                 outbox = IngestionOutbox(store.database)
                 with self.assertRaises(ValueError):
-                    outbox.build_batch(run_id="run", batch_id="batch",
-                                       producer_version="", observed_at="2026-10-08")
+                    outbox.build_batch(
+                        run_id="run",
+                        batch_id="batch",
+                        producer_version="",
+                        observed_at="2026-10-08",
+                    )
                 with store.database.session_factory() as session:
                     self.assertEqual(session.scalar(select(SyncOutbox)).status, "pending")
             finally:
@@ -352,13 +375,18 @@ class InvalidEventTests(SyncHardeningTestCase):
                 self.assertEqual(result["enqueued"], 1)
                 self.assertEqual(progress, [result])
                 outbox = IngestionOutbox(store.database)
-                batch = outbox.build_batch(run_id="run", batch_id="batch",
-                                          producer_version="test", observed_at="2026-10-08")
+                batch = outbox.build_batch(
+                    run_id="run",
+                    batch_id="batch",
+                    producer_version="test",
+                    observed_at="2026-10-08",
+                )
                 self.assertEqual(len(batch.items), 1)
                 source = "https://example.edu/image.png"
                 self.assertEqual(batch.items[0].image_sources, {image_source_hash(source): source})
                 markdown = next(
-                    item for item in outbox.batch_objects(batch.batch_id)
+                    item
+                    for item in outbox.batch_objects(batch.batch_id)
                     if item.kind == "body_markdown"
                 )
                 self.assertIn(local_image_url(source), Path(markdown.local_path).read_text())
@@ -378,13 +406,19 @@ class InvalidEventTests(SyncHardeningTestCase):
                 for number in (1, 2):
                     store.save_article_and_enqueue_for_sync(self._article(number))
                 progress = []
-                with patch.object(store, "write_article_bundle", side_effect=[ValueError("private body"), None]):
+                with patch.object(
+                    store, "write_article_bundle", side_effect=[ValueError("private body"), None]
+                ):
                     result = store.rebuild_markdown(progress=progress.append)
                 self.assertEqual(result["scanned"], 2)
                 self.assertEqual(result["errors"], 1)
-                self.assertEqual(progress, [
-                    {"url": "https://example.edu/news/1", "error": "ValueError"}, result,
-                ])
+                self.assertEqual(
+                    progress,
+                    [
+                        {"url": "https://example.edu/news/1", "error": "ValueError"},
+                        result,
+                    ],
+                )
             finally:
                 store.close()
 
@@ -507,7 +541,9 @@ class ArchivedObjectBytesTests(SyncHardeningTestCase):
             observed_at="2026-10-08T00:00:00+08:00",
         )
         self.assertIsNotNone(batch)
-        manifest = next(item for item in outbox.batch_objects(batch.batch_id) if item.kind == "body_html")
+        manifest = next(
+            item for item in outbox.batch_objects(batch.batch_id) if item.kind == "body_html"
+        )
         Path(manifest.local_path).unlink()
         return batch.batch_id, manifest
 
@@ -526,17 +562,24 @@ class ArchivedObjectBytesTests(SyncHardeningTestCase):
                 store.save_article(self._article(999))
                 batch_id, manifest = self._archive_batch(store, 999)
                 sync = IngestionSyncClient(
-                    store.database, store.data_dir, self.server, self.ingestion_secret,
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
                 )
                 statements: list[tuple[str, object]] = []
 
-                def record_query(_connection, _cursor, statement, parameters, _context, _executemany):
+                def record_query(
+                    _connection, _cursor, statement, parameters, _context, _executemany
+                ):
                     if statement.lstrip().upper().startswith("SELECT"):
                         statements.append((statement, parameters))
 
                 event.listen(store.database.engine, "before_cursor_execute", record_query)
                 try:
-                    with patch("ustc_crawler.models.sanitize_text", wraps=sanitize_text) as sanitize:
+                    with patch(
+                        "ustc_crawler.models.sanitize_text", wraps=sanitize_text
+                    ) as sanitize:
                         body = sync._object_bytes(manifest, batch_id=batch_id)
                     self.assertEqual(body, self._article(999).body_html.encode())
                     self.assertEqual(sanitize.call_count, 1)
@@ -547,10 +590,13 @@ class ArchivedObjectBytesTests(SyncHardeningTestCase):
                 self.assertEqual(len(statements), 1)
                 with store.database.engine.connect() as connection:
                     plans = connection.exec_driver_sql(
-                        "EXPLAIN QUERY PLAN " + statements[0][0], statements[0][1],
+                        "EXPLAIN QUERY PLAN " + statements[0][0],
+                        statements[0][1],
                     ).all()
                 details = [row[3] for row in plans]
-                self.assertTrue(any("SEARCH sync_batch_items USING INDEX" in detail for detail in details))
+                self.assertTrue(
+                    any("SEARCH sync_batch_items USING INDEX" in detail for detail in details)
+                )
                 self.assertTrue(any("SEARCH articles USING INDEX" in detail for detail in details))
                 self.assertFalse(any("SCAN" in detail for detail in details))
             finally:
@@ -563,7 +609,10 @@ class ArchivedObjectBytesTests(SyncHardeningTestCase):
                 store.save_article(self._article(1))
                 batch_id, manifest = self._archive_batch(store, 1)
                 sync = IngestionSyncClient(
-                    store.database, store.data_dir, self.server, self.ingestion_secret,
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
                 )
                 try:
                     for invalid in (
@@ -593,7 +642,10 @@ class ArchivedObjectBytesTests(SyncHardeningTestCase):
                 original.body_html = "<p>Changed after the immutable event</p>"
                 store.save_article(original)
                 sync = IngestionSyncClient(
-                    store.database, store.data_dir, self.server, self.ingestion_secret,
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
                 )
                 try:
                     with self.assertRaises(ImmutableObjectChangedError):
@@ -609,8 +661,10 @@ class ArchivedObjectBytesTests(SyncHardeningTestCase):
             try:
                 batch_id, manifest = self._archive_batch(store, 1, 2)
                 original_number = next(
-                    number for number in (1, 2)
-                    if hashlib.sha256(self._article(number).body_html.encode()).hexdigest() == manifest.sha256
+                    number
+                    for number in (1, 2)
+                    if hashlib.sha256(self._article(number).body_html.encode()).hexdigest()
+                    == manifest.sha256
                 )
                 other = self._article(3 - original_number)
                 other.body_html = self._article(original_number).body_html
@@ -618,7 +672,10 @@ class ArchivedObjectBytesTests(SyncHardeningTestCase):
                 # still holds the exact shared bytes, which remain valid.
                 store.save_article(other)
                 sync = IngestionSyncClient(
-                    store.database, store.data_dir, self.server, self.ingestion_secret,
+                    store.database,
+                    store.data_dir,
+                    self.server,
+                    self.ingestion_secret,
                 )
                 try:
                     self.assertEqual(
@@ -825,9 +882,18 @@ class SigtermTests(SyncHardeningTestCase):
                 return result
 
             before = signal.getsignal(signal.SIGTERM)
-            with unittest.mock.patch.object(Store, "enqueue_article_for_sync", enqueue_and_interrupt):
-                code = main(["rebuild-markdown", "--db", str(root / "crawler.sqlite"),
-                             "--data-dir", str(root / "data")])
+            with unittest.mock.patch.object(
+                Store, "enqueue_article_for_sync", enqueue_and_interrupt
+            ):
+                code = main(
+                    [
+                        "rebuild-markdown",
+                        "--db",
+                        str(root / "crawler.sqlite"),
+                        "--data-dir",
+                        str(root / "data"),
+                    ]
+                )
             self.assertEqual(code, 130)
             self.assertEqual(signal.getsignal(signal.SIGTERM), before)
             store = self._store(root)
@@ -1137,7 +1203,9 @@ class ExitCodeTests(SyncHardeningTestCase):
                 FakeClient.summary = {"failed": 0}
                 self.assertEqual(main(argv), 0)
                 for summary in (
-                    {"failed": 2}, {"failed_events": 1}, {"pending": 1},
+                    {"failed": 2},
+                    {"failed_events": 1},
+                    {"pending": 1},
                     {"failed": 0, "pending": 0, "status": "partial"},
                 ):
                     with self.subTest(summary=summary):

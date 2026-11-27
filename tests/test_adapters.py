@@ -79,8 +79,11 @@ class AdapterRegistryTests(unittest.TestCase):
 
     def test_adapter_none_keeps_generic_result(self) -> None:
         register(ProbeAdapter())
-        page = extract_page("https://x.test/no-match", "<html><body><p>x</p></body></html>",
-                            source_id="probe-source")
+        page = extract_page(
+            "https://x.test/no-match",
+            "<html><body><p>x</p></body></html>",
+            source_id="probe-source",
+        )
         self.assertIsNone(page.article)
 
     def test_adapter_exception_falls_back_to_generic_with_log(self) -> None:
@@ -133,9 +136,7 @@ class AdapterRegistryTests(unittest.TestCase):
                 any("conflict.test" in message for message in captured.output),
                 captured.output,
             )
-            self.assertEqual(
-                adapter_for("", "https://conflict.test/info/1/2.htm").name, "second"
-            )
+            self.assertEqual(adapter_for("", "https://conflict.test/info/1/2.htm").name, "second")
         finally:
             adapters._by_host.pop("conflict.test", None)
 

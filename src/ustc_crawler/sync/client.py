@@ -426,9 +426,7 @@ class IngestionSyncClient:
                             run_id=client_run_id,
                             batch_id=uuid.uuid4().hex,
                             producer_version=options.producer_version,
-                            observed_at=datetime.now()
-                            .astimezone()
-                            .isoformat(timespec="seconds"),
+                            observed_at=datetime.now().astimezone().isoformat(timespec="seconds"),
                             limit=options.batch_size,
                             max_payload_bytes=options.max_payload_bytes,
                             missing_only=options.missing_only,
@@ -458,7 +456,9 @@ class IngestionSyncClient:
             if previous_sigterm is not None:
                 signal.signal(signal.SIGTERM, previous_sigterm)
             if self._stop_requested.is_set():
-                print("sync interrupted by SIGTERM; active work stopped", file=sys.stderr, flush=True)
+                print(
+                    "sync interrupted by SIGTERM; active work stopped", file=sys.stderr, flush=True
+                )
             summary["failed_events"] = self.outbox.failed_event_count() - previous_failed_events
             summary["status"] = "partial" if interrupted else "completed"
             summary["failed_backlog"] = self.outbox.failed_backlog_count()
@@ -519,9 +519,7 @@ class IngestionSyncClient:
                 batch.batch_id,
                 set(unchanged_needs),
             )
-            needed_objects = (
-                set().union(*unchanged_needs.values()) if unchanged_needs else set()
-            )
+            needed_objects = set().union(*unchanged_needs.values()) if unchanged_needs else set()
             self._upload_objects(
                 batch.batch_id,
                 item_keys=upload_item_keys,
@@ -854,9 +852,7 @@ class IngestionSyncClient:
         else:
             with self.database.session_factory() as session:
                 urls = session.scalars(
-                    select(SyncBatchItem.canonical_url).where(
-                        SyncBatchItem.batch_id == batch_id
-                    )
+                    select(SyncBatchItem.canonical_url).where(SyncBatchItem.batch_id == batch_id)
                 ).all()
             with self.archive_database.session_factory() as session:
                 rows = session.scalars(

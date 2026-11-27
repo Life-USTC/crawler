@@ -462,21 +462,31 @@ class IngestionOutbox:
         """Count all terminal events retained for health reporting and repair."""
 
         with self.database.session_factory() as session:
-            return session.scalar(
-                select(func.count()).select_from(SyncOutbox).where(SyncOutbox.status == "failed")
-            ) or 0
+            return (
+                session.scalar(
+                    select(func.count())
+                    .select_from(SyncOutbox)
+                    .where(SyncOutbox.status == "failed")
+                )
+                or 0
+            )
 
     def failed_event_count(self) -> int:
         """Count terminal events rejected before they could join a batch."""
 
         with self.database.session_factory() as session:
-            return session.scalar(
-                select(func.count()).select_from(SyncOutbox).where(
-                    SyncOutbox.status == "failed",
-                    SyncOutbox.batch_id.is_(None),
-                    SyncOutbox.last_error.in_(("invalid_event", "event_too_large")),
+            return (
+                session.scalar(
+                    select(func.count())
+                    .select_from(SyncOutbox)
+                    .where(
+                        SyncOutbox.status == "failed",
+                        SyncOutbox.batch_id.is_(None),
+                        SyncOutbox.last_error.in_(("invalid_event", "event_too_large")),
+                    )
                 )
-            ) or 0
+                or 0
+            )
 
     @staticmethod
     def _source(row: SyncOutbox) -> PublicationSourceDescriptor:
@@ -670,20 +680,27 @@ class IngestionOutbox:
 
         # Keep ranking in SQLite: rebuilt archives can contain more stale
         # revisions than SQLite permits bound parameters in an IN list.
-        ranked = select(
-            SyncOutbox.event_id,
-            func.row_number().over(
-                partition_by=SyncOutbox.entity_key,
-                order_by=(SyncOutbox.created_at.desc(), SyncOutbox.event_id.desc()),
-            ).label("revision_rank"),
-        ).where(
-            SyncOutbox.status == "pending", SyncOutbox.batch_id.is_(None),
-        ).subquery()
+        ranked = (
+            select(
+                SyncOutbox.event_id,
+                func.row_number()
+                .over(
+                    partition_by=SyncOutbox.entity_key,
+                    order_by=(SyncOutbox.created_at.desc(), SyncOutbox.event_id.desc()),
+                )
+                .label("revision_rank"),
+            )
+            .where(
+                SyncOutbox.status == "pending",
+                SyncOutbox.batch_id.is_(None),
+            )
+            .subquery()
+        )
         result = session.execute(
             update(SyncOutbox)
-            .where(SyncOutbox.event_id.in_(
-                select(ranked.c.event_id).where(ranked.c.revision_rank > 1)
-            ))
+            .where(
+                SyncOutbox.event_id.in_(select(ranked.c.event_id).where(ranked.c.revision_rank > 1))
+            )
             .values(
                 status="superseded",
                 last_error="coalesced_by_newer",

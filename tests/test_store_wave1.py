@@ -81,7 +81,9 @@ class MediaIntegrityTests(unittest.TestCase):
             store = Store(root / "crawler.sqlite", root / "data")
             self._save_article(store, "https://example.test/a")
             image = ImageRef(url="https://example.test/a.jpg", alt="a", title="", caption="")
-            local = store.save_media(image, b"image-bytes", "image/jpeg", "https://example.test/a", "")
+            local = store.save_media(
+                image, b"image-bytes", "image/jpeg", "https://example.test/a", ""
+            )
             self.assertIsNotNone(local)
 
             store.save_media(
@@ -198,9 +200,11 @@ class FrontierRevivalTests(unittest.TestCase):
             revived = store.enqueue(url, "news", 1, "", 100)
             from tests.support import store_core
 
-            row = store_core(store).execute(
-                "SELECT status, attempts FROM frontier WHERE url=?", (url,)
-            ).fetchone()
+            row = (
+                store_core(store)
+                .execute("SELECT status, attempts FROM frontier WHERE url=?", (url,))
+                .fetchone()
+            )
             store.close()
 
             self.assertTrue(revived)
@@ -229,9 +233,11 @@ class FrontierRevivalTests(unittest.TestCase):
             revived = store.enqueue(url, "news", 1, "", 100)
             from tests.support import store_core
 
-            row = store_core(store).execute(
-                "SELECT status, attempts FROM frontier WHERE url=?", (url,)
-            ).fetchone()
+            row = (
+                store_core(store)
+                .execute("SELECT status, attempts FROM frontier WHERE url=?", (url,))
+                .fetchone()
+            )
             store.close()
 
             self.assertFalse(revived)
@@ -277,25 +283,45 @@ class StoreWave1Tests(unittest.TestCase):
             url = "https://example.test/page"
             store.save_page(
                 PageDocument(
-                    requested_url=url, final_url=url, status=200, content_type="text/html",
-                    fetched_at="2026-01-01T00:00:00+08:00", title="t", canonical_url=url,
-                    html="<html></html>", links=[], images=[], published_at="2026-01-01",
+                    requested_url=url,
+                    final_url=url,
+                    status=200,
+                    content_type="text/html",
+                    fetched_at="2026-01-01T00:00:00+08:00",
+                    title="t",
+                    canonical_url=url,
+                    html="<html></html>",
+                    links=[],
+                    images=[],
+                    published_at="2026-01-01",
                 ),
-                "news", 0,
+                "news",
+                0,
             )
             store.save_page(
                 PageDocument(
-                    requested_url=url, final_url=url, status=404, content_type="",
-                    fetched_at="2026-02-01T00:00:00+08:00", title="", canonical_url=url,
-                    html="", links=[], images=[], error="http 404",
+                    requested_url=url,
+                    final_url=url,
+                    status=404,
+                    content_type="",
+                    fetched_at="2026-02-01T00:00:00+08:00",
+                    title="",
+                    canonical_url=url,
+                    html="",
+                    links=[],
+                    images=[],
+                    error="http 404",
                 ),
-                "news", 0,
+                "news",
+                0,
             )
             from tests.support import store_core
 
-            row = store_core(store).execute(
-                "SELECT published_at FROM pages WHERE url=?", (url,)
-            ).fetchone()
+            row = (
+                store_core(store)
+                .execute("SELECT published_at FROM pages WHERE url=?", (url,))
+                .fetchone()
+            )
             store.close()
             self.assertEqual(row["published_at"], "2026-01-01")
 
@@ -362,9 +388,11 @@ class StoreWave1Tests(unittest.TestCase):
             result = store.retext_article_bodies()
             from tests.support import store_core
 
-            row = store_core(store).execute(
-                "SELECT body_text FROM articles WHERE url=?", (article.url,)
-            ).fetchone()
+            row = (
+                store_core(store)
+                .execute("SELECT body_text FROM articles WHERE url=?", (article.url,))
+                .fetchone()
+            )
             store.close()
             self.assertEqual(result, {"scanned": 1, "changed": 1})
             self.assertIn("重新计算的正文", row["body_text"])

@@ -13,10 +13,14 @@ class Source(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     organization_level: Mapped[str] = mapped_column(Text, nullable=False)
     allowed_hosts: Mapped[str] = mapped_column(Text, nullable=False)
-    blocked_hosts: Mapped[str] = mapped_column(Text, nullable=False, default="[]", server_default="[]")
+    blocked_hosts: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
     seed_urls: Mapped[str] = mapped_column(Text, nullable=False)
     aliases: Mapped[str] = mapped_column(Text, nullable=False, default="[]", server_default="[]")
-    discovery_only: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    discovery_only: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     max_images_per_page: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
 
@@ -28,7 +32,9 @@ class Frontier(Base):
     source_id: Mapped[str] = mapped_column(ForeignKey("sources.id"), nullable=False)
     depth: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     discovered_from: Mapped[str | None] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending", server_default="pending")
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, default="pending", server_default="pending"
+    )
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     last_error: Mapped[str | None] = mapped_column(Text)
     discovered_at: Mapped[str] = mapped_column(Text, nullable=False)
@@ -69,12 +75,22 @@ class Page(Base):
     title: Mapped[str | None] = mapped_column(Text)
     canonical_url: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
-    blocked_by_robots: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-    page_kind: Mapped[str] = mapped_column(Text, nullable=False, default="unknown", server_default="unknown")
-    access_mode: Mapped[str] = mapped_column(Text, nullable=False, default="unknown", server_default="unknown")
+    blocked_by_robots: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    page_kind: Mapped[str] = mapped_column(
+        Text, nullable=False, default="unknown", server_default="unknown"
+    )
+    access_mode: Mapped[str] = mapped_column(
+        Text, nullable=False, default="unknown", server_default="unknown"
+    )
     value_score: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-    value_tier: Mapped[str] = mapped_column(Text, nullable=False, default="not_indexed", server_default="not_indexed")
-    score_reasons: Mapped[str] = mapped_column(Text, nullable=False, default="[]", server_default="[]")
+    value_tier: Mapped[str] = mapped_column(
+        Text, nullable=False, default="not_indexed", server_default="not_indexed"
+    )
+    score_reasons: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
     published_at: Mapped[str | None] = mapped_column(Text)
     duplicate_of: Mapped[str | None] = mapped_column(Text)
 
@@ -124,8 +140,12 @@ class Article(Base):
     content_hash: Mapped[str | None] = mapped_column(String(64))
     first_seen: Mapped[str] = mapped_column(Text, nullable=False)
     last_seen: Mapped[str] = mapped_column(Text, nullable=False)
-    publication_type: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
-    classifier_version: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
+    publication_type: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
+    classifier_version: Mapped[str] = mapped_column(
+        Text, nullable=False, default="", server_default=""
+    )
 
     __table_args__ = (Index("articles_date_idx", "published_at"),)
 
@@ -176,10 +196,16 @@ class Asset(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False)
     error: Mapped[str | None] = mapped_column(Text)
     fetched_at: Mapped[str | None] = mapped_column(Text)
-    page_kind: Mapped[str] = mapped_column(Text, nullable=False, default="document", server_default="document")
-    access_mode: Mapped[str] = mapped_column(Text, nullable=False, default="unknown", server_default="unknown")
+    page_kind: Mapped[str] = mapped_column(
+        Text, nullable=False, default="document", server_default="document"
+    )
+    access_mode: Mapped[str] = mapped_column(
+        Text, nullable=False, default="unknown", server_default="unknown"
+    )
     value_score: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
-    score_reasons: Mapped[str] = mapped_column(Text, nullable=False, default="[]", server_default="[]")
+    score_reasons: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
 
 
 class Run(Base):
@@ -214,10 +240,16 @@ class SyncRun(Base):
     id: Mapped[str] = mapped_column(String(128), primary_key=True)
     started_at: Mapped[str] = mapped_column(Text, nullable=False)
     finished_at: Mapped[str | None] = mapped_column(Text)
-    mode: Mapped[str] = mapped_column(Text, nullable=False, default="incremental", server_default="incremental")
-    source_config_revision: Mapped[str] = mapped_column(String(128), nullable=False, default="", server_default="")
+    mode: Mapped[str] = mapped_column(
+        Text, nullable=False, default="incremental", server_default="incremental"
+    )
+    source_config_revision: Mapped[str] = mapped_column(
+        String(128), nullable=False, default="", server_default=""
+    )
     digest: Mapped[str | None] = mapped_column(String(64))
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="running", server_default="running")
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, default="running", server_default="running"
+    )
     pages: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     articles: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     media: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
@@ -239,7 +271,9 @@ class SyncBatch(Base):
         String(32), nullable=False, default="observedAt", server_default="observedAt"
     )
     producer_version: Mapped[str] = mapped_column(String(128), nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending", server_default="pending")
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, default="pending", server_default="pending"
+    )
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     next_attempt_at: Mapped[str | None] = mapped_column(Text)
     locked_until: Mapped[str | None] = mapped_column(Text)
@@ -262,8 +296,12 @@ class SyncOutbox(Base):
     source_json: Mapped[str] = mapped_column(Text, nullable=False, server_default="{}")
     payload_json: Mapped[str] = mapped_column(Text, nullable=False)
     payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
-    object_manifest_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]", server_default="[]")
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending", server_default="pending")
+    object_manifest_json: Mapped[str] = mapped_column(
+        Text, nullable=False, default="[]", server_default="[]"
+    )
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, default="pending", server_default="pending"
+    )
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     next_attempt_at: Mapped[str | None] = mapped_column(Text)
     locked_until: Mapped[str | None] = mapped_column(Text)
@@ -283,7 +321,9 @@ class SyncBatchItem(Base):
     source_id: Mapped[str] = mapped_column(String(64), nullable=False)
     canonical_url: Mapped[str] = mapped_column(Text, nullable=False)
     revision_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    status: Mapped[str] = mapped_column(Text, nullable=False, default="pending", server_default="pending")
+    status: Mapped[str] = mapped_column(
+        Text, nullable=False, default="pending", server_default="pending"
+    )
     error: Mapped[str | None] = mapped_column(Text)
 
 

@@ -9,13 +9,9 @@ class CourseAdapterTests(unittest.TestCase):
         html = (Path(__file__).parent / "fixtures/adapters/course/course.html").read_text(
             encoding="utf-8"
         )
-        fields = CourseAdapter().extract(
-            "https://course.ustc.edu.cn/portal/news/info?id=19", html
-        )
+        fields = CourseAdapter().extract("https://course.ustc.edu.cn/portal/news/info?id=19", html)
         self.assertIsNotNone(fields)
-        self.assertEqual(
-            fields.title, "关于中国科学技术大学“瀚海教学网”上线试运行的通知"
-        )
+        self.assertEqual(fields.title, "关于中国科学技术大学“瀚海教学网”上线试运行的通知")
         self.assertEqual(fields.published_at, "")
         self.assertIn("瀚海教学网", fields.body_html)
 
@@ -36,9 +32,7 @@ class CourseAdapterTests(unittest.TestCase):
             "<div class='Content'><p>正文内容</p></div>"
             "</body></html>"
         )
-        fields = CourseAdapter().extract(
-            "https://course.ustc.edu.cn/portal/news/info?id=20", html
-        )
+        fields = CourseAdapter().extract("https://course.ustc.edu.cn/portal/news/info?id=20", html)
         self.assertIsNotNone(fields)
         assert fields is not None
         self.assertEqual(fields.title, "平台维护通知标题")

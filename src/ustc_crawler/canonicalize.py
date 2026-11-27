@@ -107,10 +107,7 @@ def normalize_url(raw_url: str, base_url: str | None = None) -> str:
         scheme = "https"
         port = None
     netloc = hostname
-    if port and not (
-        (scheme == "http" and port == 80)
-        or (scheme == "https" and port == 443)
-    ):
+    if port and not ((scheme == "http" and port == 80) or (scheme == "https" and port == 443)):
         netloc = f"{hostname}:{port}"
     path = parts.path or "/"
     path = re.sub(r"/{2,}", "/", path)

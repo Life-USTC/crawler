@@ -28,10 +28,14 @@ _FRONTIER_PENDING_SQL = (
 def _index_sql(table: str, name: str) -> str:
     for index in inspect(op.get_bind()).get_indexes(table):
         if index["name"] == name:
-            row = op.get_bind().execute(
-                sa.text("SELECT sql FROM sqlite_master WHERE type='index' AND name=:name"),
-                {"name": name},
-            ).scalar_one_or_none()
+            row = (
+                op.get_bind()
+                .execute(
+                    sa.text("SELECT sql FROM sqlite_master WHERE type='index' AND name=:name"),
+                    {"name": name},
+                )
+                .scalar_one_or_none()
+            )
             return row or ""
     return ""
 
@@ -56,9 +60,7 @@ def _dedupe_failures() -> None:
         )
     )
     bind.execute(
-        sa.text(
-            "DELETE FROM failures WHERE id NOT IN (SELECT MAX(id) FROM failures GROUP BY url)"
-        )
+        sa.text("DELETE FROM failures WHERE id NOT IN (SELECT MAX(id) FROM failures GROUP BY url)")
     )
 
 

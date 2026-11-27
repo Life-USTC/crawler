@@ -26,6 +26,7 @@ class HttpClientTests(unittest.TestCase):
             self.assertIn("zh-CN", headers["Accept-Language"])
         finally:
             import asyncio
+
             asyncio.run(fetcher.close())
 
 
@@ -45,6 +46,7 @@ class FetchBehaviorTests(unittest.IsolatedAsyncioTestCase):
         fetcher = _fetcher(handler, retries=2)
         try:
             with mock.patch("ustc_crawler.http.asyncio.sleep") as sleep:
+
                 async def instant(_seconds):
                     return None
 
@@ -74,6 +76,7 @@ class FetchBehaviorTests(unittest.IsolatedAsyncioTestCase):
         fetcher = _fetcher(handler, retries=1)
         try:
             with mock.patch("ustc_crawler.http.asyncio.sleep") as sleep:
+
                 async def record(seconds):
                     waits.append(seconds)
 
@@ -152,6 +155,7 @@ class FetchBehaviorTests(unittest.IsolatedAsyncioTestCase):
         fetcher = _fetcher(handler, retries=2)
         try:
             with mock.patch("ustc_crawler.http.asyncio.sleep") as sleep:
+
                 async def instant(_seconds):
                     return None
 

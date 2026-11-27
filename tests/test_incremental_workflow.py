@@ -245,7 +245,10 @@ def test_pending_and_failed_events_are_reported(tmp_path):
 def test_historical_failed_events_and_crawl_item_errors_do_not_mask_success(tmp_path):
     run = WorkflowRun(tmp_path, codes={"crawl": 2})
     current_failures = {
-        "run_id": "current-crawl", "errors": 3, "reported": 3, "omitted": 0,
+        "run_id": "current-crawl",
+        "errors": 3,
+        "reported": 3,
+        "omitted": 0,
         "sources": [{"source_id": "news", "errors": 3}],
     }
     run.env["FAKE_CRAWL_REPORT"] = json.dumps(current_failures)
@@ -261,7 +264,10 @@ def test_historical_failed_events_and_crawl_item_errors_do_not_mask_success(tmp_
     assert (tmp_path / "saved").exists()
     assert run.step("diagnostics").outputs["failed"] == "1"
     assert run.step("crawl").outputs["exit_code"] == "2"
-    assert json.loads(run.artifacts["Upload sync diagnostics"]["crawl-failures.json"]) == current_failures
+    assert (
+        json.loads(run.artifacts["Upload sync diagnostics"]["crawl-failures.json"])
+        == current_failures
+    )
     assert "Upload logs" not in run.trace  # Warning runs publish the safe report, not raw logs.
 
 

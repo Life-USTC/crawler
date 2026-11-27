@@ -203,21 +203,27 @@ def test_robots_reason_reaches_report_without_fetching_page_or_leaking_details(
         )
 
     monkeypatch.setattr(
-        crawl, "Fetcher",
+        crawl,
+        "Fetcher",
         lambda **_: Fetcher(transport=httpx.MockTransport(response), delay=0, retries=0),
     )
     report = tmp_path / "failures.json"
     target = "https://user:password@example.test/private/page?token=query-secret#fragment-secret"
 
     async def run():
-        crawler = crawl.AsyncCrawler(crawl.CrawlOptions(
-            db_path=str(tmp_path / "crawler.sqlite"),
-            data_dir=str(tmp_path / "data"),
-            failure_report=str(report),
-        ))
+        crawler = crawl.AsyncCrawler(
+            crawl.CrawlOptions(
+                db_path=str(tmp_path / "crawler.sqlite"),
+                data_dir=str(tmp_path / "data"),
+                failure_report=str(report),
+            )
+        )
         source = SourceConfig(
-            id="news", name="Test source", organization_level="university",
-            seed_urls=[target], allowed_hosts=["example.test"],
+            id="news",
+            name="Test source",
+            organization_level="university",
+            seed_urls=[target],
+            allowed_hosts=["example.test"],
         )
         crawler.sources[source.id] = source
         crawler.store.add_source(source)
@@ -241,7 +247,13 @@ def test_robots_reason_reaches_report_without_fetching_page_or_leaking_details(
     assert detail["url"] == "https://example.test/private/page"
     public_output = report.read_text() + capsys.readouterr().err
     for secret in [
-        "password", "query-secret", "fragment-secret", "raw-policy-secret",
-        "raw-header-secret", "raw-transport-secret", "raw-decoder-secret", "raw-text-secret",
+        "password",
+        "query-secret",
+        "fragment-secret",
+        "raw-policy-secret",
+        "raw-header-secret",
+        "raw-transport-secret",
+        "raw-decoder-secret",
+        "raw-text-secret",
     ]:
         assert secret not in public_output

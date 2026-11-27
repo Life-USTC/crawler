@@ -61,9 +61,7 @@ class ScoringTests(unittest.TestCase):
         self.assertTrue(low)
         self.assertEqual(reason, "uploaded HTML attachment")
         self.assertEqual(
-            is_obvious_low_value_url(
-                "http://scc.ustc.edu.cn/2009/1014/c396a3060/page.htm"
-            ),
+            is_obvious_low_value_url("http://scc.ustc.edu.cn/2009/1014/c396a3060/page.htm"),
             (False, ""),
         )
 
@@ -76,9 +74,7 @@ class ScoringTests(unittest.TestCase):
 
     def test_video_player_asset_is_a_document_asset(self) -> None:
         self.assertTrue(
-            document_asset_url(
-                "https://bwc.ustc.edu.cn/_upload/article/videos/anti-fraud.mp4"
-            )
+            document_asset_url("https://bwc.ustc.edu.cn/_upload/article/videos/anti-fraud.mp4")
         )
 
     def test_notice_id_is_not_mistaken_for_session_id(self) -> None:

@@ -126,7 +126,9 @@ def is_obvious_low_value_url(url: str) -> tuple[bool, str]:
         token in path for token in ("/list", "/search", "/detail")
     ):
         return True, "sorted/paginated duplicate variant"
-    if any(token in path for token in ("gradebook", "submission_history", "/stats/", "/statistics/")):
+    if any(
+        token in path for token in ("gradebook", "submission_history", "/stats/", "/statistics/")
+    ):
         return True, "personal/statistics endpoint"
     if path.endswith("/webapps/login") or re.search(
         r"/(?:login|logon|signin|sign[-_]?in)(?:/|$)", path
@@ -154,9 +156,7 @@ def is_obvious_low_value_url(url: str) -> tuple[bool, str]:
     return False, ""
 
 
-def url_priority(
-    url: str, source_id: str = "", parent: str = "", published_at: str = ""
-) -> int:
+def url_priority(url: str, source_id: str = "", parent: str = "", published_at: str = "") -> int:
     """Return a queue priority; higher values are fetched first.
 
     Recent publication dates are boosted so that a resumed crawl fills recent
@@ -229,9 +229,18 @@ def score_page(
     reasons: list[str] = []
     published = published_at or ""
     if blocked_by_robots:
-        return PageScore("robots_blocked", "blocked", 0, "not_indexed", ["robots.txt blocked"], published)
+        return PageScore(
+            "robots_blocked", "blocked", 0, "not_indexed", ["robots.txt blocked"], published
+        )
     if status in {401, 403}:
-        return PageScore("auth_gate", "auth_required", 0, "not_indexed", [f"HTTP {status} requires access"], published)
+        return PageScore(
+            "auth_gate",
+            "auth_required",
+            0,
+            "not_indexed",
+            [f"HTTP {status} requires access"],
+            published,
+        )
     if status <= 0 or status >= 400:
         return PageScore("error", "unavailable", 0, "not_indexed", [f"HTTP {status}"], published)
 
@@ -250,7 +259,14 @@ def score_page(
         and (AUTH_RE.search(haystack) or "/webapps/login" in target.lower())
     )
     if login_shell:
-        return PageScore("auth_gate", "login_required", 0, "not_indexed", ["login form without public body"], published)
+        return PageScore(
+            "auth_gate",
+            "login_required",
+            0,
+            "not_indexed",
+            ["login form without public body"],
+            published,
+        )
 
     access_mode = "public"
     if duplicate:
@@ -371,5 +387,7 @@ def document_asset_url(url: str) -> bool:
     # markers, unlike session/token parameters filtered elsewhere.
     if path.endswith(("/download", "/download/", "/download.jsp", "/download.aspx")):
         query = parts.query.lower()
-        return any(key in query for key in ("attachment", "fileid", "wbfileid", "urltype", "download"))
+        return any(
+            key in query for key in ("attachment", "fileid", "wbfileid", "urltype", "download")
+        )
     return False

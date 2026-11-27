@@ -107,9 +107,7 @@ def _restore_escaped_tags(html: str) -> str:
     """Unescape FCKeditor-style escaped tags when they dominate the markup."""
     if len(_ESCAPED_TAG_TRIGGER.findall(html)) < _ESCAPED_TAG_THRESHOLD:
         return html
-    return _ESCAPED_TAG.sub(
-        lambda match: html_module.unescape(f"&lt;{match.group(1)}&gt;"), html
-    )
+    return _ESCAPED_TAG.sub(lambda match: html_module.unescape(f"&lt;{match.group(1)}&gt;"), html)
 
 
 def _media_label(node, fallback: str) -> str:

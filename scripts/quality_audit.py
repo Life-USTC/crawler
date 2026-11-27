@@ -7,7 +7,9 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 
-def rows(conn: sqlite3.Connection, query: str, params: tuple[object, ...] = ()) -> list[dict[str, object]]:
+def rows(
+    conn: sqlite3.Connection, query: str, params: tuple[object, ...] = ()
+) -> list[dict[str, object]]:
     return [dict(row) for row in conn.execute(query, params)]
 
 
