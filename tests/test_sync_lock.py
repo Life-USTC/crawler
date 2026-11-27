@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import io
+import json
 import os
 import unittest
 import unittest.mock
@@ -56,14 +57,24 @@ class SyncInstanceLockTests(unittest.TestCase):
                 ]
                 env = {"USTC_CRAWLER_INGESTION_SECRET": self.ingestion_secret}
                 captured = io.StringIO()
+                output = io.StringIO()
                 with (
                     unittest.mock.patch.dict(os.environ, env),
                     unittest.mock.patch.object(cli, "IngestionSyncClient", FakeClient),
                     contextlib.redirect_stderr(captured),
+                    contextlib.redirect_stdout(output),
                 ):
                     self.assertEqual(main(argv), 0)
                 self.assertIn("sync already running", captured.getvalue())
                 self.assertIn("sync.lock", captured.getvalue())
+                self.assertEqual(
+                    json.loads(output.getvalue()),
+                    {
+                        "status": "skipped",
+                        "health": "degraded",
+                        "reason": "sync_already_running",
+                    },
+                )
             finally:
                 holder.close()
 

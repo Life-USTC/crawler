@@ -25,12 +25,24 @@ class SchemaIndexTests(unittest.TestCase):
             store = Store(db_path, Path(temp) / "data")
             store.close()
             indexes = _indexes(db_path)
+            connection = sqlite3.connect(db_path)
+            try:
+                columns = {
+                    row[1] for row in connection.execute("PRAGMA table_info(sync_batches)")
+                }
+                default = connection.execute(
+                    "SELECT dflt_value FROM pragma_table_info('sync_batches') WHERE name='revision_policy'"
+                ).fetchone()
+            finally:
+                connection.close()
 
         self.assertIn("pages_sha256_idx", indexes)
         self.assertIn("media_article_url_idx", indexes)
         self.assertIn("article_media_image_idx", indexes)
         self.assertIn("sync_batches_status_idx", indexes)
         self.assertIn("failures_url_idx", indexes)
+        self.assertIn("revision_policy", columns)
+        self.assertEqual(default, ("'observedAt'",))
 
     def test_frontier_pending_index_is_partial(self) -> None:
         with TemporaryDirectory() as temp:

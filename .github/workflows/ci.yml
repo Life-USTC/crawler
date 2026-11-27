@@ -13,6 +13,20 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: crawler
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Life-USTC/server
+          path: server
+      - name: Verify shared ingestion fixture
+        run: |
+          python -c 'import json, pathlib; left=json.loads(pathlib.Path("crawler/tests/fixtures/ingestion_batch.json").read_text()); right=json.loads(pathlib.Path("server/tests/fixtures/publication-batch.json").read_text()); assert left == right'
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 15

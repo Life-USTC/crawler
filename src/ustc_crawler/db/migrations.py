@@ -7,7 +7,7 @@ from sqlalchemy import create_engine
 
 from alembic import command
 
-ALEMBIC_HEAD = "0005_crawl_lookup_indexes"
+ALEMBIC_HEAD = "0006_sync_revision_policy"
 
 
 def _config(database_path: Path) -> Config:

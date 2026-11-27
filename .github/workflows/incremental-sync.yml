@@ -1,8 +1,6 @@
 name: Incremental sync
 
 on:
-  schedule:
-    - cron: "37 */6 * * *"
   workflow_dispatch:
     inputs:
       reindex:
@@ -368,6 +366,7 @@ jobs:
           CRAWL_EXIT: ${{ steps.crawl.outputs.exit_code }}
           SYNC_EXIT: ${{ steps.sync.outputs.exit_code }}
           PENDING: ${{ steps.diagnostics.outputs.pending }}
+          FAILED: ${{ steps.diagnostics.outputs.failed }}
           UNFINISHED: ${{ steps.diagnostics.outputs.unfinished }}
         run: |
           result=0
@@ -383,6 +382,12 @@ jobs:
             2) echo '::warning::Crawl completed with per-source errors; see crawl.log' ;;
             *) echo "::error::Crawl did not complete: ${CRAWL_EXIT:-unavailable}"; result=1 ;;
           esac
+          if [ "$FAILED" != 0 ]; then
+            echo "::warning::Historical failed backlog: $FAILED events; synchronization is degraded"
+            echo "Health: degraded ($FAILED historical failed events)" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Health: healthy" >> "$GITHUB_STEP_SUMMARY"
+          fi
           for key in SYNC_EXIT PENDING UNFINISHED; do
             if [ "${!key}" != 0 ]; then
               echo "::error::$key=${!key:-unavailable}; synchronization is incomplete"

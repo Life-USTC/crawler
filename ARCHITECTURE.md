@@ -21,7 +21,13 @@ source config / discovered units
                   articles   assets
                      │
                      ▼
-          read-only dashboard / exports
+          immutable outbox / batches
+                     │
+                     ▼
+       publication ingestion + object upload
+                     │
+                     ▼
+       read-only dashboard / exports / public API
 ```
 
 SQLite is the source of truth for crawl state and relationships. Files under `data/` are derived archives keyed by response hashes, article URLs, or media hashes. Network access is confined to discovery, crawling, explicit media archival, and the live-completeness script; reporting, reindexing, validation, export, and the dashboard are local operations. Normal article sync carries source image URLs in `imageSources`; the publication server fetches those images lazily.
@@ -45,6 +51,8 @@ SQLite is the source of truth for crawl state and relationships. Files under `da
 - Every active article has exactly one URL-keyed JSON bundle and one HTML bundle.
 - Every extracted Markdown image uses `/api/publications/images/{sha256}` and its source URL appears in the article's sync `imageSources` map.
 - `rebuild-markdown` reads article `body_html` by article URL keyset, preserves the source HTML and other article fields, and queues the rebuilt canonical article directly.
+- Normal batches retain observedAt revision ordering; an explicit repair outbox may persist `missingOnly` so a replay cannot advance an existing publication to stale content.
+- A single scheduled writer owns production synchronization; the Actions workflow is a manual recovery path.
 - `articles.content_hash` is the SHA-256 of `body_text` and is not the archive identity.
 - Raw page filenames match their stored response SHA-256.
 - The dashboard opens SQLite read-only and never performs network requests.

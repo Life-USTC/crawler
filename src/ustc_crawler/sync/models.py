@@ -467,6 +467,7 @@ class IngestionBatch(ProtocolModel):
     client_run_id: TrimmedText = Field(alias="clientRunId", min_length=1, max_length=200)
     batch_id: TrimmedText = Field(alias="batchId", min_length=1, max_length=200)
     observed_at: str = Field(alias="observedAt", min_length=1)
+    revision_policy: Literal["missingOnly"] | None = Field(default=None, alias="revisionPolicy")
     sources: list[PublicationSourceDescriptor] = Field(min_length=1, max_length=500)
     items: list[PublicationItem] = Field(min_length=1, max_length=MAX_PUBLICATION_BATCH_ITEMS)
 
@@ -742,12 +743,14 @@ def build_ingestion_batch(
     batch_id: str,
     observed_at: str | date | datetime,
     producer_version: str,
+    missing_only: bool = False,
 ) -> IngestionBatch:
     return IngestionBatch(
         producerVersion=producer_version,
         clientRunId=client_run_id,
         batchId=batch_id,
         observedAt=normalize_publication_timestamp(observed_at),
+        revisionPolicy="missingOnly" if missing_only else None,
         sources=list(sources),
         items=list(items),
     )
