@@ -10,11 +10,11 @@ class VsbAdapterTests(unittest.TestCase):
     def test_mech_fixture(self) -> None:
         from ustc_crawler.adapters.vsb import VsbCmsAdapter
 
-        html = (Path(__file__).parent / "fixtures/adapters/vsb/mech.html").read_text(encoding="utf-8")
-        adapter = VsbCmsAdapter()
-        fields = adapter.extract(
-            "https://mech.ustc.edu.cn/2022/0331/c4596a550763/page.htm", html
+        html = (Path(__file__).parent / "fixtures/adapters/vsb/mech.html").read_text(
+            encoding="utf-8"
         )
+        adapter = VsbCmsAdapter()
+        fields = adapter.extract("https://mech.ustc.edu.cn/2022/0331/c4596a550763/page.htm", html)
         self.assertIsNotNone(fields)
         assert fields is not None
         self.assertEqual(fields.title, "近代力学系教师例会（春季学期3月份）")
@@ -80,7 +80,9 @@ class VsbAdapterTests(unittest.TestCase):
     def test_nsrl_fixture_excludes_sidebar_portlet(self) -> None:
         from ustc_crawler.adapters.vsb import VsbCmsAdapter
 
-        html = (Path(__file__).parent / "fixtures/adapters/vsb/nsrl.html").read_text(encoding="utf-8")
+        html = (Path(__file__).parent / "fixtures/adapters/vsb/nsrl.html").read_text(
+            encoding="utf-8"
+        )
         fields = VsbCmsAdapter().extract(
             "https://www.nsrl.ustc.edu.cn/2026/0831/c10982a751691/page.htm", html
         )
@@ -94,7 +96,9 @@ class VsbAdapterTests(unittest.TestCase):
     def test_physics_fixture_strips_bracketed_date_suffix(self) -> None:
         from ustc_crawler.adapters import adapter_for
 
-        html = (Path(__file__).parent / "fixtures/adapters/vsb/physics.html").read_text(encoding="utf-8")
+        html = (Path(__file__).parent / "fixtures/adapters/vsb/physics.html").read_text(
+            encoding="utf-8"
+        )
         url = "http://physics.ustc.edu.cn/2025/0919/c3586a701750/page.htm"
         adapter = adapter_for("unit-physics-ustc-edu-cn", url)
         self.assertIsNotNone(adapter)
@@ -102,7 +106,9 @@ class VsbAdapterTests(unittest.TestCase):
         fields = adapter.extract(url, html)
         self.assertIsNotNone(fields)
         assert fields is not None
-        self.assertEqual(fields.title, "我院郭光灿院士团队柳必恒研究组利用高维纠缠实现高效量子随机通信")
+        self.assertEqual(
+            fields.title, "我院郭光灿院士团队柳必恒研究组利用高维纠缠实现高效量子随机通信"
+        )
         self.assertIn("高维纠缠", fields.body_html)
 
 

@@ -59,11 +59,15 @@ class CoreConnection:
             self._connection = self.engine.connect()
         return self._connection
 
-    def execute(self, statement: str, parameters: Sequence[Any] | Mapping[str, Any] = ()) -> CoreResult:
+    def execute(
+        self, statement: str, parameters: Sequence[Any] | Mapping[str, Any] = ()
+    ) -> CoreResult:
         if isinstance(parameters, list):
             parameters = tuple(parameters)
         self._dirty = self._dirty or _is_write_statement(statement)
-        return CoreResult(self._active_connection().exec_driver_sql(statement, parameters), self._release_read)
+        return CoreResult(
+            self._active_connection().exec_driver_sql(statement, parameters), self._release_read
+        )
 
     def executemany(self, statement: str, parameters: Iterable[Sequence[Any]]) -> CoreResult:
         self._dirty = self._dirty or _is_write_statement(statement)

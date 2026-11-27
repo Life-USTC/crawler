@@ -24,7 +24,11 @@ DEFAULT_SOURCES = [
     ("supplemental-po", "https://po.ustc.edu.cn/main.htm", "党政办公室"),
     ("supplemental-sie", "https://sie.ustc.edu.cn/", "创新创业学院"),
     ("supplemental-pnp", "https://pnp.ustc.edu.cn/main.htm", "粒子物理与原子核物理学科"),
-    ("unit-www-hfnl-ustc-edu-cn", "https://www.hfnl.ustc.edu.cn/26106/list.htm", "合肥微尺度物质科学国家研究中心"),
+    (
+        "unit-www-hfnl-ustc-edu-cn",
+        "https://www.hfnl.ustc.edu.cn/26106/list.htm",
+        "合肥微尺度物质科学国家研究中心",
+    ),
     ("unit-scms-ustc-edu-cn", "https://scms.ustc.edu.cn/17973/list.htm", "化学与材料科学学院"),
     ("unit-www-nsrl-ustc-edu-cn", "https://www.nsrl.ustc.edu.cn/", "国家同步辐射实验室"),
 ]
@@ -49,9 +53,14 @@ def configured_source_ids(sources_yaml: Path, units_json: Path | None = None) ->
 
 def fetch(url: str) -> str:
     cmd = [
-        "curl", "-s", "-L", "-A",
+        "curl",
+        "-s",
+        "-L",
+        "-A",
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-        "--max-time", "30", url,
+        "--max-time",
+        "30",
+        url,
     ]
     return subprocess.check_output(cmd, text=True, errors="ignore")
 
@@ -150,7 +159,9 @@ def check_source(
         if variants & article_urls:
             status = "FOUND"
             covered += 1
-        elif unavailable_modes := {unavailable_urls[url] for url in variants if url in unavailable_urls}:
+        elif unavailable_modes := {
+            unavailable_urls[url] for url in variants if url in unavailable_urls
+        }:
             status = f"AUDITED:{sorted(unavailable_modes)[0]}"
             covered += 1
         else:

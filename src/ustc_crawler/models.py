@@ -28,10 +28,7 @@ def sanitize_json_value(value: Any) -> Any:
     """Recursively sanitize parser metadata while retaining its JSON shape."""
 
     if isinstance(value, dict):
-        return {
-            sanitize_text(str(key)): sanitize_json_value(item)
-            for key, item in value.items()
-        }
+        return {sanitize_text(str(key)): sanitize_json_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [sanitize_json_value(item) for item in value]
     if isinstance(value, str):

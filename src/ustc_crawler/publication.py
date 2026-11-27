@@ -77,7 +77,15 @@ def classify_publication(
         return "notice"
     if source_id == "university" and any(
         token in combined_url
-        for token in ("/info/1360/", "/info/1361/", "/info/1362/", "/info/1363/", "/info/1364/", "/info/1365/", "/info/1366/")
+        for token in (
+            "/info/1360/",
+            "/info/1361/",
+            "/info/1362/",
+            "/info/1363/",
+            "/info/1364/",
+            "/info/1365/",
+            "/info/1366/",
+        )
     ):
         return "notice"
     if source_id == "university" and "wbtreeid=136" in combined_url:
@@ -87,9 +95,8 @@ def classify_publication(
     if any(token in title_value for token in ("公告", "公示")):
         return "notice"
     if (
-        ("的通知" in title_value or title_value.endswith("通知") or "通知：" in title_value)
-        and "通知书" not in title_value
-    ):
+        "的通知" in title_value or title_value.endswith("通知") or "通知：" in title_value
+    ) and "通知书" not in title_value:
         return "notice"
     if "时刻表" in title_value:
         return "notice"
@@ -97,13 +104,19 @@ def classify_publication(
     # admissions topic that would otherwise look administrative.
     if not _news_reportage_title(title_value) and "通告" in title_value:
         return "notice"
-    if not _news_reportage_title(title_value) and "招生" in title_value and any(
-        token in title_value
-        for token in ("安排", "简章", "名单", "方案", "通告", "导师", "研究方向")
+    if (
+        not _news_reportage_title(title_value)
+        and "招生" in title_value
+        and any(
+            token in title_value
+            for token in ("安排", "简章", "名单", "方案", "通告", "导师", "研究方向")
+        )
     ):
         return "notice"
-    if not _news_reportage_title(title_value) and "复试" in title_value and any(
-        token in title_value for token in ("办法", "流程", "规定", "录取")
+    if (
+        not _news_reportage_title(title_value)
+        and "复试" in title_value
+        and any(token in title_value for token in ("办法", "流程", "规定", "录取"))
     ):
         return "notice"
     if not _news_reportage_title(title_value) and "补充规定" in title_value:

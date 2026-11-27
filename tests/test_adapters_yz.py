@@ -7,9 +7,7 @@ from ustc_crawler.adapters.yz import YzAdapter
 class YzAdapterTests(unittest.TestCase):
     def test_yz_fixture(self) -> None:
         html = (Path(__file__).parent / "fixtures/adapters/yz/yz.html").read_text(encoding="utf-8")
-        fields = YzAdapter().extract(
-            "https://yz.ustc.edu.cn/article/2827/181", html
-        )
+        fields = YzAdapter().extract("https://yz.ustc.edu.cn/article/2827/181", html)
         self.assertIsNotNone(fields)
         self.assertEqual(fields.title, "我校召开2026年研究生招生复试工作会议")
         self.assertEqual(fields.published_at, "2026-03-18")

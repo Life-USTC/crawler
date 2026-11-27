@@ -13,9 +13,7 @@ class WordPressAdapter(SiteAdapter):
 
     def extract(self, url: str, html: str) -> ArticleFields | None:
         soup = BeautifulSoup(html, "html.parser")
-        container = soup.select_one("div.detail-text") or soup.select_one(
-            "div.detail-content"
-        )
+        container = soup.select_one("div.detail-text") or soup.select_one("div.detail-content")
         if container is None:
             return None
         # The library template renders exactly one h1 in the detail

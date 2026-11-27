@@ -36,9 +36,7 @@ class _Store:
             }
         ]
 
-    def article_records_for_media(
-        self, source_ids: set[str] | None = None
-    ) -> list[dict[str, str]]:
+    def article_records_for_media(self, source_ids: set[str] | None = None) -> list[dict[str, str]]:
         self.requested_source_ids.append(source_ids)
         return [{"url": self.article_url, "content_hash": "digest"}]
 
@@ -65,15 +63,11 @@ class MediaJobTests(unittest.TestCase):
             local_path.write_bytes(b"image")
 
             self.assertEqual(
-                _job_priority(
-                    {"status": "ok", "local_path": str(local_path), "size": 999}
-                ),
+                _job_priority({"status": "ok", "local_path": str(local_path), "size": 999}),
                 1,
             )
             self.assertEqual(
-                _job_priority(
-                    {"status": "ok", "local_path": str(local_path), "size": 5}
-                ),
+                _job_priority({"status": "ok", "local_path": str(local_path), "size": 5}),
                 2,
             )
 
@@ -139,10 +133,13 @@ class MediaJobTests(unittest.TestCase):
             store = _Store(data_dir, article_url)
             jobs = _image_jobs(store, {"unit-example"})  # type: ignore[arg-type]
 
-        self.assertEqual(set(jobs), {
-            "https://example.ustc.edu.cn/first.jpg",
-            "https://example.ustc.edu.cn/second.jpg",
-        })
+        self.assertEqual(
+            set(jobs),
+            {
+                "https://example.ustc.edu.cn/first.jpg",
+                "https://example.ustc.edu.cn/second.jpg",
+            },
+        )
         self.assertEqual(len(jobs["https://example.ustc.edu.cn/first.jpg"]), 1)
         self.assertEqual(jobs["https://example.ustc.edu.cn/second.jpg"][0].article_url, article_url)
         self.assertEqual(store.requested_source_ids, [{"unit-example"}, {"unit-example"}])
@@ -242,7 +239,9 @@ class MediaRunTests(unittest.TestCase):
         self._fetcher_patch.stop()
 
     def _run(self, concurrency: int = 4) -> dict[str, int]:
-        return download_saved_images(MediaOptions(db_path=":memory:", data_dir=":memory:", concurrency=concurrency))
+        return download_saved_images(
+            MediaOptions(db_path=":memory:", data_dir=":memory:", concurrency=concurrency)
+        )
 
     def test_error_branch_records_source_page_url_not_article_url(self) -> None:
         _FakeFetcher.response = _response(503, error="http 503")

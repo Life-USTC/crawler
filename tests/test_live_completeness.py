@@ -214,13 +214,26 @@ class DefaultSourceResolutionTests(unittest.TestCase):
         )
         self.sources_yaml.write_text(f"sources:\n{entries}\n", encoding="utf-8")
         self.units_json.write_text(
-            json.dumps({"units": [{"host": host, "name": host, "url": f"https://{host}/"} for host in unit_hosts]}),
+            json.dumps(
+                {
+                    "units": [
+                        {"host": host, "name": host, "url": f"https://{host}/"}
+                        for host in unit_hosts
+                    ]
+                }
+            ),
             encoding="utf-8",
         )
 
     def test_every_default_source_id_resolves(self) -> None:
         self._write_configs(
-            curated_ids=["news", "university", "supplemental-po", "supplemental-sie", "supplemental-pnp"],
+            curated_ids=[
+                "news",
+                "university",
+                "supplemental-po",
+                "supplemental-sie",
+                "supplemental-pnp",
+            ],
             unit_hosts=["www.hfnl.ustc.edu.cn", "scms.ustc.edu.cn", "www.nsrl.ustc.edu.cn"],
         )
 

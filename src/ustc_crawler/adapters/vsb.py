@@ -39,9 +39,7 @@ class VsbCmsAdapter(SiteAdapter):
         body = soup.select_one(".wp_articlecontent")
         if title_node is None or body is None:
             return None
-        title = _BRACKETED_DATE_SUFFIX.sub(
-            "", title_node.get_text(" ", strip=True)
-        ).strip()
+        title = _BRACKETED_DATE_SUFFIX.sub("", title_node.get_text(" ", strip=True)).strip()
         if not title:
             return None
         # Prefer the metadata bar beside the title; related-article lists at

@@ -55,10 +55,7 @@ def _interleave_jobs_by_host(
         positions[key] += 1
         decorated.append((priority, position, host, url, refs, existing))
     decorated.sort(key=lambda item: item[:4])
-    return [
-        (priority, url, refs, existing)
-        for priority, _, _, url, refs, existing in decorated
-    ]
+    return [(priority, url, refs, existing) for priority, _, _, url, refs, existing in decorated]
 
 
 def _image_jobs(store: Store, source_ids: set[str] | None = None) -> dict[str, list[ImageRef]]:
@@ -148,7 +145,9 @@ async def _run(options: MediaOptions) -> dict[str, int]:
                     existing["source_page_url"] if existing else "",
                 )
                 for ref in refs[1:]:
-                    await asyncio.to_thread(store.link_media, ref, ref.article_url, refs[0].article_url)
+                    await asyncio.to_thread(
+                        store.link_media, ref, ref.article_url, refs[0].article_url
+                    )
                 fetched += 1
                 return
             if response.error:

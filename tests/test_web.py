@@ -205,9 +205,27 @@ class DashboardTests(unittest.TestCase):
                 ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
-                    url, "news", url, 200, "text/html", today, 1, discovered_from,
-                    "hash", "data/pages/hash.html", title, url, "", 0, page_kind, "public",
-                    100, "full_index", "[]", today, "",
+                    url,
+                    "news",
+                    url,
+                    200,
+                    "text/html",
+                    today,
+                    1,
+                    discovered_from,
+                    "hash",
+                    "data/pages/hash.html",
+                    title,
+                    url,
+                    "",
+                    0,
+                    page_kind,
+                    "public",
+                    100,
+                    "full_index",
+                    "[]",
+                    today,
+                    "",
                 ),
             )
             store_core(store).execute(
@@ -218,13 +236,35 @@ class DashboardTests(unittest.TestCase):
                   first_seen,last_seen
                 ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
-                (url, "news", title, "", today, "", "", "", "<p>正文</p>", "正文", "正文",
-                 "test", url, "{}", url, today, today),
+                (
+                    url,
+                    "news",
+                    title,
+                    "",
+                    today,
+                    "",
+                    "",
+                    "",
+                    "<p>正文</p>",
+                    "正文",
+                    "正文",
+                    "test",
+                    url,
+                    "{}",
+                    url,
+                    today,
+                    today,
+                ),
             )
 
         add("https://news.example.test/item/award", "科学探索奖获奖名单出炉", "news_article")
         add("https://news.example.test/item/admission", "颁发首批录取通知书", "news_article")
-        add("https://news.example.test/item/section", "本周工作动态", "news_article", "https://news.example.test/tzgg/list.htm")
+        add(
+            "https://news.example.test/item/section",
+            "本周工作动态",
+            "news_article",
+            "https://news.example.test/tzgg/list.htm",
+        )
         add("https://news.example.test/item/bus", "校园班车运行时刻表", "news_article")
         add("https://news.example.test/course/1", "课程资料", "course_resource")
         store_core(store).execute(
@@ -342,7 +382,7 @@ class DashboardTests(unittest.TestCase):
                 self.assertIn('<span class="tag notice">通知</span>', rendered)
                 self.assertIn('<table class="news-table">', rendered)
                 self.assertIn("<th>标题与摘要</th>", rendered)
-                self.assertIn("<th class=\"source-column\">来源与栏目</th>", rendered)
+                self.assertIn('<th class="source-column">来源与栏目</th>', rendered)
                 self.assertIn('role="region" aria-label="新闻与通知结果" tabindex="0"', rendered)
                 self.assertNotIn('class="news-list"', rendered)
             with urlopen(f"{base}/api/news?type=notice") as response:
@@ -352,10 +392,14 @@ class DashboardTests(unittest.TestCase):
             url = quote("https://news.example.test/article/1", safe="")
             with urlopen(f"{base}/article?url={url}") as response:
                 rendered = response.read().decode("utf-8")
-                self.assertIn("<div class=\"article-body\"><p>正文</p>", rendered)
-            with urlopen(f"{base}/media?path={quote('data/media/aa/image.png', safe='')}") as response:
+                self.assertIn('<div class="article-body"><p>正文</p>', rendered)
+            with urlopen(
+                f"{base}/media?path={quote('data/media/aa/image.png', safe='')}"
+            ) as response:
                 self.assertEqual(response.read(), b"PNG")
-            with urlopen(f"{base}/asset?path={quote('data/assets/aa/assignment.pdf', safe='')}") as response:
+            with urlopen(
+                f"{base}/asset?path={quote('data/assets/aa/assignment.pdf', safe='')}"
+            ) as response:
                 self.assertEqual(response.read(), b"PDF")
         finally:
             server.shutdown()

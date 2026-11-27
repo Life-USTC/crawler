@@ -83,7 +83,9 @@ class FreshFirstTests(unittest.TestCase):
                     (2, "2026-08-20T00:00:02+08:00"),
                     (3, "2026-08-20T00:00:03+08:00"),
                 ):
-                    self._set_created_at(store, f"source:https://example.edu/news/{number}", created_at)
+                    self._set_created_at(
+                        store, f"source:https://example.edu/news/{number}", created_at
+                    )
                 outbox = IngestionOutbox(store.database)
 
                 first = self._build(outbox, "batch-1", limit=2)
@@ -118,17 +120,13 @@ class FreshFirstTests(unittest.TestCase):
                         select(SyncOutbox).where(SyncOutbox.entity_key == key)
                     ).all()
                     self.assertEqual(len(rows), 2)
-                    by_title = {
-                        json.loads(row.payload_json)["title"]: row for row in rows
-                    }
+                    by_title = {json.loads(row.payload_json)["title"]: row for row in rows}
                     stale = by_title["Notice 1"]
                     fresh = by_title["Notice 1 v2"]
                     stale_id, stale_sha = stale.event_id, stale.payload_sha256
                 with store.database.session_factory.begin() as session:
                     session.get(SyncOutbox, stale_id).created_at = "2026-08-20T00:00:00+08:00"
-                    session.get(SyncOutbox, fresh.event_id).created_at = (
-                        "2026-08-20T00:00:01+08:00"
-                    )
+                    session.get(SyncOutbox, fresh.event_id).created_at = "2026-08-20T00:00:01+08:00"
                 outbox = IngestionOutbox(store.database)
 
                 batch = self._build(outbox, "batch-1")
@@ -161,7 +159,8 @@ class FreshFirstTests(unittest.TestCase):
                 key = "source:https://example.edu/news/1"
                 with store.database.session_factory.begin() as session:
                     rows = session.scalars(
-                        select(SyncOutbox).where(SyncOutbox.entity_key == key)
+                        select(SyncOutbox)
+                        .where(SyncOutbox.entity_key == key)
                         .order_by(SyncOutbox.event_id)
                     ).all()
                     # Equal timestamps exercise the event ID tie-breaker.
@@ -173,22 +172,30 @@ class FreshFirstTests(unittest.TestCase):
                         row.created_at = "2026-08-21T00:00:00+08:00"
                     excluded[0].batch_id = "already-claimed"
                     expected_title = json.loads(rows[-5].payload_json)["title"]
-                    original = {row.event_id: (row.payload_json, row.payload_sha256) for row in rows}
+                    original = {
+                        row.event_id: (row.payload_json, row.payload_sha256) for row in rows
+                    }
                     excluded_states = {row.event_id: (row.status, row.batch_id) for row in excluded}
                     driver = session.connection().connection.driver_connection
                 previous_limit = driver.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 64)
                 try:
                     batch = self._build(outbox, "large-batch")
-                    self.assertEqual({item.title for item in batch.items}, {expected_title, "Notice 2"})
+                    self.assertEqual(
+                        {item.title for item in batch.items}, {expected_title, "Notice 2"}
+                    )
                     with store.database.session_factory.begin() as session:
                         rows = session.scalars(
                             select(SyncOutbox).where(SyncOutbox.entity_key == key)
                         ).all()
                         self.assertEqual(sum(row.status == "superseded" for row in rows), 100)
                         for row in rows:
-                            self.assertEqual((row.payload_json, row.payload_sha256), original[row.event_id])
+                            self.assertEqual(
+                                (row.payload_json, row.payload_sha256), original[row.event_id]
+                            )
                             if row.event_id in excluded_states:
-                                self.assertEqual((row.status, row.batch_id), excluded_states[row.event_id])
+                                self.assertEqual(
+                                    (row.status, row.batch_id), excluded_states[row.event_id]
+                                )
                         self.assertEqual(outbox._coalesce_pending_events(session), 0)
                 finally:
                     driver.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, previous_limit)
@@ -225,9 +232,7 @@ class FreshFirstTests(unittest.TestCase):
                     rows = session.scalars(
                         select(SyncOutbox).where(SyncOutbox.entity_key == key)
                     ).all()
-                    tombstone_row = next(
-                        row for row in rows if row.revision_hash == "b" * 64
-                    )
+                    tombstone_row = next(row for row in rows if row.revision_hash == "b" * 64)
                     body_row = next(row for row in rows if row is not tombstone_row)
                     self.assertEqual(tombstone_row.status, "batched")
                     self.assertEqual(body_row.status, "superseded")

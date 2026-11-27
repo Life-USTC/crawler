@@ -27,9 +27,7 @@ class SchemaIndexTests(unittest.TestCase):
             indexes = _indexes(db_path)
             connection = sqlite3.connect(db_path)
             try:
-                columns = {
-                    row[1] for row in connection.execute("PRAGMA table_info(sync_batches)")
-                }
+                columns = {row[1] for row in connection.execute("PRAGMA table_info(sync_batches)")}
                 default = connection.execute(
                     "SELECT dflt_value FROM pragma_table_info('sync_batches') WHERE name='revision_policy'"
                 ).fetchone()
@@ -112,9 +110,7 @@ class SchemaIndexTests(unittest.TestCase):
             upgrade_database(db_path)
             connection = sqlite3.connect(db_path)
             try:
-                rows = connection.execute(
-                    "SELECT url, error, attempts FROM failures"
-                ).fetchall()
+                rows = connection.execute("SELECT url, error, attempts FROM failures").fetchall()
             finally:
                 connection.close()
 

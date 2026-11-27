@@ -86,20 +86,32 @@ class DashboardStore:
             "filtered": ("SELECT COUNT(*) AS value FROM frontier WHERE status='filtered'", ()),
             "pages": ("SELECT COUNT(*) AS value FROM pages", ()),
             "pages_indexable": ("SELECT COUNT(*) AS value FROM pages WHERE value_score >= 16", ()),
-            "news_pages": ("SELECT COUNT(*) AS value FROM pages WHERE page_kind='news_article'", ()),
-            "news_indexable": ("""
+            "news_pages": (
+                "SELECT COUNT(*) AS value FROM pages WHERE page_kind='news_article'",
+                (),
+            ),
+            "news_indexable": (
+                """
                 SELECT COUNT(*) AS value FROM pages
                 WHERE page_kind='news_article' AND value_score >= 40
                   AND (duplicate_of IS NULL OR duplicate_of='')
-            """, ()),
-            "recent_news": ("""
+            """,
+                (),
+            ),
+            "recent_news": (
+                """
                 SELECT COUNT(*) AS value FROM pages
                 WHERE page_kind='news_article' AND published_at >= ? AND published_at <= ?
                   AND value_score >= 40
                   AND (duplicate_of IS NULL OR duplicate_of='')
-            """, (cutoff, today)),
+            """,
+                (cutoff, today),
+            ),
             "articles": ("SELECT COUNT(*) AS value FROM articles", ()),
-            "recent_articles": ("SELECT COUNT(*) AS value FROM articles WHERE published_at >= ? AND published_at <= ?", (cutoff, today)),
+            "recent_articles": (
+                "SELECT COUNT(*) AS value FROM articles WHERE published_at >= ? AND published_at <= ?",
+                (cutoff, today),
+            ),
             "media": ("SELECT COUNT(*) AS value FROM media", ()),
             "media_ok": ("SELECT COUNT(*) AS value FROM media WHERE status='ok'", ()),
             "assets": ("SELECT COUNT(*) AS value FROM assets", ()),
@@ -397,7 +409,7 @@ def _layout(title: str, content: str, active: str = "/") -> str:
     <header>
       <div><h1>USTC Crawl Explorer</h1><p class="subtitle">公开站点新闻、文章和文档的本地只读浏览器。</p></div>
       <nav>
-        {nav_link('/', '概览')}{nav_link('/news', '新闻与通知')}{nav_link('/sources', '来源')}
+        {nav_link("/", "概览")}{nav_link("/news", "新闻与通知")}{nav_link("/sources", "来源")}
       </nav>
     </header>
     <main>{content}</main>
@@ -416,9 +428,9 @@ def _source_rows(rows: list[dict[str, object]]) -> str:
         return '<tr><td colspan="5" class="muted">没有来源数据。</td></tr>'
     return "".join(
         f"""<tr>
-          <td><a href="/news?source={quote(str(row['id']))}">{_escape(row['name'])}</a><div class="muted small">{_escape(row['organization_level'])}</div></td>
-          <td class="num">{_number(row['news_pages'])}</td><td class="num">{_number(row['recent_news'])}</td>
-          <td class="num">{_number(row['articles'])}</td><td class="num">{_number(row['pending'])}</td>
+          <td><a href="/news?source={quote(str(row["id"]))}">{_escape(row["name"])}</a><div class="muted small">{_escape(row["organization_level"])}</div></td>
+          <td class="num">{_number(row["news_pages"])}</td><td class="num">{_number(row["recent_news"])}</td>
+          <td class="num">{_number(row["articles"])}</td><td class="num">{_number(row["pending"])}</td>
         </tr>"""
         for row in rows
     )
@@ -474,7 +486,7 @@ def _news_table(rows: list[dict[str, object]], *, compact: bool = False) -> str:
                 f'<tr><td><span class="tag {_escape(publication_type)}">{type_label}</span></td>'
                 f'<td><a class="news-title" href="{article_url}">{_escape(title)}</a>{excerpt}</td>'
                 f'<td>{source}{category}</td><td class="date-column">{date_cell}</td>'
-                f'<td>{author}</td></tr>'
+                f"<td>{author}</td></tr>"
             )
         body = "".join(rendered_rows)
     if compact:
@@ -514,10 +526,10 @@ def render_home(store: DashboardStore) -> str:
     )
     content = f"""
       <section class="metrics">
-        {_metric('来源站点', summary['sources'], '官方来源')}
-        {_metric('已抓取页面', summary['pages'], 'SQLite 页面记录')}
-        {_metric('可索引新闻', summary['news_indexable'], f"近一年 {summary['recent_news']:,} 页")}
-        {_metric('待处理 URL', summary['pending'], '可断点续跑')}
+        {_metric("来源站点", summary["sources"], "官方来源")}
+        {_metric("已抓取页面", summary["pages"], "SQLite 页面记录")}
+        {_metric("可索引新闻", summary["news_indexable"], f"近一年 {summary['recent_news']:,} 页")}
+        {_metric("待处理 URL", summary["pending"], "可断点续跑")}
       </section>
       <div class="columns">
         <section>
@@ -534,7 +546,7 @@ def render_home(store: DashboardStore) -> str:
         {tier_html}
       </section>
       <section class="section">
-        <div class="section-head"><h2>抓取说明</h2><p>更新时间 {_escape(summary.get('last_fetched') or '未知')}</p></div>
+        <div class="section-head"><h2>抓取说明</h2><p>更新时间 {_escape(summary.get("last_fetched") or "未知")}</p></div>
         <div class="notice-panel">文章正文、标题、作者、发布时间、图片关联和公开文档均来自本地结构化数据；页面不会自动重新抓取网络。</div>
       </section>
     """
@@ -570,12 +582,12 @@ def render_news(store: DashboardStore, params: dict[str, list[str]]) -> str:
         <div class="section-head"><div><h2>新闻与通知</h2><p>共 {_number(total)} 条匹配记录 · 当前来源：{_escape(source_name)}</p></div></div>
         <form class="search" method="get" action="/news">
           <label class="search-field search-grow"><span class="sr-only">关键词</span><input type="search" name="q" value="{_escape(query_text)}" placeholder="搜索标题、摘要或正文"></label>
-          <label class="search-field"><span class="sr-only">来源</span><select name="source"><option value="">全部来源</option>{''.join(f'<option value="{_escape(row["id"])}"{" selected" if row["id"] == source_id else ""}>{_escape(row["name"])}</option>' for row in sources)}</select></label>
+          <label class="search-field"><span class="sr-only">来源</span><select name="source"><option value="">全部来源</option>{"".join(f'<option value="{_escape(row["id"])}"{" selected" if row["id"] == source_id else ""}>{_escape(row["name"])}</option>' for row in sources)}</select></label>
           <label class="search-field"><span class="sr-only">类型</span><select name="type"><option value="">新闻与通知</option><option value="news"{" selected" if publication_type == "news" else ""}>仅新闻</option><option value="notice"{" selected" if publication_type == "notice" else ""}>仅通知</option></select></label>
           <button type="submit">搜索</button>
         </form>
         {_news_table(rows)}
-        <div class="pager"><span>第 {page} / {max_page} 页</span><span>{f'<a href="{page_link(page - 1)}">← 上一页</a>' if page > 1 else ''}{'　' if page > 1 and page < max_page else ''}{f'<a href="{page_link(page + 1)}">下一页 →</a>' if page < max_page else ''}</span></div>
+        <div class="pager"><span>第 {page} / {max_page} 页</span><span>{f'<a href="{page_link(page - 1)}">← 上一页</a>' if page > 1 else ""}{"　" if page > 1 and page < max_page else ""}{f'<a href="{page_link(page + 1)}">下一页 →</a>' if page < max_page else ""}</span></div>
       </section>
     """
     return _layout("新闻与通知", content, "/news")
@@ -586,7 +598,7 @@ def render_sources(store: DashboardStore) -> str:
     content = f"""
       <section class="section" style="margin-top:0">
         <div class="section-head"><div><h2>来源统计</h2><p>按可索引新闻页、近一年新闻页和抓取队列排序。</p></div><p>{_number(len(rows))} 个来源</p></div>
-        <div class="table-wrap" role="region" aria-label="来源统计" tabindex="0"><table><thead><tr><th>来源</th><th class="num">页面</th><th class="num">可索引新闻</th><th class="num">近一年新闻</th><th class="num">文章</th><th class="num">待处理</th></tr></thead><tbody>{''.join(f'<tr><td><a href="/news?source={quote(str(row["id"]))}">{_escape(row["name"])}</a><div class="muted small">{_escape(row["organization_level"])}</div></td><td class="num">{_number(row["pages"])}</td><td class="num">{_number(row["news_pages"])}</td><td class="num">{_number(row["recent_news"])}</td><td class="num">{_number(row["articles"])}</td><td class="num">{_number(row["pending"])}</td></tr>' for row in rows)}</tbody></table></div>
+        <div class="table-wrap" role="region" aria-label="来源统计" tabindex="0"><table><thead><tr><th>来源</th><th class="num">页面</th><th class="num">可索引新闻</th><th class="num">近一年新闻</th><th class="num">文章</th><th class="num">待处理</th></tr></thead><tbody>{"".join(f'<tr><td><a href="/news?source={quote(str(row["id"]))}">{_escape(row["name"])}</a><div class="muted small">{_escape(row["organization_level"])}</div></td><td class="num">{_number(row["pages"])}</td><td class="num">{_number(row["news_pages"])}</td><td class="num">{_number(row["recent_news"])}</td><td class="num">{_number(row["articles"])}</td><td class="num">{_number(row["pending"])}</td></tr>' for row in rows)}</tbody></table></div>
       </section>
     """
     return _layout("来源", content, "/sources")
@@ -602,7 +614,9 @@ def render_article(article: dict[str, object]) -> str:
                 continue
             path = quote(str(image["local_path"]), safe="")
             caption = image.get("caption") or image.get("alt") or image.get("title") or ""
-            figures.append(f'<figure><img loading="lazy" src="/media?path={path}" alt="{_escape(image.get("alt"))}"><figcaption>{_escape(caption)}</figcaption></figure>')
+            figures.append(
+                f'<figure><img loading="lazy" src="/media?path={path}" alt="{_escape(image.get("alt"))}"><figcaption>{_escape(caption)}</figcaption></figure>'
+            )
         if figures:
             image_html = '<div class="image-grid">' + "".join(figures) + "</div>"
     body_html = _safe_article_html(article)
@@ -611,9 +625,9 @@ def render_article(article: dict[str, object]) -> str:
     content = f"""
       <article class="article section" style="margin-top:0">
         <p class="small"><a href="/news">← 返回新闻与通知</a></p>
-        <h1>{_escape(article.get('title') or '未命名文章')}</h1>
-        <div class="article-meta"><span class="tag {_escape(article.get('publication_type') or 'news')}">{'通知' if article.get('publication_type') == 'notice' else '新闻'}</span><span>{_escape(article.get('source_name'))}</span><span>发布时间：{_escape(article.get('published_at') or '未记录')}</span>{f'<span>作者：{_escape(article.get("author"))}</span>' if article.get('author') else ''}{f'<span>栏目：{_escape(article.get("category"))}</span>' if article.get('category') else ''}<a href="{_escape(article.get('url'))}" target="_blank" rel="noreferrer">查看原文 ↗</a></div>
-        {f'<p class="subtitle">{_escape(article.get("summary"))}</p>' if article.get('summary') else ''}
+        <h1>{_escape(article.get("title") or "未命名文章")}</h1>
+        <div class="article-meta"><span class="tag {_escape(article.get("publication_type") or "news")}">{"通知" if article.get("publication_type") == "notice" else "新闻"}</span><span>{_escape(article.get("source_name"))}</span><span>发布时间：{_escape(article.get("published_at") or "未记录")}</span>{f"<span>作者：{_escape(article.get('author'))}</span>" if article.get("author") else ""}{f"<span>栏目：{_escape(article.get('category'))}</span>" if article.get("category") else ""}<a href="{_escape(article.get("url"))}" target="_blank" rel="noreferrer">查看原文 ↗</a></div>
+        {f'<p class="subtitle">{_escape(article.get("summary"))}</p>' if article.get("summary") else ""}
         {image_html}
         <div class="article-body">{body_markup}</div>
       </article>
@@ -630,9 +644,38 @@ def _safe_article_html(article: dict[str, object]) -> str:
     soup = BeautifulSoup(raw, "html.parser")
     container = soup.body or soup
     allowed = {
-        "a", "blockquote", "br", "code", "div", "em", "figcaption", "figure", "h1", "h2",
-        "h3", "h4", "h5", "h6", "hr", "i", "img", "li", "ol", "p", "pre", "span",
-        "strong", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "u", "ul",
+        "a",
+        "blockquote",
+        "br",
+        "code",
+        "div",
+        "em",
+        "figcaption",
+        "figure",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "hr",
+        "i",
+        "img",
+        "li",
+        "ol",
+        "p",
+        "pre",
+        "span",
+        "strong",
+        "table",
+        "tbody",
+        "td",
+        "tfoot",
+        "th",
+        "thead",
+        "tr",
+        "u",
+        "ul",
     }
     image_paths = {
         str(item.get("image_url")): str(item.get("local_path"))
@@ -647,7 +690,18 @@ def _safe_article_html(article: dict[str, object]) -> str:
         if node.parent is None:
             continue
         name = str(node.name).lower()
-        if name in {"script", "style", "noscript", "template", "iframe", "object", "embed", "form", "input", "button"}:
+        if name in {
+            "script",
+            "style",
+            "noscript",
+            "template",
+            "iframe",
+            "object",
+            "embed",
+            "form",
+            "input",
+            "button",
+        }:
             node.decompose()
             continue
         if name not in allowed:
@@ -672,7 +726,9 @@ def _safe_article_html(article: dict[str, object]) -> str:
             if not local_path:
                 node.decompose()
                 continue
-            node.attrs = {key: value for key, value in node.attrs.items() if key in {"alt", "title"}}
+            node.attrs = {
+                key: value for key, value in node.attrs.items() if key in {"alt", "title"}
+            }
             node["src"] = "/media?path=" + quote(local_path, safe="")
     return "".join(str(child) for child in container.contents).strip()
 

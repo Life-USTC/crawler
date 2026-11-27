@@ -36,9 +36,7 @@ class SourceRoutingTests(unittest.IsolatedAsyncioTestCase):
         self.temp_dir.cleanup()
 
     def crawler(self) -> AsyncCrawler:
-        crawler = AsyncCrawler(
-            CrawlOptions(db_path=str(self.db_path), data_dir=str(self.data_dir))
-        )
+        crawler = AsyncCrawler(CrawlOptions(db_path=str(self.db_path), data_dir=str(self.data_dir)))
         crawler.configured_sources = {
             "university": self.university,
             "news": self.news,
@@ -56,9 +54,11 @@ class SourceRoutingTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         store = Store(self.db_path, self.data_dir)
-        row = store_core(store).execute(
-            "SELECT source_id,status FROM frontier WHERE url=?", (url,)
-        ).fetchone()
+        row = (
+            store_core(store)
+            .execute("SELECT source_id,status FROM frontier WHERE url=?", (url,))
+            .fetchone()
+        )
         self.assertEqual(row["source_id"], "news")
         self.assertEqual(item[3], "news")
         store.close()
@@ -90,20 +90,26 @@ class SourceRoutingTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         store = Store(self.db_path, self.data_dir)
-        page = store_core(store).execute(
-            "SELECT source_id,canonical_url FROM pages WHERE url=?", (fetched_url,)
-        ).fetchone()
-        article = store_core(store).execute(
-            "SELECT source_id,source_page_url FROM articles WHERE url=?", (canonical_url,)
-        ).fetchone()
-        outbox = store_core(store).execute(
-            "SELECT payload_json FROM sync_outbox WHERE entity_key=?",
-            (f"news:{canonical_url}",),
-        ).fetchone()
-        self.assertEqual(dict(page), {"source_id": "university", "canonical_url": canonical_url})
-        self.assertEqual(
-            dict(article), {"source_id": "news", "source_page_url": fetched_url}
+        page = (
+            store_core(store)
+            .execute("SELECT source_id,canonical_url FROM pages WHERE url=?", (fetched_url,))
+            .fetchone()
         )
+        article = (
+            store_core(store)
+            .execute("SELECT source_id,source_page_url FROM articles WHERE url=?", (canonical_url,))
+            .fetchone()
+        )
+        outbox = (
+            store_core(store)
+            .execute(
+                "SELECT payload_json FROM sync_outbox WHERE entity_key=?",
+                (f"news:{canonical_url}",),
+            )
+            .fetchone()
+        )
+        self.assertEqual(dict(page), {"source_id": "university", "canonical_url": canonical_url})
+        self.assertEqual(dict(article), {"source_id": "news", "source_page_url": fetched_url})
         self.assertEqual(json.loads(outbox["payload_json"])["sourceId"], "news")
         store.close()
 
@@ -134,16 +140,26 @@ class SourceRoutingTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         store = Store(self.db_path, self.data_dir)
-        page = store_core(store).execute(
-            "SELECT source_id,canonical_url,raw_path FROM pages WHERE url=?", (fetched_url,)
-        ).fetchone()
-        article = store_core(store).execute(
-            "SELECT 1 FROM articles WHERE url=?", (canonical_url,)
-        ).fetchone()
-        outbox = store_core(store).execute(
-            "SELECT 1 FROM sync_outbox WHERE entity_key=?",
-            (f"university:{canonical_url}",),
-        ).fetchone()
+        page = (
+            store_core(store)
+            .execute(
+                "SELECT source_id,canonical_url,raw_path FROM pages WHERE url=?", (fetched_url,)
+            )
+            .fetchone()
+        )
+        article = (
+            store_core(store)
+            .execute("SELECT 1 FROM articles WHERE url=?", (canonical_url,))
+            .fetchone()
+        )
+        outbox = (
+            store_core(store)
+            .execute(
+                "SELECT 1 FROM sync_outbox WHERE entity_key=?",
+                (f"university:{canonical_url}",),
+            )
+            .fetchone()
+        )
         self.assertEqual(page["source_id"], "university")
         self.assertEqual(page["canonical_url"], canonical_url)
         self.assertTrue(Path(page["raw_path"]).is_file())
@@ -161,9 +177,11 @@ class SourceRoutingTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         store = Store(self.db_path, self.data_dir)
-        row = store_core(store).execute(
-            "SELECT source_id,status FROM frontier WHERE url=?", (url,)
-        ).fetchone()
+        row = (
+            store_core(store)
+            .execute("SELECT source_id,status FROM frontier WHERE url=?", (url,))
+            .fetchone()
+        )
         self.assertEqual(dict(row), {"source_id": "news", "status": "pending"})
         store.close()
 
@@ -181,9 +199,11 @@ class SourceRoutingTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         store = Store(self.db_path, self.data_dir)
-        row = store_core(store).execute(
-            "SELECT status,last_error FROM frontier WHERE url=?", (url,)
-        ).fetchone()
+        row = (
+            store_core(store)
+            .execute("SELECT status,last_error FROM frontier WHERE url=?", (url,))
+            .fetchone()
+        )
         self.assertEqual(row["status"], "pending")
         self.assertFalse(row["last_error"])
         store.close()
@@ -220,9 +240,9 @@ class SourceRoutingTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         store = Store(self.db_path, self.data_dir)
-        row = store_core(store).execute(
-            "SELECT status FROM frontier WHERE url=?", (url,)
-        ).fetchone()
+        row = (
+            store_core(store).execute("SELECT status FROM frontier WHERE url=?", (url,)).fetchone()
+        )
         self.assertEqual(row["status"], "pending")
         store.close()
 
@@ -238,9 +258,9 @@ class SourceRoutingTests(unittest.IsolatedAsyncioTestCase):
         await crawler.close()
 
         store = Store(self.db_path, self.data_dir)
-        row = store_core(store).execute(
-            "SELECT status FROM frontier WHERE url=?", (url,)
-        ).fetchone()
+        row = (
+            store_core(store).execute("SELECT status FROM frontier WHERE url=?", (url,)).fetchone()
+        )
         self.assertEqual(row["status"], "pending")
         store.close()
 

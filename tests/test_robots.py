@@ -112,12 +112,15 @@ def test_temporary_failure_reason_is_not_cached_after_recovery(failure):
         try:
             first = await policy.decision("https://example.test/first")
             assert not first.allowed
-            assert first.reason == {
-                "http": RobotsBlockReason.HTTP_ERROR,
-                "transport": RobotsBlockReason.TRANSPORT_ERROR,
-                "decoding": RobotsBlockReason.DECODING_ERROR,
-                "unicode": RobotsBlockReason.DECODING_ERROR,
-            }[failure]
+            assert (
+                first.reason
+                == {
+                    "http": RobotsBlockReason.HTTP_ERROR,
+                    "transport": RobotsBlockReason.TRANSPORT_ERROR,
+                    "decoding": RobotsBlockReason.DECODING_ERROR,
+                    "unicode": RobotsBlockReason.DECODING_ERROR,
+                }[failure]
+            )
             assert first.http_status == (503 if failure == "http" else None)
             recovered = await policy.decision("https://example.test/second")
             assert recovered.allowed
@@ -150,14 +153,19 @@ def test_concurrent_decisions_keep_their_own_origin_and_path_reason():
                 policy.decision("https://rules.test/public/page"),
             )
             assert (private.allowed, private.reason, private.http_status) == (
-                False, RobotsBlockReason.RULE_DISALLOWED, 200
+                False,
+                RobotsBlockReason.RULE_DISALLOWED,
+                200,
             )
             assert (unavailable.allowed, unavailable.reason, unavailable.http_status) == (
-                False, RobotsBlockReason.HTTP_ERROR, 403
+                False,
+                RobotsBlockReason.HTTP_ERROR,
+                403,
             )
             assert (public.allowed, public.reason, public.http_status) == (True, None, 200)
             assert sorted(calls) == [
-                "https://rules.test/robots.txt", "https://unavailable.test/robots.txt"
+                "https://rules.test/robots.txt",
+                "https://unavailable.test/robots.txt",
             ]
 
     asyncio.run(run())

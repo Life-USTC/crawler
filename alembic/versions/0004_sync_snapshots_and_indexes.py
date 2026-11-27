@@ -28,8 +28,12 @@ def upgrade() -> None:
     _add_missing(
         "sync_batches",
         {
-            "client_run_id": sa.Column("client_run_id", sa.String(200), nullable=False, server_default=""),
-            "sources_json": sa.Column("sources_json", sa.Text(), nullable=False, server_default="[]"),
+            "client_run_id": sa.Column(
+                "client_run_id", sa.String(200), nullable=False, server_default=""
+            ),
+            "sources_json": sa.Column(
+                "sources_json", sa.Text(), nullable=False, server_default="[]"
+            ),
             "observed_at": sa.Column("observed_at", sa.Text(), nullable=False, server_default=""),
         },
     )

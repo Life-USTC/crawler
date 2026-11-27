@@ -29,7 +29,11 @@ def _create_index_if_missing(name: str, table: str, columns: list[object]) -> No
 def upgrade() -> None:
     _add_missing(
         "sources",
-        {"blocked_hosts": sa.Column("blocked_hosts", sa.Text(), nullable=False, server_default="[]")},
+        {
+            "blocked_hosts": sa.Column(
+                "blocked_hosts", sa.Text(), nullable=False, server_default="[]"
+            )
+        },
     )
     _add_missing(
         "frontier",
@@ -38,11 +42,21 @@ def upgrade() -> None:
     _add_missing(
         "pages",
         {
-            "page_kind": sa.Column("page_kind", sa.Text(), nullable=False, server_default="unknown"),
-            "access_mode": sa.Column("access_mode", sa.Text(), nullable=False, server_default="unknown"),
-            "value_score": sa.Column("value_score", sa.Integer(), nullable=False, server_default="0"),
-            "value_tier": sa.Column("value_tier", sa.Text(), nullable=False, server_default="not_indexed"),
-            "score_reasons": sa.Column("score_reasons", sa.Text(), nullable=False, server_default="[]"),
+            "page_kind": sa.Column(
+                "page_kind", sa.Text(), nullable=False, server_default="unknown"
+            ),
+            "access_mode": sa.Column(
+                "access_mode", sa.Text(), nullable=False, server_default="unknown"
+            ),
+            "value_score": sa.Column(
+                "value_score", sa.Integer(), nullable=False, server_default="0"
+            ),
+            "value_tier": sa.Column(
+                "value_tier", sa.Text(), nullable=False, server_default="not_indexed"
+            ),
+            "score_reasons": sa.Column(
+                "score_reasons", sa.Text(), nullable=False, server_default="[]"
+            ),
             "published_at": sa.Column("published_at", sa.Text()),
             "duplicate_of": sa.Column("duplicate_of", sa.Text()),
         },
@@ -50,10 +64,18 @@ def upgrade() -> None:
     _add_missing(
         "assets",
         {
-            "page_kind": sa.Column("page_kind", sa.Text(), nullable=False, server_default="document"),
-            "access_mode": sa.Column("access_mode", sa.Text(), nullable=False, server_default="unknown"),
-            "value_score": sa.Column("value_score", sa.Integer(), nullable=False, server_default="0"),
-            "score_reasons": sa.Column("score_reasons", sa.Text(), nullable=False, server_default="[]"),
+            "page_kind": sa.Column(
+                "page_kind", sa.Text(), nullable=False, server_default="document"
+            ),
+            "access_mode": sa.Column(
+                "access_mode", sa.Text(), nullable=False, server_default="unknown"
+            ),
+            "value_score": sa.Column(
+                "value_score", sa.Integer(), nullable=False, server_default="0"
+            ),
+            "score_reasons": sa.Column(
+                "score_reasons", sa.Text(), nullable=False, server_default="[]"
+            ),
         },
     )
     _create_index_if_missing(

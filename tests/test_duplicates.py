@@ -108,9 +108,11 @@ class DuplicateKeeperTests(unittest.TestCase):
                 row["url"]: row["duplicate_of"]
                 for row in store_core(store).execute("SELECT url,duplicate_of FROM pages")
             }
-            digest = store_core(store).execute(
-                "SELECT sha256 FROM pages WHERE url=?", (article_url,)
-            ).fetchone()[0]
+            digest = (
+                store_core(store)
+                .execute("SELECT sha256 FROM pages WHERE url=?", (article_url,))
+                .fetchone()[0]
+            )
             keeper = store.duplicate_page_url(
                 digest,
                 article_url,

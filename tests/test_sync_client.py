@@ -1328,9 +1328,7 @@ class SyncClientTests(unittest.TestCase):
             work = root / "repo"
             work.mkdir()
             # Alembic resolves its script directory relative to the cwd.
-            shutil.copytree(
-                Path(__file__).resolve().parents[1] / "alembic", work / "alembic"
-            )
+            shutil.copytree(Path(__file__).resolve().parents[1] / "alembic", work / "alembic")
             previous_cwd = Path.cwd()
             os.chdir(work)
             try:
@@ -1506,7 +1504,9 @@ class SyncClientTests(unittest.TestCase):
                             for row in session.scalars(select(SyncOutbox)):
                                 for manifest in json.loads(row.object_manifest_json):
                                     Path(manifest["local_path"]).unlink()
-                        event.listen(store.database.engine, "before_cursor_execute", interrupt_archive)
+                        event.listen(
+                            store.database.engine, "before_cursor_execute", interrupt_archive
+                        )
                     started = time.monotonic()
                     summary = sync.sync(options=SyncOptions(batch_size=1, object_concurrency=1))
                     elapsed = time.monotonic() - started
@@ -1543,7 +1543,9 @@ class SyncClientTests(unittest.TestCase):
                         timer.cancel()
                         timer.join()
                     if phase == "archive":
-                        event.remove(store.database.engine, "before_cursor_execute", interrupt_archive)
+                        event.remove(
+                            store.database.engine, "before_cursor_execute", interrupt_archive
+                        )
                     http.close()
                     sync.close()
                     store.close()
@@ -1725,9 +1727,7 @@ class SyncClientTests(unittest.TestCase):
 
                 self.assertEqual(summary["acked"], 1)
                 self.assertEqual(summary["failed"], 0)
-                planned = [
-                    (o["kind"], o["sha256"]) for r in plan_requests for o in r["objects"]
-                ]
+                planned = [(o["kind"], o["sha256"]) for r in plan_requests for o in r["objects"]]
                 self.assertEqual(len(planned), len(set(planned)))
                 self.assertEqual(len(planned), 2)
                 self.assertEqual(len(upload_requests), 2)
@@ -1755,9 +1755,7 @@ class SyncClientTests(unittest.TestCase):
                                 "status": "unchanged",
                                 "publicationId": "publication-id",
                                 "revisionId": "revision-id",
-                                "objectsNeedingUpload": [
-                                    {"kind": "media", "sha256": "f" * 64}
-                                ],
+                                "objectsNeedingUpload": [{"kind": "media", "sha256": "f" * 64}],
                             }
                         ],
                     },
@@ -1926,7 +1924,9 @@ class SyncClientTests(unittest.TestCase):
                 )
                 self.assertEqual(second, {"scanned": 1, "enqueued": 1, "errors": 0})
                 with store.database.session_factory() as session:
-                    self.assertEqual(session.scalar(select(func.count()).select_from(SyncOutbox)), 2)
+                    self.assertEqual(
+                        session.scalar(select(func.count()).select_from(SyncOutbox)), 2
+                    )
             finally:
                 store.close()
 
@@ -2044,12 +2044,17 @@ class SyncClientTests(unittest.TestCase):
                         [item.model_dump(mode="json") for item in local_objects],
                     )
                     self.assertEqual(
-                        actual_payload["imageSources"][hashlib.sha256(shared_image.url.encode()).hexdigest()],
+                        actual_payload["imageSources"][
+                            hashlib.sha256(shared_image.url.encode()).hexdigest()
+                        ],
                         shared_image.url,
                     )
                     self.assertNotIn(
                         "media",
-                        {item["kind"] for item in json.loads(actual_rows[article.url].object_manifest_json)},
+                        {
+                            item["kind"]
+                            for item in json.loads(actual_rows[article.url].object_manifest_json)
+                        },
                     )
             finally:
                 store.close()

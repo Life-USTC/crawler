@@ -21,9 +21,11 @@ class AssetStorageTests(unittest.TestCase):
                 body=b"",
                 mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
-            row = store_core(store).execute(
-                "SELECT status,error,size,local_path FROM assets WHERE url=?", (url,)
-            ).fetchone()
+            row = (
+                store_core(store)
+                .execute("SELECT status,error,size,local_path FROM assets WHERE url=?", (url,))
+                .fetchone()
+            )
             store.close()
 
         self.assertIsNone(path)

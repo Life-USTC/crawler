@@ -115,10 +115,10 @@ class HtmlToMarkdownTests(unittest.TestCase):
             "<div><p><a href='/_upload/article/files/ab/cd/x.docx'>附件下载</a>"
             "<a href='../../0901/c1a2/page.htm'>相关文章</a></p></div>"
         )
-        md = html_to_markdown(html, base_url="https://mba.ustc.edu.cn/2026/0729/c20772a748934/page.htm")
-        self.assertIn(
-            "[附件下载](https://mba.ustc.edu.cn/_upload/article/files/ab/cd/x.docx)", md
+        md = html_to_markdown(
+            html, base_url="https://mba.ustc.edu.cn/2026/0729/c20772a748934/page.htm"
         )
+        self.assertIn("[附件下载](https://mba.ustc.edu.cn/_upload/article/files/ab/cd/x.docx)", md)
         self.assertIn("[相关文章](https://mba.ustc.edu.cn/2026/0901/c1a2/page.htm)", md)
 
     def test_non_http_links_are_left_untouched(self) -> None:
@@ -134,8 +134,7 @@ class HtmlToMarkdownTests(unittest.TestCase):
 
     def test_literal_exclamation_before_mailto_link_is_escaped(self) -> None:
         md = html_to_markdown(
-            '<p>告诉我吧!<a href="mailto:iread@ustc.edu.cn">'
-            "我是iread@ustc.edu.cn哦</a>~</p>"
+            '<p>告诉我吧!<a href="mailto:iread@ustc.edu.cn">我是iread@ustc.edu.cn哦</a>~</p>'
         )
 
         self.assertIn(
@@ -160,7 +159,9 @@ class HtmlToMarkdownTests(unittest.TestCase):
             "sudyfile-attr=\"{'title':'2021032539014229.mp4'}\"></div>"
             "</p></div>"
         )
-        md = html_to_markdown(html, base_url="https://biotraining.ustc.edu.cn/2022/0303/c26359a547647/page.htm")
+        md = html_to_markdown(
+            html, base_url="https://biotraining.ustc.edu.cn/2022/0303/c26359a547647/page.htm"
+        )
         self.assertIn(
             "[视频: 2021032539014229.mp4]"
             "(https://biotraining.ustc.edu.cn/_upload/article/videos/f0/2f/1c19876f.mp4)",
@@ -198,7 +199,9 @@ class HtmlToMarkdownTests(unittest.TestCase):
             "sudyfile-attr=\"{'title':'第十八届全国大学生数学竞赛报名的通知-科大版.pdf'}\"></span>"
             "</p></div>"
         )
-        md = html_to_markdown(html, base_url="https://math.ustc.edu.cn/2026/0901/c18650a751735/page.htm")
+        md = html_to_markdown(
+            html, base_url="https://math.ustc.edu.cn/2026/0901/c18650a751735/page.htm"
+        )
         self.assertIn(
             "[附件: 第十八届全国大学生数学竞赛报名的通知-科大版.pdf]"
             "(https://math.ustc.edu.cn/_upload/article/files/fe/65/9d1f6318.pdf)",
@@ -206,9 +209,7 @@ class HtmlToMarkdownTests(unittest.TestCase):
         )
 
     def test_player_without_url_hint_uses_generic_label(self) -> None:
-        html = (
-            "<div><p><div class='wp_video_player' sudy-wp-src='/v/a.mp4'></div></p></div>"
-        )
+        html = "<div><p><div class='wp_video_player' sudy-wp-src='/v/a.mp4'></div></p></div>"
         md = html_to_markdown(html, base_url="https://x.ustc.edu.cn/info/1/2.htm")
         self.assertIn("[视频](https://x.ustc.edu.cn/v/a.mp4)", md)
 
@@ -216,7 +217,7 @@ class HtmlToMarkdownTests(unittest.TestCase):
         html = (
             "<div class='v_news_content'><p style='text-indent: 0'>"
             "<script>var vsb_pdf_image_data = "
-            "[\"/__local/0/13/5F/a.jpg\",\"/__local/4/98/0F/b.jpg\"];</script>"
+            '["/__local/0/13/5F/a.jpg","/__local/4/98/0F/b.jpg"];</script>'
             "</p></div>"
         )
         md = html_to_markdown(html, base_url="https://ef.ustc.edu.cn/info/1022/2374.htm")
@@ -232,7 +233,9 @@ class HtmlToMarkdownTests(unittest.TestCase):
             "&lt;IMG border=0 src=&quot;/_upload/article/images/c.jpg&quot; /&gt;"
             "</div>"
         )
-        md = html_to_markdown(html, base_url="http://www.nsrl.ustc.edu.cn/2014/0917/c10984a121342/page.htm")
+        md = html_to_markdown(
+            html, base_url="http://www.nsrl.ustc.edu.cn/2014/0917/c10984a121342/page.htm"
+        )
         # normalize_url upgrades ustc.edu.cn hosts to https (F3 dedup).
         self.assertIn("![](https://www.nsrl.ustc.edu.cn/_upload/article/images/a.jpg)", md)
         self.assertIn("![](https://www.nsrl.ustc.edu.cn/_upload/article/images/c.jpg)", md)
@@ -248,7 +251,9 @@ class HtmlToMarkdownTests(unittest.TestCase):
             "<p style='text-align:center;'>&lt;IMG border=0 src=&quot;/_upload/c.jpg&quot; width=500</p>"
             "<p>参观结束。</p></div>"
         )
-        md = html_to_markdown(html, base_url="http://www.nsrl.ustc.edu.cn/2014/0917/c10984a121342/page.htm")
+        md = html_to_markdown(
+            html, base_url="http://www.nsrl.ustc.edu.cn/2014/0917/c10984a121342/page.htm"
+        )
         # normalize_url upgrades ustc.edu.cn hosts to https (F3 dedup).
         self.assertIn("![](https://www.nsrl.ustc.edu.cn/_upload/a.jpg)", md)
         self.assertIn("![](https://www.nsrl.ustc.edu.cn/_upload/c.jpg)", md)
@@ -275,7 +280,9 @@ class HtmlToMarkdownTests(unittest.TestCase):
             "<div class='social-share'><span class='share_tt'>分享至:</span></div>"
             "</div>"
         )
-        md = html_to_markdown(html, base_url="https://nsti.ustc.edu.cn/2026/0520/c13715a741222/page.htm")
+        md = html_to_markdown(
+            html, base_url="https://nsti.ustc.edu.cn/2026/0520/c13715a741222/page.htm"
+        )
         self.assertIn("正文内容。", md)
         self.assertNotIn("访问次数", md)
         self.assertNotIn("查看", md)
@@ -303,7 +310,10 @@ class HtmlToMarkdownTests(unittest.TestCase):
             "<p class='bottomlinks'><a href='http://www.ahedu.gov.cn/'>安徽教育网</a></p>"
             "</div>"
         )
-        md = html_to_markdown(html, base_url="https://utfd.ustc.edu.cn/index.php/newslists/news/117-2025-05-27-03-06-47")
+        md = html_to_markdown(
+            html,
+            base_url="https://utfd.ustc.edu.cn/index.php/newslists/news/117-2025-05-27-03-06-47",
+        )
         self.assertIn("通知正文。", md)
         self.assertNotIn("下页", md)
         self.assertNotIn("友情链接", md)

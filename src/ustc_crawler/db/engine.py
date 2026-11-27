@@ -67,7 +67,9 @@ class Database:
         if "alembic_version" not in inspector.get_table_names():
             raise RuntimeError("SQLite schema is not managed by Alembic")
         with self.engine.connect() as connection:
-            revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one_or_none()
+            revision = connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one_or_none()
         if revision != expected:
             raise RuntimeError(f"SQLite schema revision {revision!r} is not {expected!r}")
 
